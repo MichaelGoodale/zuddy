@@ -13,7 +13,7 @@ pub(super) enum Operations<V> {
     Difference(SetFamily<V>, SetFamily<V>),
 }
 
-impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
+impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///```
@@ -340,8 +340,8 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     /// let a = SetFamily::singleton('a', &mut holder);
     /// let b = SetFamily::singleton('b', &mut holder);
     /// let c = SetFamily::singleton('c', &mut holder);
-    /// assert_eq!(a.union(b, &mut holder).count(&mut holder), Some(2));
-    /// assert_eq!(a.union(b, &mut holder).union(c, &mut holder).count(&mut holder), Some(3));
+    /// assert_eq!(a.union(b, &mut holder).size(&mut holder), Some(2));
+    /// assert_eq!(a.union(b, &mut holder).union(c, &mut holder).size(&mut holder), Some(3));
     ///```
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
@@ -419,7 +419,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///
     ///# Panics
     ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
-    pub fn count(&self, holder: &mut ZddHolder<V>) -> Option<usize> {
+    pub fn size(&self, holder: &mut ZddHolder<V>) -> Option<usize> {
         if self.is_zero() {
             return Some(0);
         }
@@ -432,8 +432,8 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
         }
         let Zdd { value: _, lo, hi } = *holder.data[self.0].as_ref().expect("Invalid index!");
         let sum = lo
-            .count(holder)
-            .and_then(|x| hi.count(holder).and_then(|y| x.checked_add(y)));
+            .size(holder)
+            .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
 
         holder.sum_cache.insert(*self, sum);
         sum
@@ -453,21 +453,21 @@ mod test {
         let c = SetFamily::singleton('c', &mut holder);
 
         for x in [a, b, c] {
-            assert_eq!(x.count(&mut holder).unwrap(), 1);
+            assert_eq!(x.size(&mut holder).unwrap(), 1);
             println!("{}", x.graphviz(&holder));
         }
 
         let ab = a.change('b', &mut holder);
-        assert_eq!(ab.count(&mut holder).unwrap(), 1);
+        assert_eq!(ab.size(&mut holder).unwrap(), 1);
 
         let ab_a = ab.union(a, &mut holder);
 
         println!("{}", ab_a.graphviz(&holder));
-        assert_eq!(ab.union(a, &mut holder).count(&mut holder).unwrap(), 2);
+        assert_eq!(ab.union(a, &mut holder).size(&mut holder).unwrap(), 2);
         assert_eq!(
             ab.union(a, &mut holder)
                 .union(b, &mut holder)
-                .count(&mut holder)
+                .size(&mut holder)
                 .unwrap(),
             3
         );
@@ -475,7 +475,7 @@ mod test {
             ab.union(a, &mut holder)
                 .union(b, &mut holder)
                 .union(c, &mut holder)
-                .count(&mut holder)
+                .size(&mut holder)
                 .unwrap(),
             4
         );

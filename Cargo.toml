@@ -3,8 +3,13 @@ name = "zuddy"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
 
+[dependencies]
+rand = { version = "0.10.1", optional = true }
+
+[features]
+default = ["sampling"]
+sampling = ["dep:rand"]
 
 [lints.rust]
 missing_docs = "warn"

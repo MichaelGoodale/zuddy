@@ -13,6 +13,8 @@ pub mod algorithms;
 pub mod iterators;
 mod utils;
 
+#[cfg(feature = "sampling")]
+mod sampling;
 use algebra::Operations;
 
 ///A representation of a family of sets (or otherwise a set of sets).
