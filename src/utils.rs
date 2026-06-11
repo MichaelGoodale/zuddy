@@ -10,7 +10,7 @@ impl<V: Display> SetFamily<V> {
     ///
     ///# Panics
     ///
-    ///Will panic if [`self`] is not a valid ZDD in [`ZddHolder`]
+    ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
     #[must_use]
     pub fn graphviz(&self, holder: &ZddHolder<V>) -> String {
         let mut s = String::new();

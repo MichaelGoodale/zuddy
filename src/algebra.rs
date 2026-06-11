@@ -14,7 +14,7 @@ pub(super) enum Operations<V> {
 }
 
 impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
-    ///Creates a ZDD with all combinations that don't include [`value`]
+    ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -35,7 +35,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///```
     ///
     ///# Panics
-    ///May panic if [`self`] or [`other`] is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
@@ -62,7 +62,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
         r
     }
 
-    ///Creates a ZDD with all combinations that include [`value`] and then deletes [`value`] from those
+    ///Creates a ZDD with all combinations that include `value` and then deletes `value` from those
     ///combinations.
     ///```
     ///# use std::collections::BTreeSet;
@@ -83,7 +83,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///```
     ///
     ///# Panics
-    ///May panic if [`self`] or [`other`] is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
@@ -110,7 +110,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
         r
     }
 
-    ///The intersection of [`self`] and [`other`]
+    ///The intersection of `self` and `other`
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -131,7 +131,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///```
     ///
     ///# Panics
-    ///May panic if [`self`] or [`other`] is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         if self.is_zero() || other.is_zero() {
@@ -176,7 +176,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
         r
     }
 
-    ///The set difference of [`self`] and [`other`]
+    ///The set difference of `self` and `other`
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -197,7 +197,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///```
     ///
     ///# Panics
-    ///May panic if [`self`] or [`other`] is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn difference(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         if self.is_zero() || self == other {
@@ -418,7 +418,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///too many combinations. In this case, the function will return [`None`]
     ///
     ///# Panics
-    ///Will panic if [`self`] is not a valid ZDD in [`ZddHolder`]
+    ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
     pub fn count(&self, holder: &mut ZddHolder<V>) -> Option<usize> {
         if self.is_zero() {
             return Some(0);

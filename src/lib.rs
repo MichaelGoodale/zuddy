@@ -7,7 +7,10 @@ use std::{
 };
 
 mod algebra;
-mod iterators;
+///Defines various miscellaneous algorithms over [`SetFamily`]
+pub mod algorithms;
+///Defines iterators of various kinds over [`SetFamily`]
+pub mod iterators;
 mod utils;
 
 use algebra::Operations;
