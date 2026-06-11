@@ -78,12 +78,12 @@ impl<V> SetFamily<V> {
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.
 pub struct ZDDIter<'a, V> {
-    stack: Vec<(SetFamily<V>, Vec<&'a V>)>,
+    stack: Vec<(SetFamily<V>, Vec<V>)>,
     holder: &'a ZddHolder<V>,
 }
 
-impl<'a, V: Hash + Ord + Eq + Clone + Debug> Iterator for ZDDIter<'a, V> {
-    type Item = Vec<&'a V>;
+impl<V: Hash + Ord + Eq + Clone + Debug> Iterator for ZDDIter<'_, V> {
+    type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((node, current_set)) = self.stack.pop() {
@@ -101,7 +101,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> Iterator for ZDDIter<'a, V> {
             }
             if !hi.is_zero() {
                 let mut hi_set = current_set;
-                hi_set.push(v);
+                hi_set.push(v.clone());
                 self.stack.push((hi, hi_set));
             }
         }
@@ -152,6 +152,27 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     }
 
     ///Creates a ZDD with all combinations that don't include [`value`]
+    ///
+    ///```
+    /// use std::collections::BTreeSet;
+    /// use zudd::{ZddHolder, SetFamily};
+    /// let mut holder = ZddHolder::<char>::new();
+    ///
+    /// // Create set family: {a, b}, {a}, {b}
+    /// let mut sets = BTreeSet::new();
+    /// sets.insert(BTreeSet::from(['a', 'b']));
+    /// sets.insert(BTreeSet::from(['a']));
+    /// sets.insert(BTreeSet::from(['b']));
+    ///
+    /// let z = SetFamily::from_sets(sets, &mut holder);
+    /// let z_offset = z.offset('a', &mut holder);
+    ///
+    /// // Should only contain {b}
+    /// let members: Vec<Vec<char>> = z_offset.members(&holder).collect();
+    /// assert_eq!(members.len(), 1);
+    /// assert_eq!(members[0], vec!['b']);
+    ///
+    ///```
     #[must_use]
     pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         todo!()
@@ -165,6 +186,28 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     }
 
     ///The intersection of [`self`] and [`other`]
+    ///
+    ///```
+    /// use std::collections::BTreeSet;
+    /// use zudd::{ZddHolder, SetFamily};
+    /// let mut holder = ZddHolder::<char>::new();
+    ///
+    /// let mut sets1 = BTreeSet::new();
+    /// sets1.insert(BTreeSet::from(['a', 'b']));
+    /// sets1.insert(BTreeSet::from(['a']));
+    ///
+    /// let mut sets2 = BTreeSet::new();
+    /// sets2.insert(BTreeSet::from(['a', 'b']));
+    /// sets2.insert(BTreeSet::from(['b']));
+    ///
+    /// let z1 = SetFamily::from_sets(sets1, &mut holder);
+    /// let z2 = SetFamily::from_sets(sets2, &mut holder);
+    /// let z_intersect = z1.intersect(z2, &mut holder);
+    ///
+    /// let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
+    /// assert_eq!(members.len(), 1);
+    /// assert_eq!(members[0], vec!['a', 'b']);
+    ///```
     #[must_use]
     pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         todo!()
@@ -182,7 +225,7 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///let mut holder = ZddHolder::<char>::new();
     ///
     /// let a = SetFamily::singleton('a', &mut holder);
-    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec![&'a']]);
+    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
     ///```
     #[must_use]
     pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
@@ -513,5 +556,252 @@ mod tests {
                 .unwrap(),
             4
         );
+    }
+
+    #[test]
+    fn test_from_sets_basic() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // Create a simple set family: {a, b}, {a}, {b}
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['a', 'b']));
+        sets.insert(BTreeSet::from(['a']));
+        sets.insert(BTreeSet::from(['b']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let members: Vec<Vec<char>> = z.members(&holder).collect();
+
+        assert_eq!(members.len(), 3);
+        assert!(members.contains(&vec!['a']));
+        assert!(members.contains(&vec!['b']));
+        assert!(members.contains(&vec!['a', 'b']));
+    }
+
+    #[test]
+    fn test_from_sets_empty() {
+        let mut holder = ZddHolder::<char>::new();
+        let sets = BTreeSet::new();
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let members: Vec<Vec<char>> = z.members(&holder).collect();
+
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn test_from_sets_single_element() {
+        let mut holder = ZddHolder::<char>::new();
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['x']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let members: Vec<Vec<char>> = z.members(&holder).collect();
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0], vec!['x']);
+    }
+
+    #[test]
+    fn test_offset_excludes_value() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // Set family: {a, b}, {a}, {b}, {c}
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['a', 'b']));
+        sets.insert(BTreeSet::from(['a']));
+        sets.insert(BTreeSet::from(['b']));
+        sets.insert(BTreeSet::from(['c']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let z_offset = z.offset('a', &mut holder);
+        let members: Vec<Vec<char>> = z_offset.members(&holder).collect();
+
+        // Should not contain any set with 'a'
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&vec!['b']));
+        assert!(members.contains(&vec!['c']));
+
+        for member in &members {
+            assert!(!member.contains(&'a'));
+        }
+    }
+
+    #[test]
+    fn test_offset_all_contains_value() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // All sets contain 'a'
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['a']));
+        sets.insert(BTreeSet::from(['a', 'b']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let z_offset = z.offset('a', &mut holder);
+        let members: Vec<Vec<char>> = z_offset.members(&holder).collect();
+
+        // Should be empty since all sets contained 'a'
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn test_onincludes_value_then_removes_it() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // Set family: {a, b}, {a}, {b}, {c}
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['a', 'b']));
+        sets.insert(BTreeSet::from(['a']));
+        sets.insert(BTreeSet::from(['b']));
+        sets.insert(BTreeSet::from(['c']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let z_onset = z.onset('a', &mut holder);
+        let members: Vec<Vec<char>> = z_onset.members(&holder).collect();
+
+        // Should contain sets that had 'a' but without 'a': {b}, {}
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&vec!['b']));
+        assert!(members.contains(&vec![]));
+
+        for member in &members {
+            assert!(!member.contains(&'a'));
+        }
+    }
+
+    #[test]
+    fn test_onset_no_value_present() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // None of the sets contain 'a'
+        let mut sets = BTreeSet::new();
+        sets.insert(BTreeSet::from(['b']));
+        sets.insert(BTreeSet::from(['c']));
+
+        let z = SetFamily::from_sets(sets, &mut holder);
+        let z_onset = z.onset('a', &mut holder);
+        let members: Vec<Vec<char>> = z_onset.members(&holder).collect();
+
+        // Should be empty since no sets contained 'a'
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn test_intersect_basic() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // First family: {a, b}, {a}, {b}
+        let mut sets1 = BTreeSet::new();
+        sets1.insert(BTreeSet::from(['a', 'b']));
+        sets1.insert(BTreeSet::from(['a']));
+        sets1.insert(BTreeSet::from(['b']));
+
+        // Second family: {a, b}, {a}, {c}
+        let mut sets2 = BTreeSet::new();
+        sets2.insert(BTreeSet::from(['a', 'b']));
+        sets2.insert(BTreeSet::from(['a']));
+        sets2.insert(BTreeSet::from(['c']));
+
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        let z2 = SetFamily::from_sets(sets2, &mut holder);
+        let z_intersect = z1.intersect(z2, &mut holder);
+        let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
+
+        // Intersection: {a, b}, {a}
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&vec!['a', 'b']));
+        assert!(members.contains(&vec!['a']));
+    }
+
+    #[test]
+    fn test_intersect_empty() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // First family: {a}
+        let mut sets1 = BTreeSet::new();
+        sets1.insert(BTreeSet::from(['a']));
+
+        // Second family: {b}
+        let mut sets2 = BTreeSet::new();
+        sets2.insert(BTreeSet::from(['b']));
+
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        let z2 = SetFamily::from_sets(sets2, &mut holder);
+        let z_intersect = z1.intersect(z2, &mut holder);
+        let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
+
+        // No intersection
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn test_difference_basic() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // First family: {a, b}, {a}, {b}, {c}
+        let mut sets1 = BTreeSet::new();
+        sets1.insert(BTreeSet::from(['a', 'b']));
+        sets1.insert(BTreeSet::from(['a']));
+        sets1.insert(BTreeSet::from(['b']));
+        sets1.insert(BTreeSet::from(['c']));
+
+        // Second family: {a, b}, {a}
+        let mut sets2 = BTreeSet::new();
+        sets2.insert(BTreeSet::from(['a', 'b']));
+        sets2.insert(BTreeSet::from(['a']));
+
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        let z2 = SetFamily::from_sets(sets2, &mut holder);
+        let z_diff = z1.difference(z2, &mut holder);
+        let members: Vec<Vec<char>> = z_diff.members(&holder).collect();
+
+        // Difference: {b}, {c}
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&vec!['b']));
+        assert!(members.contains(&vec!['c']));
+    }
+
+    #[test]
+    fn test_difference_all_removed() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // Both families are identical
+        let mut sets1 = BTreeSet::new();
+        sets1.insert(BTreeSet::from(['a']));
+        sets1.insert(BTreeSet::from(['b']));
+
+        let mut sets2 = BTreeSet::new();
+        sets2.insert(BTreeSet::from(['a']));
+        sets2.insert(BTreeSet::from(['b']));
+
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        let z2 = SetFamily::from_sets(sets2, &mut holder);
+        let z_diff = z1.difference(z2, &mut holder);
+        let members: Vec<Vec<char>> = z_diff.members(&holder).collect();
+
+        // All elements removed
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn test_difference_empty_second() {
+        let mut holder = ZddHolder::<char>::new();
+
+        // First family: {a}, {b}
+        let mut sets1 = BTreeSet::new();
+        sets1.insert(BTreeSet::from(['a']));
+        sets1.insert(BTreeSet::from(['b']));
+
+        // Second family: empty
+        let sets2 = BTreeSet::new();
+
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        let z2 = SetFamily::from_sets(sets2, &mut holder);
+        let z_diff = z1.difference(z2, &mut holder);
+        let members: Vec<Vec<char>> = z_diff.members(&holder).collect();
+
+        // Should be unchanged
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&vec!['a']));
+        assert!(members.contains(&vec!['b']));
     }
 }
