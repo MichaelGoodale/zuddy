@@ -1,0 +1,13 @@
+[package]
+name = "zudd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
