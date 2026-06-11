@@ -110,6 +110,72 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> Iterator for ZDDIter<'a, V> {
 }
 
 impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
+    ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
+    ///
+    ///```
+    ///use zudd::{ZddHolder, SetFamily};
+    ///let mut holder = ZddHolder::<char>::new();
+    ///let sets = ["abcd", "ac", "a", "bc", "b", "c"];
+    ///let x = sets.iter().map(|x| x.chars().collect()).collect();
+    ///let z = SetFamily::from_sets(x, &mut holder);
+    ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
+    ///assert_eq!(members, sets);
+    ///```
+    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        if sets.is_empty() {
+            return SetFamily::ZERO;
+        }
+
+        #[expect(clippy::missing_panics_doc)]
+        if sets.len() == 1 && sets.first().unwrap().is_empty() {
+            return SetFamily::ONE;
+        }
+
+        //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
+        #[expect(clippy::missing_panics_doc)]
+        let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
+
+        let with_min_val = sets
+            .extract_if(.., |v| v.contains(&value))
+            .map(|mut x| {
+                x.remove(&value);
+                x
+            })
+            .collect::<BTreeSet<_>>();
+
+        let without_min_val = sets;
+
+        let lo = SetFamily::from_sets(without_min_val, holder);
+        let hi = SetFamily::from_sets(with_min_val, holder);
+
+        holder.get_node(Zdd { value, lo, hi })
+    }
+
+    ///Creates a ZDD with all combinations that don't include [`value`]
+    #[must_use]
+    pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        todo!()
+    }
+
+    ///Creates a ZDD with all combinations that include [`value`] and then deletes [`value`] from those
+    ///combinations.
+    #[must_use]
+    pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        todo!()
+    }
+
+    ///The intersection of [`self`] and [`other`]
+    #[must_use]
+    pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        todo!()
+    }
+
+    ///The set difference of [`self`] and [`other`]
+    #[must_use]
+    pub fn difference(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        todo!()
+    }
+
     ///Creates a singleton set from a value.
     ///```
     ///use zudd::{ZddHolder, SetFamily};
