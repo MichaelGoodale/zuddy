@@ -59,10 +59,16 @@ struct Zdd<V> {
     hi: SetFamily<V>,
 }
 
+//TODO: Make this have a constructor that orders fields so that commmutative operations don't get
+//doubled.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum Operations<V> {
     Change(SetFamily<V>, V),
+    Offset(SetFamily<V>, V),
+    Onset(SetFamily<V>, V),
     Union(SetFamily<V>, SetFamily<V>),
+    Intersect(SetFamily<V>, SetFamily<V>),
+    Difference(SetFamily<V>, SetFamily<V>),
 }
 
 impl<V> SetFamily<V> {
@@ -175,14 +181,56 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     ///```
     #[must_use]
     pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        todo!()
+        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        if self_val == &value {
+            return self_lo;
+        }
+        if self_val > &value {
+            return self;
+        }
+
+        let op = Operations::Offset(self, value.clone());
+        if let Some(r) = holder.cache.get(&op) {
+            return *r;
+        }
+
+        let v = Zdd {
+            value: self_val.clone(),
+            lo: self_lo.offset(value.clone(), holder),
+            hi: self_hi.offset(value, holder),
+        };
+
+        let r = holder.get_node(v);
+        holder.cache.insert(op, r);
+        r
     }
 
     ///Creates a ZDD with all combinations that include [`value`] and then deletes [`value`] from those
     ///combinations.
     #[must_use]
     pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        todo!()
+        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        if self_val == &value {
+            return self_hi;
+        }
+        if self_val > &value {
+            return SetFamily::ZERO;
+        }
+
+        let op = Operations::Onset(self, value.clone());
+        if let Some(r) = holder.cache.get(&op) {
+            return *r;
+        }
+
+        let v = Zdd {
+            value: self_val.clone(),
+            lo: self_lo.onset(value.clone(), holder),
+            hi: self_hi.onset(value, holder),
+        };
+
+        let r = holder.get_node(v);
+        holder.cache.insert(op, r);
+        r
     }
 
     ///The intersection of [`self`] and [`other`]
@@ -208,15 +256,75 @@ impl<V: Hash + Ord + Eq + Clone + Debug> SetFamily<V> {
     /// assert_eq!(members.len(), 1);
     /// assert_eq!(members[0], vec!['a', 'b']);
     ///```
+    ///# Panics
+    ///May panic if [`self`] or [`other`] is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        todo!()
+        if self.is_zero() || other.is_zero() {
+            return SetFamily::ZERO;
+        }
+        if self == other {
+            return self;
+        }
+        let op = Operations::Intersect(self, other);
+        if let Some(r) = holder.cache.get(&op) {
+            return *r;
+        }
+
+        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
+
+        let r = match self_val.cmp(other_val) {
+            std::cmp::Ordering::Less => self_lo.intersect(other, holder),
+            std::cmp::Ordering::Greater => self.intersect(other_lo, holder),
+            std::cmp::Ordering::Equal => {
+                let value = self_val.clone();
+                let lo = self_lo.intersect(other_lo, holder);
+                let hi = self_hi.intersect(other_hi, holder);
+                holder.get_node(Zdd { value, lo, hi })
+            }
+        };
+        holder.cache.insert(op, r);
+        r
     }
 
     ///The set difference of [`self`] and [`other`]
     #[must_use]
     pub fn difference(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        todo!()
+        if self.is_zero() || self == other {
+            return SetFamily::ZERO;
+        }
+        if other.is_zero() {
+            return self;
+        }
+        let op = Operations::Difference(self, other);
+        if let Some(r) = holder.cache.get(&op) {
+            return *r;
+        }
+
+        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
+
+        let r = match self_val.cmp(other_val) {
+            std::cmp::Ordering::Less => {
+                let v = Zdd {
+                    value: self_val.clone(),
+                    lo: self_lo.difference(other, holder),
+                    hi: self_hi,
+                };
+
+                holder.get_node(v)
+            }
+            std::cmp::Ordering::Greater => self.difference(other_lo, holder),
+            std::cmp::Ordering::Equal => {
+                let value = self_val.clone();
+                let lo = self_lo.difference(other_lo, holder);
+                let hi = self_hi.difference(other_hi, holder);
+                holder.get_node(Zdd { value, lo, hi })
+            }
+        };
+        holder.cache.insert(op, r);
+        r
     }
 
     ///Creates a singleton set from a value.
@@ -695,14 +803,28 @@ mod tests {
         sets1.insert(BTreeSet::from(['a']));
         sets1.insert(BTreeSet::from(['b']));
 
+        let z1 = SetFamily::from_sets(sets1, &mut holder);
+        assert_eq!(
+            z1.members(&holder)
+                .map(|x| x.into_iter().collect::<String>())
+                .collect::<Vec<String>>(),
+            vec!["ab", "a", "b"]
+        );
+
         // Second family: {a, b}, {a}, {c}
         let mut sets2 = BTreeSet::new();
         sets2.insert(BTreeSet::from(['a', 'b']));
         sets2.insert(BTreeSet::from(['a']));
         sets2.insert(BTreeSet::from(['c']));
-
-        let z1 = SetFamily::from_sets(sets1, &mut holder);
         let z2 = SetFamily::from_sets(sets2, &mut holder);
+
+        assert_eq!(
+            z2.members(&holder)
+                .map(|x| x.into_iter().collect::<String>())
+                .collect::<Vec<String>>(),
+            vec!["ab", "a", "c"]
+        );
+
         let z_intersect = z1.intersect(z2, &mut holder);
         let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
 
