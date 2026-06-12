@@ -134,6 +134,17 @@ mod test {
         for (a, b, res) in [
             ("ab b c", "ab  ", "ab abc b c"),
             ("a b", "d c", "ad bd ac bc"),
+            ("a b", "", ""),
+            ("", "a b", ""),
+            (" a", " b", " a b ab"),
+            (" a", "b", "b ab"),
+            ("a", " b", "a ab"),
+            ("a", "b", "ab"),
+            ("a", "a", "a"),
+            ("a", "b c", "ab ac"),
+            ("a b", "c", "ac bc"),
+            ("a b c", "d", "ad bd cd"),
+            ("a b", "  ", "a b"),
         ] {
             test_op(a, b, res, SetFamily::join, "*");
         }
@@ -141,7 +152,11 @@ mod test {
 
     #[test]
     fn test_divide() {
-        for (a, b, res) in [("a  ", "a", " "), ("abc bc ac", "bc", "a  ")] {
+        for (a, b, res) in [
+            ("a  ", "a", " "),
+            ("abc bc ac", "bc", "a  "),
+            ("ab ac a", "a", "b c "),
+        ] {
             test_op(a, b, res, SetFamily::divide, "/");
         }
     }
