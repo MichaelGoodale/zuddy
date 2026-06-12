@@ -201,12 +201,7 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
             }
 
             let (v, lo, hi) = this.get(self.holder).unwrap();
-            println!("@ {v:?} with path {path:?}");
-            println!(
-                "lo_w is {:?}, hi_w is {:?}",
-                self.minimum_cost_lookup.get(&lo),
-                self.minimum_cost_lookup.get(&hi)
-            );
+
             let Some(hi_w) = self.minimum_cost_lookup.get(&hi).unwrap() else {
                 continue;
             };
@@ -215,7 +210,6 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
                 match lo_w.cmp(hi_w) {
                     Less => self.stack.push((lo, path)),
                     Equal => {
-                        println!("adding {v:?} to path and propagating path");
                         self.stack.push((lo, path.clone()));
                         path.push(v.clone());
                         self.stack.push((hi, path));
