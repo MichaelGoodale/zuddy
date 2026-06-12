@@ -36,9 +36,9 @@ impl QueenPosition {
 
 fn print_horizontal_line(board_size: u8) {
     for _ in 0..board_size {
-        print!("- - ");
+        print!("+---");
     }
-    println!("-");
+    println!("+");
 }
 
 fn print_solution(queens: &[QueenPosition], board_size: u8) {
@@ -50,7 +50,7 @@ fn print_solution(queens: &[QueenPosition], board_size: u8) {
                 .any(|&QueenPosition(qx, qy)| qx == x && qy == y);
 
             if has_queen {
-                print!("| Q ");
+                print!("| ♛ ");
             } else {
                 print!("|   ");
             }
@@ -65,7 +65,7 @@ fn queens_at_row(i: u8, board_size: u8) -> impl Iterator<Item = QueenPosition> {
 }
 
 fn n_queens(board_size: u8, rng: &mut impl Rng) -> usize {
-    let mut holder = ZddHolder::<QueenPosition>::new();
+    let mut holder = ZddHolder::<QueenPosition>::with_capacity(10000);
     let mut state = queens_at_row(0, board_size).fold(SetFamily::ZERO, |acc, x| {
         acc.union(SetFamily::singleton(x, &mut holder), &mut holder)
     });
@@ -94,9 +94,9 @@ fn n_queens(board_size: u8, rng: &mut impl Rng) -> usize {
 fn main() {
     let mut rng = ThreadRng::default();
     //no solution for n=2,3
-    for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10]
+    for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         .into_iter()
-        .zip([1, 2, 10, 4, 40, 92, 352, 724])
+        .zip([1, 2, 10, 4, 40, 92, 352, 724, 2680, 14200])
     {
         let n_sol_calc = n_queens(n, &mut rng);
         assert_eq!(n_sol_calc, n_sol);

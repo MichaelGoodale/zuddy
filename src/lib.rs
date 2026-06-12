@@ -15,6 +15,7 @@ mod utils;
 
 #[cfg(feature = "sampling")]
 mod sampling;
+use ahash::RandomState;
 use algebra::Operations;
 
 ///A representation of a family of sets (or otherwise a set of sets).
@@ -90,9 +91,9 @@ impl<V> SetFamily<V> {
 pub struct ZddHolder<V> {
     free: Vec<usize>,
     data: Vec<Option<Zdd<V>>>,
-    uniq_table: HashMap<Zdd<V>, SetFamily<V>>,
-    cache: HashMap<Operations<V>, SetFamily<V>>,
-    sum_cache: HashMap<SetFamily<V>, Option<usize>>,
+    uniq_table: HashMap<Zdd<V>, SetFamily<V>, RandomState>,
+    cache: HashMap<Operations<V>, SetFamily<V>, RandomState>,
+    sum_cache: HashMap<SetFamily<V>, Option<usize>, RandomState>,
 }
 
 fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> SetFamily<V> {
@@ -121,6 +122,26 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn new() -> ZddHolder<V> {
         ZddHolder::default()
+    }
+
+    ///Create a new [`ZddHolder`] to hold various ZDDs with a preallocated capacity.
+    #[must_use]
+    pub fn with_capacity(n: usize) -> ZddHolder<V> {
+        let mut data = Vec::with_capacity(n);
+        data.push(None);
+        data.push(None);
+
+        let uniq_table = HashMap::with_capacity_and_hasher(n, RandomState::new());
+        let sum_cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
+        let cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
+
+        Self {
+            free: vec![],
+            data,
+            uniq_table,
+            sum_cache,
+            cache,
+        }
     }
 
     fn get_node(&mut self, family: Zdd<V>) -> SetFamily<V> {

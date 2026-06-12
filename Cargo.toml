@@ -5,6 +5,7 @@ edition = "2024"
 
 
 [dependencies]
+ahash = "0.8.12"
 rand = { version = "0.10.1", optional = true }
 
 [features]
