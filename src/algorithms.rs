@@ -7,6 +7,7 @@
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     collections::HashMap,
+    fmt::Debug,
     hash::Hash,
 };
 
@@ -133,21 +134,14 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
         }
 
         let (v, lo, hi) = self.get(holder).unwrap();
-        let lo_w = min_cost_lookup.get(&lo).unwrap();
-        let hi_w = min_cost_lookup.get(&hi).unwrap();
-        match (lo_w, hi_w) {
-            (None, None) => panic!("This means that hi is 0 somewhere and the ZDD is invalid"),
-            (None, Some(_)) => {
-                let z = Zdd {
-                    value: v.clone(),
-                    lo: SetFamily::ZERO,
-                    hi: hi.only_minimal_sets_inner(holder, min_cost_lookup),
-                };
-                holder.get_node(z)
-            }
-            (Some(_), None) => lo.only_minimal_sets_inner(holder, min_cost_lookup),
-            (Some(lo_w), Some(hi_w)) => match hi_w.cmp(lo_w) {
-                Less => {
+        let Some(hi_w) = *min_cost_lookup.get(&hi).unwrap() else {
+            //if its None its impossible to add so delete the edge
+            return SetFamily::ZERO;
+        };
+        if let Some(lo_w) = *min_cost_lookup.get(&lo).unwrap() {
+            match lo_w.cmp(&hi_w) {
+                Less => lo.only_minimal_sets_inner(holder, min_cost_lookup),
+                Greater => {
                     let z = Zdd {
                         value: v.clone(),
                         lo: SetFamily::ZERO,
@@ -155,7 +149,6 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
                     };
                     holder.get_node(z)
                 }
-                Greater => lo.only_minimal_sets_inner(holder, min_cost_lookup),
                 Equal => {
                     let z = Zdd {
                         value: v.clone(),
@@ -165,7 +158,14 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
 
                     holder.get_node(z)
                 }
-            },
+            }
+        } else {
+            let z = Zdd {
+                value: v.clone(),
+                lo: SetFamily::ZERO,
+                hi: hi.only_minimal_sets_inner(holder, min_cost_lookup),
+            };
+            holder.get_node(z)
         }
     }
 }
@@ -188,7 +188,7 @@ impl<V> MinimalSetIterator<'_, V> {
     }
 }
 
-impl<V: Clone> Iterator for MinimalSetIterator<'_, V> {
+impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
     type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -201,31 +201,33 @@ impl<V: Clone> Iterator for MinimalSetIterator<'_, V> {
             }
 
             let (v, lo, hi) = this.get(self.holder).unwrap();
-            let lo_w = self.minimum_cost_lookup.get(&lo).unwrap();
-            let hi_w = self.minimum_cost_lookup.get(&hi).unwrap();
-            match (lo_w, hi_w) {
-                (None, None) => (),
-                (None, Some(_)) => {
-                    path.push(v.clone());
-                    self.stack.push((hi, path));
-                }
-                (Some(_), None) => {
-                    self.stack.push((lo, path));
-                }
-                (Some(lo_w), Some(hi_w)) => match hi_w.cmp(lo_w) {
-                    Less => {
-                        path.push(v.clone());
-                        self.stack.push((hi, path));
-                    }
-                    Greater => {
-                        self.stack.push((lo, path));
-                    }
+            println!("@ {v:?} with path {path:?}");
+            println!(
+                "lo_w is {:?}, hi_w is {:?}",
+                self.minimum_cost_lookup.get(&lo),
+                self.minimum_cost_lookup.get(&hi)
+            );
+            let Some(hi_w) = self.minimum_cost_lookup.get(&hi).unwrap() else {
+                continue;
+            };
+
+            if let Some(lo_w) = *self.minimum_cost_lookup.get(&lo).unwrap() {
+                match lo_w.cmp(hi_w) {
+                    Less => self.stack.push((lo, path)),
                     Equal => {
+                        println!("adding {v:?} to path and propagating path");
                         self.stack.push((lo, path.clone()));
                         path.push(v.clone());
                         self.stack.push((hi, path));
                     }
-                },
+                    Greater => {
+                        path.push(v.clone());
+                        self.stack.push((hi, path));
+                    }
+                }
+            } else {
+                path.push(v.clone());
+                self.stack.push((hi, path));
             }
         }
         None
