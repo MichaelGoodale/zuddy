@@ -1,3 +1,27 @@
+//! Implementations of basic set theoretic operations over ZDDs.
+//!
+//! These functions largely come from Minato, 1993 [^minato_93].
+//! It also includes the unate cube set algebra from Minato, 1994 [^minato_94]
+//! Knuth refers to this as family algebra in exercise 203-206 of Volume 4A 7.1.4 of the Art of Computer Programming.
+//!
+//! This module defines:
+//!
+//! ## Element wise modification of sets.
+//!   - [`SetFamily::offset`]
+//!   - [`SetFamily::onset`]
+//!   - [`SetFamily::change`]
+//!   - [`SetFamily::element_division`]
+//!   - [`SetFamily::element_remainder`]
+//! ## Set wise modifications
+//!   - [`SetFamily::union`]
+//!   - [`SetFamily::intersect`]
+//!   - [`SetFamily::difference`]
+//!   - [`SetFamily::join`]
+//!   - [`SetFamily::divide`]
+//!   - [`SetFamily::remainder`]
+//!
+//! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
+//! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 use super::{SetFamily, Zdd, ZddHolder};
 use std::{fmt::Debug, hash::Hash};
 
@@ -19,6 +43,8 @@ mod unate;
 
 impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///Creates a ZDD with all combinations that don't include `value`
+    ///
+    ///It is defined as `f.offset(x)` = { α | α ∉ f}
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -72,6 +98,8 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
 
     ///Creates a ZDD with all combinations that include `value` and then deletes `value` from those
     ///combinations.
+    ///
+    ///It is defined as `f.onset(x)` = { α - {x} | α ∈ f ∧ x ∈ α}
     ///```
     ///# use std::collections::BTreeSet;
     ///# use zuddy::{ZddHolder, SetFamily};
@@ -122,7 +150,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         r
     }
 
-    ///The intersection of `self` and `other`
+    ///The set intersection of `self` and `other`
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -263,25 +291,9 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         r
     }
 
-    ///Creates a singleton set from a value.
-    ///```
-    ///use zuddy::{ZddHolder, SetFamily};
-    ///let mut holder = ZddHolder::<char>::new();
-    ///
-    /// let a = SetFamily::singleton('a', &mut holder);
-    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
-    ///```
-    #[must_use]
-    pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        holder.get_node(Zdd {
-            value,
-            lo: SetFamily::ZERO,
-            hi: SetFamily::ONE,
-        })
-    }
-
     ///Inverts whether a value is included or not included on each combination in the family.
     ///
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∉ f} ∪ { α - {x} | α ∈ f}
     ///```
     ///use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
@@ -342,8 +354,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         r
     }
 
-    ///Takes the union of two families of sets.
-    ///
+    ///Takes the set union of two families of sets.
     ///
     ///```
     ///use zuddy::{ZddHolder, SetFamily};
@@ -422,33 +433,6 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
 
         holder.cache.insert(op, r);
         r
-    }
-
-    ///Count the number of possible comibinations.
-    ///
-    ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
-    ///too many combinations. In this case, the function will return [`None`]
-    ///
-    ///# Panics
-    ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
-    pub fn size(&self, holder: &mut ZddHolder<V>) -> Option<usize> {
-        if self.is_zero() {
-            return Some(0);
-        }
-        if self.is_one() {
-            return Some(1);
-        }
-
-        if let Some(&sum) = holder.sum_cache.get(self) {
-            return sum;
-        }
-        let Zdd { value: _, lo, hi } = *holder.data[self.0].as_ref().expect("Invalid index!");
-        let sum = lo
-            .size(holder)
-            .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
-
-        holder.sum_cache.insert(*self, sum);
-        sum
     }
 }
 

@@ -1,3 +1,9 @@
+//! Defines various miscellaneous algorithms over [`SetFamily`]
+//!
+//! ## Finding minimal subsets according to summed weights:
+//!  - [`SetFamily::minimal_set_size`]
+//!  - [`SetFamily::minimal_sets`]
+//!  - [`SetFamily::only_minimal_sets`]
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     collections::HashMap,

@@ -20,6 +20,11 @@ fn cmp_tops<V: Ord>(a: SetFamily<V>, b: SetFamily<V>, holder: &ZddHolder<V>) -> 
 }
 
 impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
+    ///Performs join (Minato, 1994 refers to this as "product") over two family
+    ///subsets.
+    ///
+    ///It is defined as join(f, g) = { α ∪ β | α ∈ f, β ∈ g}
+    ///
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
@@ -65,22 +70,50 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         joined
     }
 
-    ///Does `self` / {`v`} in the unate cube algebra of Minato.
+    ///Does `self` / {`v`} in the unate cube set algebra of Minato, 1994.
+    ///
+    ///It is defined as f / x = { α - x | α ∈ f ∧ x ∈ α}
+    ///
     ///Identical to [`SetFamily::onset`]
     #[must_use]
     pub fn element_division(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         self.onset(value, holder)
     }
 
-    ///Does `self` % {`v`} in the unate cube algebra of Minato.
+    ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
+    ///
+    ///It is defined as f % x = { α | α ∉ f}
     #[must_use]
     pub fn element_remainder(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         self.offset(value, holder)
     }
 
+    /// The remainder of `self` divided by `other` according to the unate cub set algebra.
+    ///
+    /// For example, {abc,bc,ac}/{bc} = {a, {}}, so the remainder is {ac}. See [`SetFamily::divide`]
+    /// for more details.
+    ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
+    ///[`SetFamily::ZERO`] (the empty set)**.
+    #[must_use]
+    pub fn remainder(self, other: SetFamily<V>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+        self.difference(other.join(self.divide(other, holder), holder), holder)
+    }
+
+    ///Divides `self` by `other` according to the unate cube set algebra
+    ///of Minato,
+    ///
+    /// This is defined by the quality:  f = g * (f/g) + (f%g) where * is [`SetFamily::join`]
+    ///
+    /// It can also be understood as: f / g = ⋂{ { α - β | α ∈ f ∧  β ⊆ α} | β ∈ g }
+    ///
+    /// For example, {abc,bc,ac}/{bc} = {a, {}} and {abd,abe,abg,cd,ce,ch}/{ab,c} = {d,e}
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
+    ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
     pub fn divide(self, other: SetFamily<V>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
         if other.is_one() {
@@ -114,7 +147,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         if !r.is_zero() && !other_lo.is_zero() {
             let r_h = self.element_remainder(value, holder);
             let r_l = r_h.divide(other_lo, holder);
-            r = r_h.intersect(r_l, holder);
+            r = r.intersect(r_l, holder);
         }
 
         holder.cache.insert(op, r);
@@ -154,10 +187,23 @@ mod test {
     fn test_divide() {
         for (a, b, res) in [
             ("a  ", "a", " "),
-            ("abc bc ac", "bc", "a  "),
+            ("abc bc ac", "bc", "a "),
             ("ab ac a", "a", "b c "),
+            ("abd abe abg cd ce ch", "ab c", "d e"),
         ] {
             test_op(a, b, res, SetFamily::divide, "/");
+        }
+    }
+
+    #[test]
+    fn test_remainder() {
+        for (a, b, res) in [
+            ("a  ", "a", " "),
+            ("abc bc ac", "bc", "ac"),
+            ("ab ac a", "a", ""),
+            ("abd abe abg cd ce ch", "ab c", "abg ch"),
+        ] {
+            test_op(a, b, res, SetFamily::remainder, "%");
         }
     }
 }

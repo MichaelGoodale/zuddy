@@ -6,8 +6,8 @@ use std::{
     marker::PhantomData,
 };
 
-mod algebra;
-///Defines various miscellaneous algorithms over [`SetFamily`]
+///Defines algebraic manipulations of [`SetFamily`]s.
+pub mod algebra;
 pub mod algorithms;
 ///Defines iterators of various kinds over [`SetFamily`]
 pub mod iterators;
@@ -20,8 +20,6 @@ use algebra::Operations;
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
-///
-///
 #[derive(Debug)]
 pub struct SetFamily<V>(usize, PhantomData<V>);
 
@@ -59,8 +57,11 @@ impl<V> Ord for SetFamily<V> {
 }
 
 impl<V> SetFamily<V> {
-    const ZERO: Self = SetFamily(0, PhantomData);
-    const ONE: Self = SetFamily(1, PhantomData);
+    ///The empty set {}.
+    pub const ZERO: Self = SetFamily(0, PhantomData);
+
+    ///The family containing the empty set {{}}.
+    pub const ONE: Self = SetFamily(1, PhantomData);
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
