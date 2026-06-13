@@ -13,6 +13,8 @@ pub mod algorithms;
 pub mod iterators;
 mod utils;
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 #[cfg(feature = "sampling")]
 mod sampling;
 use ahash::RandomState;
@@ -21,7 +23,7 @@ use algebra::Operations;
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SetFamily<V>(usize, PhantomData<V>);
 
 impl<V> Copy for SetFamily<V> {}
@@ -65,7 +67,7 @@ impl<V> SetFamily<V> {
     pub const ONE: Self = SetFamily(1, PhantomData);
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 struct Zdd<V> {
     value: V,
     lo: SetFamily<V>,
@@ -85,8 +87,8 @@ impl<V> SetFamily<V> {
         holder.data[self.0].as_ref().map(|x| (&x.value, x.lo, x.hi))
     }
 }
-
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V> {
     free: Vec<usize>,

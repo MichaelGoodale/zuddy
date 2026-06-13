@@ -22,12 +22,14 @@
 //!
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
+use serde::{Deserialize, Serialize};
+
 use super::{SetFamily, Zdd, ZddHolder};
 use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
 //doubled.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub(super) enum Operations<V> {
     Change(SetFamily<V>, V),
     Offset(SetFamily<V>, V),
