@@ -417,6 +417,22 @@ mod test {
             check_valid_zdd(all_grammar, &holder);
         }
 
+        let mut min_size = usize::MAX;
+        let mut minimal_sets = vec![];
+        for s in all_grammar.members(&holder) {
+            let size = s.iter().map(|x| usize::from(x.weight)).sum::<usize>();
+            if size > min_size {
+                continue;
+            }
+            if size < min_size {
+                min_size = size;
+                minimal_sets = vec![];
+            }
+
+            minimal_sets.push(s.into_iter().collect::<BTreeSet<_>>());
+        }
+        minimal_sets.sort();
+
         let min_size = all_grammar
             .minimal_set_size(|x| usize::from(x.weight), &holder)
             .unwrap();
@@ -434,6 +450,9 @@ mod test {
             assert_eq!(size, MIN_GRAMMAR_SIZE);
             iterated_sets.push(g.into_iter().collect::<BTreeSet<_>>());
         }
+        iterated_sets.sort();
+        assert_eq!(iterated_sets, minimal_sets);
+
         let simple_grammar = all_grammar.only_minimal_sets(|x| usize::from(x.weight), &mut holder);
 
         let mut raw_sets = vec![];
@@ -444,8 +463,6 @@ mod test {
         }
 
         raw_sets.sort();
-        iterated_sets.sort();
-
-        assert_eq!(iterated_sets, raw_sets);
+        assert_eq!(raw_sets, minimal_sets);
     }
 }
