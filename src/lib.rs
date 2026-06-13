@@ -205,6 +205,37 @@ impl<V: Ord + Clone + Hash + Eq> SetFamily<V> {
 }
 
 #[cfg(test)]
+fn check_valid_zdd<V: Eq + Hash + Ord>(x: SetFamily<V>, holder: &ZddHolder<V>) {
+    if x.is_one() || x.is_zero() {
+        return;
+    }
+    let mut stack = vec![(x, BTreeSet::from([x]))];
+
+    while let Some((x, mut path)) = stack.pop() {
+        let (v, lo, hi) = x.get(holder).unwrap();
+
+        assert!(!hi.is_zero());
+
+        if !lo.is_zero() && !lo.is_one() {
+            let (lo_v, _, _) = lo.get(holder).unwrap();
+            assert!(lo_v > v);
+            let mut path = path.clone();
+            let not_already_included = path.insert(lo);
+            assert!(not_already_included);
+            stack.push((lo, path));
+        }
+
+        if !hi.is_one() {
+            let (hi_v, _, _) = hi.get(holder).unwrap();
+            assert!(hi_v > v);
+            let not_already_included = path.insert(hi);
+            assert!(not_already_included);
+            stack.push((hi, path));
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -234,6 +265,7 @@ mod tests {
         let mut holder = ZddHolder::<usize>::default();
         for x in combos_of_subsets {
             let set_zdd = SetFamily::from_sets(x.clone(), &mut holder);
+            check_valid_zdd(set_zdd, &holder);
             let reconstructed_set = set_zdd
                 .members(&holder)
                 .map(|x| x.into_iter().collect())
