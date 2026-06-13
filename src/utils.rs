@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt::{Display, Write},
-    hash::Hash,
+    hash::{BuildHasher, Hash},
 };
 
 use super::{SetFamily, Zdd, ZddHolder};
@@ -14,6 +14,23 @@ impl<V: Display> SetFamily<V> {
     ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
     #[must_use]
     pub fn graphviz(&self, holder: &ZddHolder<V>) -> String {
+        let extra = HashMap::new();
+        self.graphviz_with_extra::<char, _>(&extra, holder)
+    }
+
+    ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
+    ///
+    ///This includes extra data in `extra` which can be associated with each [`SetFamily`].
+    ///
+    ///# Panics
+    ///
+    ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
+    #[must_use]
+    pub fn graphviz_with_extra<T: Display, S: BuildHasher>(
+        &self,
+        extra: &HashMap<SetFamily<V>, T, S>,
+        holder: &ZddHolder<V>,
+    ) -> String {
         let mut s = String::new();
         writeln!(s, "digraph DAG {{\n  node [ordering=\"out\"];").unwrap();
         let mut q = VecDeque::from([self]);
@@ -38,7 +55,11 @@ impl<V: Display> SetFamily<V> {
         }
 
         for (n, i) in nodes {
-            writeln!(s, "  {} [label=\"{}\"];", n.0, i).unwrap();
+            if let Some(x) = extra.get(n) {
+                writeln!(s, "  {} [label=\"{} ({})\"];", n.0, i, x).unwrap();
+            } else {
+                writeln!(s, "  {} [label=\"{}\"];", n.0, i).unwrap();
+            }
         }
 
         for (src, end, style) in edges {

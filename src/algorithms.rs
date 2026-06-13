@@ -4,12 +4,7 @@
 //!  - [`SetFamily::minimal_set_size`]
 //!  - [`SetFamily::minimal_sets`]
 //!  - [`SetFamily::only_minimal_sets`]
-use std::{
-    cmp::Ordering::{Equal, Greater, Less},
-    collections::HashMap,
-    fmt::Debug,
-    hash::Hash,
-};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
 use crate::Zdd;
 
@@ -120,13 +115,19 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
         f: F,
         holder: &mut ZddHolder<V>,
     ) -> SetFamily<V> {
+        if self.is_zero() || self.is_one() {
+            return self;
+        }
+
         let min_cost_lookup = self.minimal_set_inner(f, holder);
-        self.only_minimal_sets_inner(holder, &min_cost_lookup)
+        let overall_min = min_cost_lookup.get(&self).unwrap().unwrap();
+        self.only_minimal_sets_inner(holder, overall_min, &min_cost_lookup)
     }
 
     fn only_minimal_sets_inner(
         self,
         holder: &mut ZddHolder<V>,
+        overall_min: usize,
         min_cost_lookup: &HashMap<SetFamily<V>, Option<usize>>,
     ) -> SetFamily<V> {
         if self.is_zero() || self.is_one() {
@@ -134,38 +135,43 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
         }
 
         let (v, lo, hi) = self.get(holder).unwrap();
-        let Some(hi_w) = *min_cost_lookup.get(&hi).unwrap() else {
-            //if its None its impossible to add so delete the edge
-            return SetFamily::ZERO;
-        };
-        if let Some(lo_w) = *min_cost_lookup.get(&lo).unwrap() {
-            match lo_w.cmp(&hi_w) {
-                Less => lo.only_minimal_sets_inner(holder, min_cost_lookup),
-                Greater => {
+
+        match (
+            min_cost_lookup.get(&lo).unwrap(),
+            min_cost_lookup.get(&hi).unwrap(),
+        ) {
+            (None, Some(hi_w)) if hi_w <= &overall_min => {
+                let z = Zdd {
+                    value: v.clone(),
+                    lo: SetFamily::ZERO,
+                    hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                };
+                holder.get_node(z)
+            }
+            (Some(lo_w), None) if lo_w <= &overall_min => {
+                lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup)
+            }
+            (Some(lo_w), Some(hi_w)) => match (lo_w <= &overall_min, hi_w <= &overall_min) {
+                (true, true) => {
+                    let z = Zdd {
+                        value: v.clone(),
+                        lo: lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                        hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                    };
+                    holder.get_node(z)
+                }
+                (false, true) => {
                     let z = Zdd {
                         value: v.clone(),
                         lo: SetFamily::ZERO,
-                        hi: hi.only_minimal_sets_inner(holder, min_cost_lookup),
+                        hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
                     };
                     holder.get_node(z)
                 }
-                Equal => {
-                    let z = Zdd {
-                        value: v.clone(),
-                        lo: lo.only_minimal_sets_inner(holder, min_cost_lookup),
-                        hi: hi.only_minimal_sets_inner(holder, min_cost_lookup),
-                    };
-
-                    holder.get_node(z)
-                }
-            }
-        } else {
-            let z = Zdd {
-                value: v.clone(),
-                lo: SetFamily::ZERO,
-                hi: hi.only_minimal_sets_inner(holder, min_cost_lookup),
-            };
-            holder.get_node(z)
+                (true, false) => lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                (false, false) => SetFamily::ZERO,
+            },
+            _ => SetFamily::ZERO,
         }
     }
 }
@@ -192,6 +198,8 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
     type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self.min_cost?;
+
         while let Some((this, mut path)) = self.stack.pop() {
             if this.is_zero() {
                 continue;
@@ -202,26 +210,36 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
 
             let (v, lo, hi) = this.get(self.holder).unwrap();
 
-            let Some(hi_w) = self.minimum_cost_lookup.get(&hi).unwrap() else {
-                continue;
-            };
-
-            if let Some(lo_w) = *self.minimum_cost_lookup.get(&lo).unwrap() {
-                match lo_w.cmp(hi_w) {
-                    Less => self.stack.push((lo, path)),
-                    Equal => {
-                        self.stack.push((lo, path.clone()));
-                        path.push(v.clone());
-                        self.stack.push((hi, path));
-                    }
-                    Greater => {
-                        path.push(v.clone());
-                        self.stack.push((hi, path));
+            match (
+                self.minimum_cost_lookup.get(&lo).unwrap(),
+                self.minimum_cost_lookup.get(&hi).unwrap(),
+            ) {
+                (None, Some(hi_w)) if hi_w <= &self.min_cost.unwrap() => {
+                    path.push(v.clone());
+                    self.stack.push((hi, path));
+                }
+                (Some(lo_w), None) if lo_w <= &self.min_cost.unwrap() => {
+                    self.stack.push((lo, path));
+                }
+                (Some(lo_w), Some(hi_w)) => {
+                    match (
+                        lo_w <= &self.min_cost.unwrap(),
+                        hi_w <= &self.min_cost.unwrap(),
+                    ) {
+                        (true, true) => {
+                            self.stack.push((lo, path.clone()));
+                            path.push(v.clone());
+                            self.stack.push((hi, path));
+                        }
+                        (false, true) => {
+                            path.push(v.clone());
+                            self.stack.push((hi, path));
+                        }
+                        (true, false) => self.stack.push((lo, path)),
+                        (false, false) => (),
                     }
                 }
-            } else {
-                path.push(v.clone());
-                self.stack.push((hi, path));
+                _ => (),
             }
         }
         None
@@ -234,59 +252,71 @@ mod test {
 
     use super::*;
 
-    const LOREM: &str = "LOREM IPSUM DOLOR SIT AMET CONSECTETUR ADIPISCING ELIT";
+    const SETS: &str = "ABCD ABCE EFG GH";
 
     #[expect(clippy::trivially_copy_pass_by_ref)]
-    fn alphabet_pos(c: &char) -> usize {
-        usize::from(*c as u8 - b'A' + 1)
+    fn char_value(c: &char) -> usize {
+        match c {
+            'A' | 'C' => 1,
+            'B' => 2,
+            'D' | 'E' => 4,
+            'F' => 50,
+            'G' => 0,
+            'H' => 45,
+            _ => 999,
+        }
     }
 
     #[test]
     fn minimum_cost_test() {
-        let lorem_sets = LOREM
+        let lorem_sets = SETS
             .split(' ')
             .map(|x| x.chars().collect::<BTreeSet<_>>())
             .collect::<BTreeSet<_>>();
 
-        let (n, smallest_word) = lorem_sets
+        let n = lorem_sets
             .iter()
-            .map(|x| {
-                (
-                    x.iter().map(alphabet_pos).sum::<usize>(),
-                    x.iter().collect::<String>(),
-                )
-            })
+            .map(|x| x.iter().map(char_value).sum::<usize>())
             .min()
             .unwrap();
+        let mins = lorem_sets
+            .iter()
+            .filter(|x| x.iter().map(char_value).sum::<usize>() == n)
+            .cloned()
+            .collect::<Vec<_>>();
 
         let mut holder = ZddHolder::new();
         let lorem = SetFamily::from_sets(lorem_sets, &mut holder);
 
-        assert_eq!(lorem.minimal_set_size(alphabet_pos, &holder).unwrap(), n);
+        assert_eq!(lorem.minimal_set_size(char_value, &holder).unwrap(), n);
 
-        let sets = lorem
-            .minimal_sets(alphabet_pos, &holder)
-            .map(|x| {
-                x.into_iter()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<String>()
+        let min_sets = lorem.minimal_sets(char_value, &holder);
+        let display: HashMap<_, _> = min_sets
+            .minimum_cost_lookup
+            .iter()
+            .map(|(k, v)| {
+                (
+                    *k,
+                    match v {
+                        Some(x) => x.to_string(),
+                        None => "+∞".to_string(),
+                    },
+                )
             })
+            .collect();
+        println!("{}", lorem.graphviz_with_extra(&display, &holder));
+        let sets = min_sets
+            .map(|x| x.into_iter().collect::<BTreeSet<_>>())
             .collect::<Vec<_>>();
 
-        assert_eq!(sets, vec![smallest_word.clone()]);
+        assert_eq!(sets, mins);
 
         let restricted_lorem = lorem
-            .only_minimal_sets(alphabet_pos, &mut holder)
+            .only_minimal_sets(char_value, &mut holder)
             .members(&holder)
-            .map(|x| {
-                x.into_iter()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<String>()
-            })
+            .map(|x| x.into_iter().collect::<BTreeSet<_>>())
             .collect::<Vec<_>>();
 
-        assert_eq!(restricted_lorem, vec![smallest_word]);
+        assert_eq!(restricted_lorem, mins);
     }
 }
