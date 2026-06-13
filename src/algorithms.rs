@@ -4,7 +4,11 @@
 //!  - [`SetFamily::minimal_set_size`]
 //!  - [`SetFamily::minimal_sets`]
 //!  - [`SetFamily::only_minimal_sets`]
-use std::{collections::HashMap, fmt::Debug, hash::Hash};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    hash::Hash,
+};
 
 use crate::Zdd;
 
@@ -15,16 +19,67 @@ enum OptimizationFrame<V> {
     Climb(SetFamily<V>),
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
+enum UsizeOrPositiveInfinity {
+    Size(usize),
+    PositiveInfinity,
+}
+
+impl From<UsizeOrPositiveInfinity> for Option<usize> {
+    fn from(value: UsizeOrPositiveInfinity) -> Self {
+        match value {
+            UsizeOrPositiveInfinity::Size(x) => Some(x),
+            UsizeOrPositiveInfinity::PositiveInfinity => None,
+        }
+    }
+}
+
+impl UsizeOrPositiveInfinity {
+    fn add(self, x: usize) -> Self {
+        match self {
+            UsizeOrPositiveInfinity::Size(s) => UsizeOrPositiveInfinity::Size(x + s),
+            UsizeOrPositiveInfinity::PositiveInfinity => UsizeOrPositiveInfinity::PositiveInfinity,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
+struct MinWeightCost {
+    min_set_weight: UsizeOrPositiveInfinity,
+    element_weight: usize,
+}
+
+impl Display for MinWeightCost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "f(e)={}, min_set_weight=", self.element_weight)?;
+        match self.min_set_weight {
+            UsizeOrPositiveInfinity::Size(x) => write!(f, "{x}"),
+            UsizeOrPositiveInfinity::PositiveInfinity => write!(f, "+∞"),
+        }
+    }
+}
+
+impl MinWeightCost {
+    const INFINITY: Self = MinWeightCost {
+        min_set_weight: UsizeOrPositiveInfinity::PositiveInfinity,
+        element_weight: 0,
+    };
+    const ZERO: Self = MinWeightCost {
+        min_set_weight: UsizeOrPositiveInfinity::Size(0),
+        element_weight: 0,
+    };
+}
+
 impl<V> SetFamily<V> {
     fn minimal_set_inner<F: Fn(&V) -> usize>(
         self,
         f: F,
         holder: &ZddHolder<V>,
-    ) -> HashMap<SetFamily<V>, Option<usize>> {
-        let mut minimum_cost: HashMap<SetFamily<V>, Option<usize>> = HashMap::default();
+    ) -> HashMap<SetFamily<V>, MinWeightCost> {
+        let mut minimum_cost: HashMap<SetFamily<V>, MinWeightCost> = HashMap::default();
         //None here is semantically positive infinity
-        minimum_cost.insert(SetFamily::ZERO, None);
-        minimum_cost.insert(SetFamily::ONE, Some(0));
+        minimum_cost.insert(SetFamily::ZERO, MinWeightCost::INFINITY);
+        minimum_cost.insert(SetFamily::ONE, MinWeightCost::ZERO);
         let mut stack = vec![OptimizationFrame::Search(self)];
 
         while let Some(x) = stack.pop() {
@@ -42,16 +97,24 @@ impl<V> SetFamily<V> {
                 }
                 OptimizationFrame::Climb(this) => {
                     let (v, lo, hi) = this.get(holder).unwrap();
-                    let lo_w = *minimum_cost.get(&lo).unwrap();
-                    let hi_w = minimum_cost.get(&hi).unwrap().map(|w| w + f(v));
+                    let lo_w = minimum_cost.get(&lo).unwrap().min_set_weight;
 
-                    let v = match (hi_w, lo_w) {
-                        (None, None) => None,
-                        (None, Some(x)) | (Some(x), None) => Some(x),
-                        (Some(x), Some(y)) => Some(x.min(y)),
-                    };
+                    let element_weight = f(v);
+                    let hi_w = minimum_cost
+                        .get(&hi)
+                        .unwrap()
+                        .min_set_weight
+                        .add(element_weight);
 
-                    minimum_cost.insert(this, v);
+                    let min_set_weight = hi_w.min(lo_w);
+
+                    minimum_cost.insert(
+                        this,
+                        MinWeightCost {
+                            min_set_weight,
+                            element_weight,
+                        },
+                    );
                 }
             }
         }
@@ -77,7 +140,7 @@ impl<V> SetFamily<V> {
 
         let minimum_cost = self.minimal_set_inner(f, holder);
 
-        *minimum_cost.get(self).unwrap()
+        minimum_cost.get(self).unwrap().min_set_weight.into()
     }
 
     /// Returns a [`MinimalSetIterator`] which iterates over the minimal sets by summed weight of the family.
@@ -92,7 +155,7 @@ impl<V> SetFamily<V> {
         holder: &ZddHolder<V>,
     ) -> MinimalSetIterator<'_, V> {
         let minimum_cost_lookup = self.minimal_set_inner(f, holder);
-        let min_cost = *minimum_cost_lookup.get(&self).unwrap();
+        let min_cost = minimum_cost_lookup.get(&self).unwrap().min_set_weight;
 
         MinimalSetIterator {
             stack: vec![(self, vec![])],
@@ -120,27 +183,40 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
         }
 
         let min_cost_lookup = self.minimal_set_inner(f, holder);
-        let overall_min = min_cost_lookup.get(&self).unwrap().unwrap();
+        let overall_min = min_cost_lookup.get(&self).unwrap().min_set_weight;
         self.only_minimal_sets_inner(holder, overall_min, &min_cost_lookup)
     }
 
     fn only_minimal_sets_inner(
         self,
         holder: &mut ZddHolder<V>,
-        overall_min: usize,
-        min_cost_lookup: &HashMap<SetFamily<V>, Option<usize>>,
+        overall_min: UsizeOrPositiveInfinity,
+        min_cost_lookup: &HashMap<SetFamily<V>, MinWeightCost>,
     ) -> SetFamily<V> {
         if self.is_zero() || self.is_one() {
             return self;
         }
 
         let (v, lo, hi) = self.get(holder).unwrap();
+        let element_weight = min_cost_lookup.get(&self).unwrap().element_weight;
 
-        match (
-            min_cost_lookup.get(&lo).unwrap(),
-            min_cost_lookup.get(&hi).unwrap(),
-        ) {
-            (None, Some(hi_w)) if hi_w <= &overall_min => {
+        let lo_w = min_cost_lookup.get(&lo).unwrap().min_set_weight;
+        let hi_w = min_cost_lookup
+            .get(&hi)
+            .unwrap()
+            .min_set_weight
+            .add(element_weight);
+
+        match (lo_w <= overall_min, hi_w <= overall_min) {
+            (true, true) => {
+                let z = Zdd {
+                    value: v.clone(),
+                    lo: lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                    hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+                };
+                holder.get_node(z)
+            }
+            (false, true) => {
                 let z = Zdd {
                     value: v.clone(),
                     lo: SetFamily::ZERO,
@@ -148,30 +224,8 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
                 };
                 holder.get_node(z)
             }
-            (Some(lo_w), None) if lo_w <= &overall_min => {
-                lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup)
-            }
-            (Some(lo_w), Some(hi_w)) => match (lo_w <= &overall_min, hi_w <= &overall_min) {
-                (true, true) => {
-                    let z = Zdd {
-                        value: v.clone(),
-                        lo: lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
-                        hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
-                    };
-                    holder.get_node(z)
-                }
-                (false, true) => {
-                    let z = Zdd {
-                        value: v.clone(),
-                        lo: SetFamily::ZERO,
-                        hi: hi.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
-                    };
-                    holder.get_node(z)
-                }
-                (true, false) => lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
-                (false, false) => SetFamily::ZERO,
-            },
-            _ => SetFamily::ZERO,
+            (true, false) => lo.only_minimal_sets_inner(holder, overall_min, min_cost_lookup),
+            (false, false) => SetFamily::ZERO,
         }
     }
 }
@@ -182,15 +236,15 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
 pub struct MinimalSetIterator<'a, V> {
     stack: Vec<(SetFamily<V>, Vec<V>)>,
     holder: &'a ZddHolder<V>,
-    minimum_cost_lookup: HashMap<SetFamily<V>, Option<usize>>,
-    min_cost: Option<usize>,
+    minimum_cost_lookup: HashMap<SetFamily<V>, MinWeightCost>,
+    min_cost: UsizeOrPositiveInfinity,
 }
 
 impl<V> MinimalSetIterator<'_, V> {
     ///Find the minimal cost of all sets.
     #[must_use]
     pub fn min_cost(&self) -> Option<usize> {
-        self.min_cost
+        self.min_cost.into()
     }
 }
 
@@ -198,7 +252,9 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
     type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.min_cost?;
+        if self.min_cost == UsizeOrPositiveInfinity::PositiveInfinity {
+            return None;
+        }
 
         while let Some((this, mut path)) = self.stack.pop() {
             if this.is_zero() {
@@ -209,37 +265,27 @@ impl<V: Clone + Debug> Iterator for MinimalSetIterator<'_, V> {
             }
 
             let (v, lo, hi) = this.get(self.holder).unwrap();
+            let element_weight = self.minimum_cost_lookup.get(&this).unwrap().element_weight;
+            let lo_w = self.minimum_cost_lookup.get(&lo).unwrap().min_set_weight;
+            let hi_w = self
+                .minimum_cost_lookup
+                .get(&hi)
+                .unwrap()
+                .min_set_weight
+                .add(element_weight);
 
-            match (
-                self.minimum_cost_lookup.get(&lo).unwrap(),
-                self.minimum_cost_lookup.get(&hi).unwrap(),
-            ) {
-                (None, Some(hi_w)) if hi_w <= &self.min_cost.unwrap() => {
+            match (lo_w <= self.min_cost, hi_w <= self.min_cost) {
+                (true, true) => {
+                    self.stack.push((lo, path.clone()));
                     path.push(v.clone());
                     self.stack.push((hi, path));
                 }
-                (Some(lo_w), None) if lo_w <= &self.min_cost.unwrap() => {
-                    self.stack.push((lo, path));
+                (false, true) => {
+                    path.push(v.clone());
+                    self.stack.push((hi, path));
                 }
-                (Some(lo_w), Some(hi_w)) => {
-                    match (
-                        lo_w <= &self.min_cost.unwrap(),
-                        hi_w <= &self.min_cost.unwrap(),
-                    ) {
-                        (true, true) => {
-                            self.stack.push((lo, path.clone()));
-                            path.push(v.clone());
-                            self.stack.push((hi, path));
-                        }
-                        (false, true) => {
-                            path.push(v.clone());
-                            self.stack.push((hi, path));
-                        }
-                        (true, false) => self.stack.push((lo, path)),
-                        (false, false) => (),
-                    }
-                }
-                _ => (),
+                (true, false) => self.stack.push((lo, path)),
+                (false, false) => (),
             }
         }
         None
@@ -268,6 +314,18 @@ mod test {
     }
 
     #[test]
+    fn ordering_of_usize_with_inf() {
+        assert!(
+            UsizeOrPositiveInfinity::PositiveInfinity > UsizeOrPositiveInfinity::Size(usize::MAX)
+        );
+        assert!(
+            UsizeOrPositiveInfinity::PositiveInfinity == UsizeOrPositiveInfinity::PositiveInfinity
+        );
+        assert!(UsizeOrPositiveInfinity::Size(3) > UsizeOrPositiveInfinity::Size(0));
+        assert!(UsizeOrPositiveInfinity::Size(0) == UsizeOrPositiveInfinity::Size(0));
+    }
+
+    #[test]
     fn minimum_cost_test() {
         let lorem_sets = SETS
             .split(' ')
@@ -291,20 +349,10 @@ mod test {
         assert_eq!(lorem.minimal_set_size(char_value, &holder).unwrap(), n);
 
         let min_sets = lorem.minimal_sets(char_value, &holder);
-        let display: HashMap<_, _> = min_sets
-            .minimum_cost_lookup
-            .iter()
-            .map(|(k, v)| {
-                (
-                    *k,
-                    match v {
-                        Some(x) => x.to_string(),
-                        None => "+∞".to_string(),
-                    },
-                )
-            })
-            .collect();
-        println!("{}", lorem.graphviz_with_extra(&display, &holder));
+        println!(
+            "{}",
+            lorem.graphviz_with_extra(&min_sets.minimum_cost_lookup, &holder)
+        );
         let sets = min_sets
             .map(|x| x.into_iter().collect::<BTreeSet<_>>())
             .collect::<Vec<_>>();
