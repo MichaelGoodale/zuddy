@@ -1,6 +1,6 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
@@ -96,24 +96,25 @@ impl<V> SetFamily<V> {
         if self.is_zero() || self.is_one() {
             1
         } else {
-            let mut count_cache = HashMap::<SetFamily<V>, usize, RandomState>::default();
-            self.n_nodes_inner(&mut count_cache, holder)
+            let mut edge_cache = HashSet::<SetFamily<V>, RandomState>::default();
+            self.n_nodes_inner(&mut edge_cache, holder);
+            edge_cache.len()
         }
     }
     fn n_nodes_inner(
         self,
-        count_cache: &mut HashMap<SetFamily<V>, usize, RandomState>,
+        count_cache: &mut HashSet<SetFamily<V>, RandomState>,
         holder: &ZddHolder<V>,
-    ) -> usize {
-        if self.is_zero() || self.is_one() {
-            1
-        } else if let Some(r) = count_cache.get(&self) {
-            *r
-        } else {
-            let (_, lo, hi) = self.get(holder).unwrap();
-            let res = lo.n_nodes(holder) + hi.n_nodes(holder) + 1;
-            count_cache.insert(self, res);
-            res
+    ) {
+        if !count_cache.contains(&self) {
+            if self.is_zero() || self.is_one() {
+                count_cache.insert(self);
+            } else {
+                let (_, lo, hi) = self.get(holder).unwrap();
+                lo.n_nodes_inner(count_cache, holder);
+                hi.n_nodes_inner(count_cache, holder);
+                count_cache.insert(self);
+            }
         }
     }
 }
