@@ -7,7 +7,7 @@ use dashmap::{
 };
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use crate::{SetFamily, Zdd, ZddHolder, free_id};
+use crate::{RawZdd, Zdd, ZddHolder, free_id};
 
 ///A ZDD used for local variables within a library function.
 #[derive(Debug)]
@@ -17,14 +17,14 @@ pub(crate) struct InternalZdd<'a, V: Eq + Hash> {
 }
 
 impl<'a, V: Eq + Hash> InternalZdd<'a, V> {
-    fn from_set_family(s: SetFamily<V>, manager: &'a ZddHolder<V>) -> InternalZdd<'a, V> {
-        let SetFamily(id, _) = s;
+    fn from_set_family(s: RawZdd<V>, manager: &'a ZddHolder<V>) -> InternalZdd<'a, V> {
+        let RawZdd(id, _) = s;
         match manager.pools.referenced_variables.entry(id) {
             Occupied(mut oc) => *oc.get_mut() += 1,
             Vacant(vac) => {
                 vac.insert(1);
             }
-        };
+        }
 
         InternalZdd { id, manager }
     }
@@ -87,8 +87,8 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self.pools.pools.clone()
     }
 
-    pub(crate) fn get_node<'a>(&'a self, family: Zdd<V>) -> InternalZdd<'a, V> {
-        if family.hi == SetFamily::ZERO {
+    pub(crate) fn get_node(&self, family: Zdd<V>) -> InternalZdd<'_, V> {
+        if family.hi == RawZdd::ZERO {
             return InternalZdd::from_set_family(family.lo, self);
         }
 

@@ -1,4 +1,4 @@
-use crate::{SetFamily, ZddHolder};
+use crate::{RawZdd, ZddHolder};
 use dashmap::DashSet;
 use rayon::prelude::*;
 use std::{fmt::Debug, hash::Hash, marker::PhantomData};
@@ -28,7 +28,7 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
                 .enumerate()
                 .skip(2)
                 .filter_map(|(i, x)| {
-                    if marked.contains(&SetFamily(i, PhantomData)) {
+                    if marked.contains(&RawZdd(i, PhantomData)) {
                         None
                     } else {
                         *x = None;
@@ -43,14 +43,14 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
                 .unwrap()
                 .par_iter()
                 .enumerate()
-                .filter_map(|(i, x)| x.as_ref().map(|x| (x.clone(), SetFamily(i, PhantomData)))),
+                .filter_map(|(i, x)| x.as_ref().map(|x| (x.clone(), RawZdd(i, PhantomData)))),
         );
     }
 }
 
 fn mark<V: Send + Sync + Eq + Hash>(
-    to_mark: SetFamily<V>,
-    marked: &DashSet<SetFamily<V>>,
+    to_mark: RawZdd<V>,
+    marked: &DashSet<RawZdd<V>>,
     holder: &ZddHolder<V>,
 ) {
     if !marked.contains(&to_mark) {
@@ -61,7 +61,7 @@ fn mark<V: Send + Sync + Eq + Hash>(
     }
 }
 
-impl<V: Eq + Hash> SetFamily<V> {
+impl<V: Eq + Hash> RawZdd<V> {
     ///Mark a node as protected from garbage collection.
     pub fn protect(&self, holder: &mut ZddHolder<V>) {
         holder.protected.insert(*self);

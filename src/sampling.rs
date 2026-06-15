@@ -3,7 +3,7 @@ use std::hash::Hash;
 use rand::Rng;
 use rand::prelude::*;
 
-use crate::{SetFamily, ZddHolder};
+use crate::{RawZdd, ZddHolder};
 
 enum EdgeType {
     Lo,
@@ -11,8 +11,8 @@ enum EdgeType {
 }
 
 fn choose_lo_or_hi<V: Hash + Eq + Ord + Clone>(
-    lo: SetFamily<V>,
-    hi: SetFamily<V>,
+    lo: RawZdd<V>,
+    hi: RawZdd<V>,
     rng: &mut impl Rng,
     holder: &mut ZddHolder<V>,
 ) -> EdgeType {
@@ -33,13 +33,13 @@ fn choose_lo_or_hi<V: Hash + Eq + Ord + Clone>(
     }
 }
 
-impl<V: Hash + Eq + Ord + Clone> SetFamily<V> {
+impl<V: Hash + Eq + Ord + Clone> RawZdd<V> {
     ///Randomly samples from the [`SetFamily`] according to a uniform distribution.
     ///
     ///# Panics
     /// - If trying to sample from an empty family.
     /// - May panic if the number of possible paths is too large to be represented as a usize
-    pub fn sample(mut self: SetFamily<V>, rng: &mut impl Rng, holder: &mut ZddHolder<V>) -> Vec<V> {
+    pub fn sample(mut self: RawZdd<V>, rng: &mut impl Rng, holder: &mut ZddHolder<V>) -> Vec<V> {
         assert!(!self.is_zero(), "Cannot sample from the empty set!");
         let mut path = vec![];
         while !self.is_zero() && !self.is_one() {
@@ -61,7 +61,7 @@ mod test {
     use rand::prelude::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    use crate::{SetFamily, ZddHolder};
+    use crate::{RawZdd, ZddHolder};
 
     #[expect(clippy::cast_precision_loss)]
     fn chi_squared_uniform(counts: &[usize]) -> bool {
@@ -105,7 +105,7 @@ mod test {
             .collect::<BTreeMap<_, _>>();
 
         let mut holder = ZddHolder::new();
-        let set = SetFamily::from_sets(sets, &mut holder);
+        let set = RawZdd::from_sets(sets, &mut holder);
         let mut rng = rand::rngs::StdRng::seed_from_u64(0);
         for _ in 0..1000 {
             let sample = set

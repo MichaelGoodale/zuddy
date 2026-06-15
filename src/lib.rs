@@ -26,78 +26,84 @@ mod garbage;
 mod parallelism;
 use parallelism::ZddThreadPool;
 
+pub struct SetFamily<'a, V: Eq + Hash> {
+    id: usize,
+    phantom: PhantomData<V>,
+    manager: &'a ZddHolder<V>,
+}
+
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetFamily<V>(usize, PhantomData<V>);
+pub struct RawZdd<V>(usize, PhantomData<V>);
 
-impl<V> Copy for SetFamily<V> {}
+impl<V> Copy for RawZdd<V> {}
 
-impl<V> Clone for SetFamily<V> {
+impl<V> Clone for RawZdd<V> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<V> PartialEq for SetFamily<V> {
+impl<V> PartialEq for RawZdd<V> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<V> Hash for SetFamily<V> {
+impl<V> Hash for RawZdd<V> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl<V> Eq for SetFamily<V> {}
+impl<V> Eq for RawZdd<V> {}
 
-impl<V> PartialOrd for SetFamily<V> {
+impl<V> PartialOrd for RawZdd<V> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<V> Ord for SetFamily<V> {
+impl<V> Ord for RawZdd<V> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl<V> SetFamily<V> {
+impl<V> RawZdd<V> {
     ///The empty set {}.
-    pub const ZERO: Self = SetFamily(0, PhantomData);
+    pub const ZERO: Self = RawZdd(0, PhantomData);
 
     ///The family containing the empty set {{}}.
-    pub const ONE: Self = SetFamily(1, PhantomData);
+    pub const ONE: Self = RawZdd(1, PhantomData);
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 struct Zdd<V> {
     value: V,
-    lo: SetFamily<V>,
-    hi: SetFamily<V>,
+    lo: RawZdd<V>,
+    hi: RawZdd<V>,
 }
 
-impl<V: Eq + Hash + Clone> SetFamily<V> {
-    fn get(self, holder: &ZddHolder<V>) -> Option<(V, SetFamily<V>, SetFamily<V>)> {
+impl<V: Eq + Hash + Clone> RawZdd<V> {
+    fn get(self, holder: &ZddHolder<V>) -> Option<(V, RawZdd<V>, RawZdd<V>)> {
         holder.data.read().unwrap()[self.0]
             .as_ref()
             .map(|x| (x.value.clone(), x.lo, x.hi))
     }
 }
 
-impl<V: Eq + Hash> SetFamily<V> {
+impl<V: Eq + Hash> RawZdd<V> {
     fn is_zero(self) -> bool {
-        self == SetFamily::ZERO
+        self == RawZdd::ZERO
     }
 
     fn is_one(self) -> bool {
-        self == SetFamily::ONE
+        self == RawZdd::ONE
     }
 
-    fn children(self, holder: &ZddHolder<V>) -> Option<(SetFamily<V>, SetFamily<V>)> {
+    fn children(self, holder: &ZddHolder<V>) -> Option<(RawZdd<V>, RawZdd<V>)> {
         holder.data.read().unwrap()[self.0]
             .as_ref()
             .map(|x| (x.lo, x.hi))
@@ -112,14 +118,14 @@ impl<V: Eq + Hash> SetFamily<V> {
         if self.is_zero() || self.is_one() {
             1
         } else {
-            let mut edge_cache = HashSet::<SetFamily<V>, RandomState>::default();
+            let mut edge_cache = HashSet::<RawZdd<V>, RandomState>::default();
             self.n_nodes_inner(&mut edge_cache, holder);
             edge_cache.len()
         }
     }
     fn n_nodes_inner(
         self,
-        count_cache: &mut HashSet<SetFamily<V>, RandomState>,
+        count_cache: &mut HashSet<RawZdd<V>, RandomState>,
         holder: &ZddHolder<V>,
     ) {
         if !count_cache.contains(&self) {
@@ -141,63 +147,20 @@ impl<V: Eq + Hash> SetFamily<V> {
 pub struct ZddHolder<V: Eq + Hash> {
     #[serde(default, skip)]
     pools: ZddThreadPool,
-    #[serde(with = "arc_mutex_serde")]
     free: Arc<Mutex<Vec<usize>>>,
-    protected: BTreeSet<SetFamily<V>>,
-    #[serde(with = "arc_rwlock_serde")]
+    protected: BTreeSet<RawZdd<V>>,
     data: Arc<RwLock<Vec<Option<Zdd<V>>>>>,
-    uniq_table: DashMap<Zdd<V>, SetFamily<V>, RandomState>,
-    cache: HashMap<Operations<V>, SetFamily<V>, RandomState>,
-    sum_cache: HashMap<SetFamily<V>, Option<usize>, RandomState>,
+    uniq_table: DashMap<Zdd<V>, RawZdd<V>, RandomState>,
+    cache: HashMap<Operations<V>, RawZdd<V>, RandomState>,
+    sum_cache: HashMap<RawZdd<V>, Option<usize>, RandomState>,
 }
 
-mod arc_mutex_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::sync::{Arc, Mutex};
-
-    pub fn serialize<S, T>(val: &Arc<Mutex<T>>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        T: Serialize,
-    {
-        val.lock().unwrap().serialize(s)
-    }
-
-    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<Mutex<T>>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        Ok(Arc::new(Mutex::new(T::deserialize(d)?)))
-    }
-}
-
-mod arc_rwlock_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::sync::{Arc, RwLock};
-
-    pub fn serialize<S, T>(val: &Arc<RwLock<T>>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        T: Serialize,
-    {
-        val.serialize(s)
-    }
-
-    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<RwLock<T>>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        Ok(Arc::new(RwLock::new(T::deserialize(d)?)))
-    }
-}
-fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> SetFamily<V> {
+fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> RawZdd<V> {
     if let Some(x) = free.pop() {
-        SetFamily(x, PhantomData)
+        RawZdd(x, PhantomData)
     } else {
         data.push(None);
-        SetFamily(data.len() - 1, PhantomData)
+        RawZdd(data.len() - 1, PhantomData)
     }
 }
 
@@ -253,8 +216,8 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         }
     }
 
-    fn get_node_seq(&mut self, family: Zdd<V>) -> SetFamily<V> {
-        if family.hi == SetFamily::ZERO {
+    fn get_node_seq(&mut self, family: Zdd<V>) -> RawZdd<V> {
+        if family.hi == RawZdd::ZERO {
             return family.lo;
         }
 
@@ -269,7 +232,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 }
 
-impl<V: Ord + Clone + Hash + Eq> SetFamily<V> {
+impl<V: Ord + Clone + Hash + Eq> RawZdd<V> {
     ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
     ///
     ///```
@@ -281,14 +244,14 @@ impl<V: Ord + Clone + Hash + Eq> SetFamily<V> {
     ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
     ///assert_eq!(members, sets);
     ///```
-    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if sets.is_empty() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
 
         #[expect(clippy::missing_panics_doc)]
         if sets.len() == 1 && sets.first().unwrap().is_empty() {
-            return SetFamily::ONE;
+            return RawZdd::ONE;
         }
 
         //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
@@ -305,15 +268,15 @@ impl<V: Ord + Clone + Hash + Eq> SetFamily<V> {
 
         let without_min_val = sets;
 
-        let lo = SetFamily::from_sets(without_min_val, holder);
-        let hi = SetFamily::from_sets(with_min_val, holder);
+        let lo = RawZdd::from_sets(without_min_val, holder);
+        let hi = RawZdd::from_sets(with_min_val, holder);
 
         holder.get_node_seq(Zdd { value, lo, hi })
     }
 }
 
 #[cfg(test)]
-fn check_valid_zdd<V: Eq + Hash + Ord + Clone>(x: SetFamily<V>, holder: &ZddHolder<V>) {
+fn check_valid_zdd<V: Eq + Hash + Ord + Clone>(x: RawZdd<V>, holder: &ZddHolder<V>) {
     if x.is_one() || x.is_zero() {
         return;
     }
@@ -372,7 +335,7 @@ mod tests {
         let combos_of_subsets = all_subsets(&subsets);
         let mut holder = ZddHolder::<usize>::default();
         for x in combos_of_subsets {
-            let set_zdd = SetFamily::from_sets(x.clone(), &mut holder);
+            let set_zdd = RawZdd::from_sets(x.clone(), &mut holder);
             check_valid_zdd(set_zdd, &holder);
             let reconstructed_set = set_zdd
                 .members(&holder)

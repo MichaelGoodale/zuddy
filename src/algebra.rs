@@ -24,26 +24,26 @@
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 use serde::{Deserialize, Serialize};
 
-use super::{SetFamily, Zdd, ZddHolder};
+use super::{RawZdd, Zdd, ZddHolder};
 use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
 //doubled.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub(super) enum Operations<V> {
-    Change(SetFamily<V>, V),
-    Offset(SetFamily<V>, V),
-    Onset(SetFamily<V>, V),
-    Union(SetFamily<V>, SetFamily<V>),
-    Intersect(SetFamily<V>, SetFamily<V>),
-    Difference(SetFamily<V>, SetFamily<V>),
-    Join(SetFamily<V>, SetFamily<V>),
-    Division(SetFamily<V>, SetFamily<V>),
+    Change(RawZdd<V>, V),
+    Offset(RawZdd<V>, V),
+    Onset(RawZdd<V>, V),
+    Union(RawZdd<V>, RawZdd<V>),
+    Intersect(RawZdd<V>, RawZdd<V>),
+    Difference(RawZdd<V>, RawZdd<V>),
+    Join(RawZdd<V>, RawZdd<V>),
+    Division(RawZdd<V>, RawZdd<V>),
 }
 
 mod unate;
 
-impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
+impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///It is defined as `f.offset(x)` = { α | α ∉ f}
@@ -69,7 +69,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if self.is_zero() || self.is_one() {
             return self;
         }
@@ -123,9 +123,9 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if self.is_zero() || self.is_one() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
 
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
@@ -133,7 +133,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
             return self_hi;
         }
         if self_val > value {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
 
         let op = Operations::Onset(self, value.clone());
@@ -175,9 +175,9 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if self.is_zero() || other.is_zero() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
         if self == other {
             return self;
@@ -244,9 +244,9 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn difference(self, other: Self, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn difference(self, other: Self, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if self.is_zero() || self == other {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
         if other.is_zero() {
             return self;
@@ -322,12 +322,12 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn change(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn change(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if self.is_zero() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
         if self.is_one() {
-            return SetFamily::singleton(value, holder);
+            return RawZdd::singleton(value, holder);
         }
 
         let (this_val, lo, hi) = self.get(holder).expect("Invalid index");
@@ -342,7 +342,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         if this_val > value {
             return holder.get_node_seq(Zdd {
                 value,
-                lo: SetFamily::ZERO,
+                lo: RawZdd::ZERO,
                 hi: self,
             });
         }
@@ -465,7 +465,7 @@ fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
 #[cfg(test)]
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_op<F: Fn(SetFamily<char>, SetFamily<char>, &mut ZddHolder<char>) -> SetFamily<char>>(
+fn test_op<F: Fn(RawZdd<char>, RawZdd<char>, &mut ZddHolder<char>) -> RawZdd<char>>(
     a: &str,
     b: &str,
     res: &str,
@@ -480,8 +480,8 @@ fn test_op<F: Fn(SetFamily<char>, SetFamily<char>, &mut ZddHolder<char>) -> SetF
     let b_set_len = b_sets.len();
 
     let mut holder = ZddHolder::new();
-    let a = SetFamily::from_sets(a_sets, &mut holder);
-    let b = SetFamily::from_sets(b_sets, &mut holder);
+    let a = RawZdd::from_sets(a_sets, &mut holder);
+    let b = RawZdd::from_sets(b_sets, &mut holder);
     assert_eq!(a.size(&mut holder), Some(a_set_len));
     assert_eq!(b.size(&mut holder), Some(b_set_len));
     let result = op(a, b, &mut holder);
@@ -498,7 +498,7 @@ fn test_op<F: Fn(SetFamily<char>, SetFamily<char>, &mut ZddHolder<char>) -> SetF
 #[cfg(test)]
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_single_op<F: Fn(SetFamily<char>, char, &mut ZddHolder<char>) -> SetFamily<char>>(
+fn test_single_op<F: Fn(RawZdd<char>, char, &mut ZddHolder<char>) -> RawZdd<char>>(
     a: &str,
     b: char,
     res: &str,
@@ -511,7 +511,7 @@ fn test_single_op<F: Fn(SetFamily<char>, char, &mut ZddHolder<char>) -> SetFamil
     let a_set_len = a_sets.len();
 
     let mut holder = ZddHolder::new();
-    let a = SetFamily::from_sets(a_sets, &mut holder);
+    let a = RawZdd::from_sets(a_sets, &mut holder);
     assert_eq!(a.size(&mut holder), Some(a_set_len));
     let result = op(a, b, &mut holder);
 
@@ -534,13 +534,13 @@ mod test {
         let mut holder = ZddHolder::<char>::default();
 
         for ch in ['a', 'b', 'c'] {
-            let set = SetFamily::singleton(ch, &mut holder);
+            let set = RawZdd::singleton(ch, &mut holder);
             assert_eq!(set.size(&mut holder).unwrap(), 1);
             assert_eq!(set.members(&holder).collect::<Vec<_>>(), vec![vec![ch]]);
             let (ch2, lo, hi) = set.get(&holder).unwrap();
             assert_eq!(ch2, ch);
-            assert_eq!(lo, SetFamily::ZERO);
-            assert_eq!(hi, SetFamily::ONE);
+            assert_eq!(lo, RawZdd::ZERO);
+            assert_eq!(hi, RawZdd::ONE);
         }
     }
 
@@ -550,7 +550,7 @@ mod test {
 
         let sets = str_to_sets("ab a b");
 
-        let z = SetFamily::from_sets(sets.clone(), &mut holder);
+        let z = RawZdd::from_sets(sets.clone(), &mut holder);
         let members: BTreeSet<Vec<char>> = z.members(&holder).collect();
 
         let sets: BTreeSet<Vec<_>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
@@ -562,7 +562,7 @@ mod test {
         let mut holder = ZddHolder::<char>::new();
         let sets = BTreeSet::new();
 
-        let z = SetFamily::from_sets(sets, &mut holder);
+        let z = RawZdd::from_sets(sets, &mut holder);
         let members: Vec<Vec<char>> = z.members(&holder).collect();
 
         assert_eq!(members.len(), 0);
@@ -574,7 +574,7 @@ mod test {
         let mut sets = BTreeSet::new();
         sets.insert(BTreeSet::from(['x']));
 
-        let z = SetFamily::from_sets(sets, &mut holder);
+        let z = RawZdd::from_sets(sets, &mut holder);
         let members: Vec<Vec<char>> = z.members(&holder).collect();
 
         assert_eq!(members, vec![vec!['x']]);
@@ -594,7 +594,7 @@ mod test {
             (" ", 'a', " "),
             ("", 'a', ""),
         ] {
-            test_single_op(a, b, res, SetFamily::offset, "offset");
+            test_single_op(a, b, res, RawZdd::offset, "offset");
         }
     }
 
@@ -611,7 +611,7 @@ mod test {
             ("", 'a', ""),
             ("ab b ac c", 'a', "b c"),
         ] {
-            test_single_op(a, b, res, SetFamily::onset, "onset");
+            test_single_op(a, b, res, RawZdd::onset, "onset");
         }
     }
 
@@ -627,7 +627,7 @@ mod test {
             ("ab a b c", 'a', "b ab ac "),
             ("abc bc", 'a', "bc abc"),
         ] {
-            test_single_op(a, b, res, SetFamily::change, "change");
+            test_single_op(a, b, res, RawZdd::change, "change");
         }
     }
 
@@ -645,7 +645,7 @@ mod test {
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
         ] {
-            test_op(a, b, res, SetFamily::intersect, "∩");
+            test_op(a, b, res, RawZdd::intersect, "∩");
         }
     }
 
@@ -663,7 +663,7 @@ mod test {
             ("ab bc cd", "bc", "ab cd"),
             ("", "a b", ""),
         ] {
-            test_op(a, b, res, SetFamily::difference, "-");
+            test_op(a, b, res, RawZdd::difference, "-");
         }
     }
 
@@ -681,7 +681,7 @@ mod test {
             (" a", " b", " a b"),
             ("ab c", "a bc", "ab c a bc"),
         ] {
-            test_op(a, b, res, SetFamily::union, "∪");
+            test_op(a, b, res, RawZdd::union, "∪");
         }
     }
 }

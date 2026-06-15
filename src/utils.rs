@@ -4,9 +4,9 @@ use std::{
     hash::{BuildHasher, Hash},
 };
 
-use super::{SetFamily, Zdd, ZddHolder};
+use super::{RawZdd, Zdd, ZddHolder};
 
-impl<V: Display + Eq + Hash> SetFamily<V> {
+impl<V: Display + Eq + Hash> RawZdd<V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
     ///
     ///# Panics
@@ -28,14 +28,14 @@ impl<V: Display + Eq + Hash> SetFamily<V> {
     #[must_use]
     pub fn graphviz_with_extra<T: Display, S: BuildHasher>(
         &self,
-        extra: &HashMap<SetFamily<V>, T, S>,
+        extra: &HashMap<RawZdd<V>, T, S>,
         holder: &ZddHolder<V>,
     ) -> String {
         let mut s = String::new();
         writeln!(s, "digraph DAG {{\n  node [ordering=\"out\"];").unwrap();
         let mut q = VecDeque::from([self]);
         let mut nodes = BTreeMap::new();
-        let mut seen: BTreeSet<&SetFamily<_>> = BTreeSet::new();
+        let mut seen: BTreeSet<&RawZdd<_>> = BTreeSet::new();
         let mut edges = vec![];
 
         let data = holder.data.read().unwrap();
@@ -72,7 +72,7 @@ impl<V: Display + Eq + Hash> SetFamily<V> {
     }
 }
 
-impl<V: Eq + Hash> SetFamily<V> {
+impl<V: Eq + Hash> RawZdd<V> {
     ///Count the number of possible comibinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
@@ -102,7 +102,7 @@ impl<V: Eq + Hash> SetFamily<V> {
     }
 }
 
-impl<V: Eq + Hash + Clone> SetFamily<V> {
+impl<V: Eq + Hash + Clone> RawZdd<V> {
     ///Creates a singleton set from a value.
     ///```
     ///use zuddy::{ZddHolder, SetFamily};
@@ -112,11 +112,11 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
     /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
     ///```
     #[must_use]
-    pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         holder.get_node_seq(Zdd {
             value,
-            lo: SetFamily::ZERO,
-            hi: SetFamily::ONE,
+            lo: RawZdd::ZERO,
+            hi: RawZdd::ONE,
         })
     }
 }

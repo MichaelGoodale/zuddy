@@ -3,11 +3,11 @@ use std::{
     hash::Hash,
 };
 
-use crate::{Operations, SetFamily, Zdd, ZddHolder};
+use crate::{Operations, RawZdd, Zdd, ZddHolder};
 
 fn cmp_tops<V: Ord + Hash + Eq + Clone>(
-    a: SetFamily<V>,
-    b: SetFamily<V>,
+    a: RawZdd<V>,
+    b: RawZdd<V>,
     holder: &ZddHolder<V>,
 ) -> std::cmp::Ordering {
     match (a.0, b.0) {
@@ -23,7 +23,7 @@ fn cmp_tops<V: Ord + Hash + Eq + Clone>(
     }
 }
 
-impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
+impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets.
     ///
@@ -32,13 +32,13 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
-    pub fn join(self, other: SetFamily<V>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn join(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if cmp_tops(self, other, holder) == Greater {
             return other.join(self, holder);
         }
 
         if other.is_zero() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
         if other.is_one() {
             return self;
@@ -54,7 +54,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
 
         if other_v > value {
             other_lo = other;
-            other_hi = SetFamily::ZERO;
+            other_hi = RawZdd::ZERO;
         }
         let a = self_hi.join(other_hi, holder);
         let b = self_hi.join(other_lo, holder);
@@ -62,7 +62,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         let product = a.union(b, holder).union(c, holder);
         let v_product = holder.get_node_seq(Zdd {
             value,
-            lo: SetFamily::ZERO,
+            lo: RawZdd::ZERO,
             hi: product,
         });
 
@@ -79,7 +79,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///
     ///Identical to [`SetFamily::onset`]
     #[must_use]
-    pub fn element_division(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn element_division(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         self.onset(value, holder)
     }
 
@@ -88,7 +88,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///
     ///It is defined as f % x = { α | α ∉ f}
     #[must_use]
-    pub fn element_remainder(self, value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn element_remainder(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         self.offset(value, holder)
     }
 
@@ -101,7 +101,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
     ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
-    pub fn remainder(self, other: SetFamily<V>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn remainder(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         self.difference(other.join(self.divide(other, holder), holder), holder)
     }
 
@@ -118,16 +118,16 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
     ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
-    pub fn divide(self, other: SetFamily<V>, holder: &mut ZddHolder<V>) -> SetFamily<V> {
+    pub fn divide(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
         if other.is_one() {
             return self;
         }
 
         if self.is_zero() || self.is_one() {
-            return SetFamily::ZERO;
+            return RawZdd::ZERO;
         }
         if self == other {
-            return SetFamily::ONE;
+            return RawZdd::ONE;
         }
 
         let (value, other_lo, other_hi) =
@@ -161,7 +161,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
 
 #[cfg(test)]
 mod test {
-    use crate::SetFamily;
+    use crate::RawZdd;
 
     use crate::algebra::test_op;
 
@@ -182,7 +182,7 @@ mod test {
             ("a b c", "d", "ad bd cd"),
             ("a b", "  ", "a b"),
         ] {
-            test_op(a, b, res, SetFamily::join, "*");
+            test_op(a, b, res, RawZdd::join, "*");
         }
     }
 
@@ -194,7 +194,7 @@ mod test {
             ("ab ac a", "a", "b c "),
             ("abd abe abg cd ce ch", "ab c", "d e"),
         ] {
-            test_op(a, b, res, SetFamily::divide, "/");
+            test_op(a, b, res, RawZdd::divide, "/");
         }
     }
 
@@ -206,7 +206,7 @@ mod test {
             ("ab ac a", "a", ""),
             ("abd abe abg cd ce ch", "ab c", "abg ch"),
         ] {
-            test_op(a, b, res, SetFamily::remainder, "%");
+            test_op(a, b, res, RawZdd::remainder, "%");
         }
     }
 }

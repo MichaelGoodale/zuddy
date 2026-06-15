@@ -1,11 +1,11 @@
 use std::hash::Hash;
 
-use super::{SetFamily, ZddHolder};
+use super::{RawZdd, ZddHolder};
 
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.
 pub struct ZddIter<'a, V: Eq + Hash> {
-    stack: Vec<(SetFamily<V>, Vec<V>)>,
+    stack: Vec<(RawZdd<V>, Vec<V>)>,
     holder: &'a ZddHolder<V>,
 }
 
@@ -36,7 +36,7 @@ impl<V: Eq + Clone + Hash> Iterator for ZddIter<'_, V> {
     }
 }
 
-impl<V: Eq + Hash> SetFamily<V> {
+impl<V: Eq + Hash> RawZdd<V> {
     ///Returns a [`ZddIter`] to iterate over all the valid combinations in this family.
     #[must_use]
     pub fn members(self, holder: &ZddHolder<V>) -> ZddIter<'_, V> {

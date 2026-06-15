@@ -1,5 +1,5 @@
 //! Benchmarks for zuddy using 8-queens as an example problem
-use zuddy::{SetFamily, ZddHolder};
+use zuddy::{RawZdd, ZddHolder};
 
 ///The position of a queen on a board.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -43,11 +43,11 @@ fn main() {
 #[divan::bench(args = [1, 4, 8, 10])]
 fn n_queens(board_size: u8) -> usize {
     let mut holder = ZddHolder::<QueenPosition>::with_capacity(10000);
-    let mut state = queens_at_row(0, board_size).fold(SetFamily::ZERO, |acc, x| {
-        acc.union(SetFamily::singleton(x, &mut holder), &mut holder)
+    let mut state = queens_at_row(0, board_size).fold(RawZdd::ZERO, |acc, x| {
+        acc.union(RawZdd::singleton(x, &mut holder), &mut holder)
     });
     for i in 1..board_size {
-        let mut new_state = SetFamily::ZERO;
+        let mut new_state = RawZdd::ZERO;
         for queen in queens_at_row(i, board_size) {
             let mut x = state;
             for interfering_queen in queen.interferes_with_preceeding(board_size) {
