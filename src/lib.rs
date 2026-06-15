@@ -20,6 +20,8 @@ mod sampling;
 use ahash::RandomState;
 use algebra::Operations;
 
+mod garbage;
+
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
@@ -87,6 +89,10 @@ impl<V> SetFamily<V> {
         holder.data[self.0].as_ref().map(|x| (&x.value, x.lo, x.hi))
     }
 
+    fn children(self, holder: &ZddHolder<V>) -> Option<(SetFamily<V>, SetFamily<V>)> {
+        holder.data[self.0].as_ref().map(|x| (x.lo, x.hi))
+    }
+
     ///Counts the number of nodes in this [`SetFamily`]
     ///
     ///# Panics
@@ -123,6 +129,7 @@ impl<V> SetFamily<V> {
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V> {
     free: Vec<usize>,
+    protected: BTreeSet<SetFamily<V>>,
     data: Vec<Option<Zdd<V>>>,
     uniq_table: HashMap<Zdd<V>, SetFamily<V>, RandomState>,
     cache: HashMap<Operations<V>, SetFamily<V>, RandomState>,
@@ -141,6 +148,7 @@ fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> SetFamil
 impl<V> Default for ZddHolder<V> {
     fn default() -> Self {
         Self {
+            protected: BTreeSet::new(),
             free: vec![],
             data: vec![None, None],
             uniq_table: HashMap::default(),
@@ -175,6 +183,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         let cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
 
         Self {
+            protected: BTreeSet::new(),
             free: vec![],
             data,
             uniq_table,
