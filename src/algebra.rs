@@ -75,10 +75,10 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
-        if self_val == &value {
+        if self_val == value {
             return self_lo;
         }
-        if self_val > &value {
+        if self_val > value {
             return self;
         }
 
@@ -88,12 +88,12 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         let v = Zdd {
-            value: self_val.clone(),
+            value: self_val,
             lo: self_lo.offset(value.clone(), holder),
             hi: self_hi.offset(value, holder),
         };
 
-        let r = holder.get_node(v);
+        let r = holder.get_node_seq(v);
         holder.cache.insert(op, r);
         r
     }
@@ -129,10 +129,10 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
-        if self_val == &value {
+        if self_val == value {
             return self_hi;
         }
-        if self_val > &value {
+        if self_val > value {
             return SetFamily::ZERO;
         }
 
@@ -147,7 +147,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
             hi: self_hi.onset(value, holder),
         };
 
-        let r = holder.get_node(v);
+        let r = holder.get_node_seq(v);
         holder.cache.insert(op, r);
         r
     }
@@ -194,7 +194,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
                 std::mem::swap(&mut other, &mut one);
             }
 
-            let q = holder.data[other.0]
+            let q = holder.data.read().unwrap()[other.0]
                 .as_ref()
                 .expect("Invalid index")
                 .clone();
@@ -204,14 +204,17 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
         let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
 
-        let r = match self_val.cmp(other_val) {
+        let r = match self_val.cmp(&other_val) {
             std::cmp::Ordering::Less => self_lo.intersect(other, holder),
             std::cmp::Ordering::Greater => self.intersect(other_lo, holder),
             std::cmp::Ordering::Equal => {
-                let value = self_val.clone();
                 let lo = self_lo.intersect(other_lo, holder);
                 let hi = self_hi.intersect(other_hi, holder);
-                holder.get_node(Zdd { value, lo, hi })
+                holder.get_node_seq(Zdd {
+                    value: self_val,
+                    lo,
+                    hi,
+                })
             }
         };
         holder.cache.insert(op, r);
@@ -254,7 +257,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         if self.is_one() {
-            let q = holder.data[other.0]
+            let q = holder.data.read().unwrap()[other.0]
                 .as_ref()
                 .expect("Invalid index")
                 .clone();
@@ -262,31 +265,36 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         if other.is_one() {
-            let Zdd { value, lo, hi } =
-                holder.data[self.0].as_ref().expect("Invalid index").clone();
+            let Zdd { value, lo, hi } = holder.data.read().unwrap()[self.0]
+                .as_ref()
+                .expect("Invalid index")
+                .clone();
             let lo = lo.difference(other, holder);
-            return holder.get_node(Zdd { value, lo, hi });
+            return holder.get_node_seq(Zdd { value, lo, hi });
         }
 
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
         let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
 
-        let r = match self_val.cmp(other_val) {
+        let r = match self_val.cmp(&other_val) {
             std::cmp::Ordering::Less => {
                 let v = Zdd {
-                    value: self_val.clone(),
+                    value: self_val,
                     lo: self_lo.difference(other, holder),
                     hi: self_hi,
                 };
 
-                holder.get_node(v)
+                holder.get_node_seq(v)
             }
             std::cmp::Ordering::Greater => self.difference(other_lo, holder),
             std::cmp::Ordering::Equal => {
-                let value = self_val.clone();
                 let lo = self_lo.difference(other_lo, holder);
                 let hi = self_hi.difference(other_hi, holder);
-                holder.get_node(Zdd { value, lo, hi })
+                holder.get_node_seq(Zdd {
+                    value: self_val,
+                    lo,
+                    hi,
+                })
             }
         };
         holder.cache.insert(op, r);
@@ -324,15 +332,15 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
 
         let (this_val, lo, hi) = self.get(holder).expect("Invalid index");
 
-        if this_val == &value {
-            return holder.get_node(Zdd {
+        if this_val == value {
+            return holder.get_node_seq(Zdd {
                 value,
                 lo: hi,
                 hi: lo,
             });
         }
-        if this_val > &value {
-            return holder.get_node(Zdd {
+        if this_val > value {
+            return holder.get_node_seq(Zdd {
                 value,
                 lo: SetFamily::ZERO,
                 hi: self,
@@ -347,7 +355,7 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         let new_lo = lo.change(value.clone(), holder);
         let new_hi = hi.change(value, holder);
 
-        let r = holder.get_node(Zdd {
+        let r = holder.get_node_seq(Zdd {
             value: this_val,
             lo: new_lo,
             hi: new_hi,
@@ -391,12 +399,12 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
                 std::mem::swap(&mut other, &mut one);
             }
 
-            let q = holder.data[other.0]
+            let q = holder.data.read().unwrap()[other.0]
                 .as_ref()
                 .expect("Invalid index")
                 .clone();
             let lo = one.union(q.lo, holder);
-            return holder.get_node(Zdd {
+            return holder.get_node_seq(Zdd {
                 value: q.value,
                 lo,
                 hi: q.hi,
@@ -406,30 +414,32 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
         let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
 
-        let r = match self_val.cmp(other_val) {
+        let r = match self_val.cmp(&other_val) {
             std::cmp::Ordering::Less => {
                 let value = self_val.clone();
                 let lo = self_lo.union(other, holder);
-                holder.get_node(Zdd {
+                holder.get_node_seq(Zdd {
                     value,
                     lo,
                     hi: self_hi,
                 })
             }
             std::cmp::Ordering::Greater => {
-                let value = other_val.clone();
                 let lo = self.union(other_lo, holder);
-                holder.get_node(Zdd {
-                    value,
+                holder.get_node_seq(Zdd {
+                    value: other_val,
                     lo,
                     hi: other_hi,
                 })
             }
             std::cmp::Ordering::Equal => {
-                let value = self_val.clone();
                 let lo = self_lo.union(other_lo, holder);
                 let hi = self_hi.union(other_hi, holder);
-                holder.get_node(Zdd { value, lo, hi })
+                holder.get_node_seq(Zdd {
+                    value: self_val,
+                    lo,
+                    hi,
+                })
             }
         };
 
@@ -528,7 +538,7 @@ mod test {
             assert_eq!(set.size(&mut holder).unwrap(), 1);
             assert_eq!(set.members(&holder).collect::<Vec<_>>(), vec![vec![ch]]);
             let (ch2, lo, hi) = set.get(&holder).unwrap();
-            assert_eq!(*ch2, ch);
+            assert_eq!(ch2, ch);
             assert_eq!(lo, SetFamily::ZERO);
             assert_eq!(hi, SetFamily::ONE);
         }

@@ -1,13 +1,15 @@
+use std::hash::Hash;
+
 use super::{SetFamily, ZddHolder};
 
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.
-pub struct ZddIter<'a, V> {
+pub struct ZddIter<'a, V: Eq + Hash> {
     stack: Vec<(SetFamily<V>, Vec<V>)>,
     holder: &'a ZddHolder<V>,
 }
 
-impl<V: Eq + Clone> Iterator for ZddIter<'_, V> {
+impl<V: Eq + Clone + Hash> Iterator for ZddIter<'_, V> {
     type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -34,7 +36,7 @@ impl<V: Eq + Clone> Iterator for ZddIter<'_, V> {
     }
 }
 
-impl<V> SetFamily<V> {
+impl<V: Eq + Hash> SetFamily<V> {
     ///Returns a [`ZddIter`] to iterate over all the valid combinations in this family.
     #[must_use]
     pub fn members(self, holder: &ZddHolder<V>) -> ZddIter<'_, V> {

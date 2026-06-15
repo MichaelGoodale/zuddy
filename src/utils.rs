@@ -6,7 +6,7 @@ use std::{
 
 use super::{SetFamily, Zdd, ZddHolder};
 
-impl<V: Display> SetFamily<V> {
+impl<V: Display + Eq + Hash> SetFamily<V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
     ///
     ///# Panics
@@ -38,6 +38,7 @@ impl<V: Display> SetFamily<V> {
         let mut seen: BTreeSet<&SetFamily<_>> = BTreeSet::new();
         let mut edges = vec![];
 
+        let data = holder.data.read().unwrap();
         while let Some(x) = q.pop_front() {
             if x.is_zero() {
                 nodes.insert(x, "⊥".to_string());
@@ -47,7 +48,7 @@ impl<V: Display> SetFamily<V> {
                 nodes.insert(x, "⊤".to_string());
                 continue;
             }
-            let Zdd { value, lo, hi } = holder.data[x.0].as_ref().unwrap();
+            let Zdd { value, lo, hi } = data[x.0].as_ref().unwrap();
             nodes.insert(x, value.to_string());
             edges.extend([(x, lo, "dashed"), (x, hi, "solid")]);
             q.extend([lo, hi].into_iter().filter(|x| !seen.contains(x)));
@@ -71,7 +72,7 @@ impl<V: Display> SetFamily<V> {
     }
 }
 
-impl<V> SetFamily<V> {
+impl<V: Eq + Hash> SetFamily<V> {
     ///Count the number of possible comibinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
@@ -90,7 +91,8 @@ impl<V> SetFamily<V> {
         if let Some(&sum) = holder.sum_cache.get(self) {
             return sum;
         }
-        let Zdd { value: _, lo, hi } = *holder.data[self.0].as_ref().expect("Invalid index!");
+        let (lo, hi) = self.children(holder).unwrap();
+
         let sum = lo
             .size(holder)
             .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
@@ -111,7 +113,7 @@ impl<V: Eq + Hash + Clone> SetFamily<V> {
     ///```
     #[must_use]
     pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> SetFamily<V> {
-        holder.get_node(Zdd {
+        holder.get_node_seq(Zdd {
             value,
             lo: SetFamily::ZERO,
             hi: SetFamily::ONE,

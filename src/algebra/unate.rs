@@ -5,7 +5,11 @@ use std::{
 
 use crate::{Operations, SetFamily, Zdd, ZddHolder};
 
-fn cmp_tops<V: Ord>(a: SetFamily<V>, b: SetFamily<V>, holder: &ZddHolder<V>) -> std::cmp::Ordering {
+fn cmp_tops<V: Ord + Hash + Eq + Clone>(
+    a: SetFamily<V>,
+    b: SetFamily<V>,
+    holder: &ZddHolder<V>,
+) -> std::cmp::Ordering {
     match (a.0, b.0) {
         (a, b) if a == b => Equal,
         (1 | 0, 0 | 1) => Equal,
@@ -14,7 +18,7 @@ fn cmp_tops<V: Ord>(a: SetFamily<V>, b: SetFamily<V>, holder: &ZddHolder<V>) -> 
         (_, _) => {
             let (a, _, _) = a.get(holder).unwrap();
             let (b, _, _) = b.get(holder).unwrap();
-            a.cmp(b)
+            a.cmp(&b)
         }
     }
 }
@@ -46,10 +50,9 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         }
 
         let (value, self_lo, self_hi) = self.get(holder).expect("Invalid index!");
-        let value = value.clone();
         let (other_v, mut other_lo, mut other_hi) = other.get(holder).expect("Invalid index!");
 
-        if other_v > &value {
+        if other_v > value {
             other_lo = other;
             other_hi = SetFamily::ZERO;
         }
@@ -57,8 +60,8 @@ impl<V: Hash + Ord + Eq + Clone> SetFamily<V> {
         let b = self_hi.join(other_lo, holder);
         let c = self_lo.join(other_hi, holder);
         let product = a.union(b, holder).union(c, holder);
-        let v_product = holder.get_node(Zdd {
-            value: value.clone(),
+        let v_product = holder.get_node_seq(Zdd {
+            value,
             lo: SetFamily::ZERO,
             hi: product,
         });

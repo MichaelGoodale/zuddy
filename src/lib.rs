@@ -4,6 +4,7 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
+    sync::{Arc, Mutex, RwLock},
 };
 
 ///Defines algebraic manipulations of [`SetFamily`]s.
@@ -13,6 +14,7 @@ pub mod algorithms;
 pub mod iterators;
 mod utils;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[cfg(feature = "sampling")]
@@ -21,6 +23,8 @@ use ahash::RandomState;
 use algebra::Operations;
 
 mod garbage;
+mod parallelism;
+use parallelism::ZddThreadPool;
 
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
@@ -76,7 +80,15 @@ struct Zdd<V> {
     hi: SetFamily<V>,
 }
 
-impl<V> SetFamily<V> {
+impl<V: Eq + Hash + Clone> SetFamily<V> {
+    fn get(self, holder: &ZddHolder<V>) -> Option<(V, SetFamily<V>, SetFamily<V>)> {
+        holder.data.read().unwrap()[self.0]
+            .as_ref()
+            .map(|x| (x.value.clone(), x.lo, x.hi))
+    }
+}
+
+impl<V: Eq + Hash> SetFamily<V> {
     fn is_zero(self) -> bool {
         self == SetFamily::ZERO
     }
@@ -85,12 +97,10 @@ impl<V> SetFamily<V> {
         self == SetFamily::ONE
     }
 
-    fn get(self, holder: &ZddHolder<V>) -> Option<(&V, SetFamily<V>, SetFamily<V>)> {
-        holder.data[self.0].as_ref().map(|x| (&x.value, x.lo, x.hi))
-    }
-
     fn children(self, holder: &ZddHolder<V>) -> Option<(SetFamily<V>, SetFamily<V>)> {
-        holder.data[self.0].as_ref().map(|x| (x.lo, x.hi))
+        holder.data.read().unwrap()[self.0]
+            .as_ref()
+            .map(|x| (x.lo, x.hi))
     }
 
     ///Counts the number of nodes in this [`SetFamily`]
@@ -116,7 +126,7 @@ impl<V> SetFamily<V> {
             if self.is_zero() || self.is_one() {
                 count_cache.insert(self);
             } else {
-                let (_, lo, hi) = self.get(holder).unwrap();
+                let (lo, hi) = self.children(holder).unwrap();
                 lo.n_nodes_inner(count_cache, holder);
                 hi.n_nodes_inner(count_cache, holder);
                 count_cache.insert(self);
@@ -124,18 +134,64 @@ impl<V> SetFamily<V> {
         }
     }
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
 ///An arena for storing the data associated with different [`SetFamily`]s.
-pub struct ZddHolder<V> {
-    free: Vec<usize>,
+pub struct ZddHolder<V: Eq + Hash> {
+    #[serde(default, skip)]
+    pools: ZddThreadPool,
+    #[serde(with = "arc_mutex_serde")]
+    free: Arc<Mutex<Vec<usize>>>,
     protected: BTreeSet<SetFamily<V>>,
-    data: Vec<Option<Zdd<V>>>,
-    uniq_table: HashMap<Zdd<V>, SetFamily<V>, RandomState>,
+    #[serde(with = "arc_rwlock_serde")]
+    data: Arc<RwLock<Vec<Option<Zdd<V>>>>>,
+    uniq_table: DashMap<Zdd<V>, SetFamily<V>, RandomState>,
     cache: HashMap<Operations<V>, SetFamily<V>, RandomState>,
     sum_cache: HashMap<SetFamily<V>, Option<usize>, RandomState>,
 }
 
+mod arc_mutex_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::{Arc, Mutex};
+
+    pub fn serialize<S, T>(val: &Arc<Mutex<T>>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize,
+    {
+        val.lock().unwrap().serialize(s)
+    }
+
+    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<Mutex<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Ok(Arc::new(Mutex::new(T::deserialize(d)?)))
+    }
+}
+
+mod arc_rwlock_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::{Arc, RwLock};
+
+    pub fn serialize<S, T>(val: &Arc<RwLock<T>>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize,
+    {
+        val.serialize(s)
+    }
+
+    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<RwLock<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Ok(Arc::new(RwLock::new(T::deserialize(d)?)))
+    }
+}
 fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> SetFamily<V> {
     if let Some(x) = free.pop() {
         SetFamily(x, PhantomData)
@@ -145,13 +201,14 @@ fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> SetFamil
     }
 }
 
-impl<V> Default for ZddHolder<V> {
+impl<V: Eq + Hash> Default for ZddHolder<V> {
     fn default() -> Self {
         Self {
+            pools: ZddThreadPool::default(),
             protected: BTreeSet::new(),
-            free: vec![],
-            data: vec![None, None],
-            uniq_table: HashMap::default(),
+            free: Arc::new(Mutex::new(vec![])),
+            data: Arc::new(RwLock::new(vec![None, None])),
+            uniq_table: DashMap::default(),
             sum_cache: HashMap::default(),
             cache: HashMap::default(),
         }
@@ -172,27 +229,31 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 
     ///Create a new [`ZddHolder`] to hold various ZDDs with a preallocated capacity.
+    ///
+    ///# Panics
+    ///May panic if there is difficulty making thing thread pool in Rayon.
     #[must_use]
     pub fn with_capacity(n: usize) -> ZddHolder<V> {
         let mut data = Vec::with_capacity(n);
         data.push(None);
         data.push(None);
 
-        let uniq_table = HashMap::with_capacity_and_hasher(n, RandomState::new());
+        let uniq_table = DashMap::with_capacity_and_hasher(n, RandomState::new());
         let sum_cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
         let cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
 
         Self {
             protected: BTreeSet::new(),
-            free: vec![],
-            data,
+            pools: ZddThreadPool::default(),
+            free: Arc::new(Mutex::new(vec![])),
+            data: Arc::new(RwLock::new(data)),
             uniq_table,
             sum_cache,
             cache,
         }
     }
 
-    fn get_node(&mut self, family: Zdd<V>) -> SetFamily<V> {
+    fn get_node_seq(&mut self, family: Zdd<V>) -> SetFamily<V> {
         if family.hi == SetFamily::ZERO {
             return family.lo;
         }
@@ -200,8 +261,9 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         if let Some(x) = self.uniq_table.get(&family) {
             return *x;
         }
-        let id = free_id(&mut self.data, &mut self.free);
-        self.data[id.0] = Some(family.clone());
+        let mut data = self.data.write().unwrap();
+        let id = free_id(&mut data, &mut self.free.lock().unwrap());
+        data[id.0] = Some(family.clone());
         self.uniq_table.insert(family, id);
         id
     }
@@ -246,12 +308,12 @@ impl<V: Ord + Clone + Hash + Eq> SetFamily<V> {
         let lo = SetFamily::from_sets(without_min_val, holder);
         let hi = SetFamily::from_sets(with_min_val, holder);
 
-        holder.get_node(Zdd { value, lo, hi })
+        holder.get_node_seq(Zdd { value, lo, hi })
     }
 }
 
 #[cfg(test)]
-fn check_valid_zdd<V: Eq + Hash + Ord>(x: SetFamily<V>, holder: &ZddHolder<V>) {
+fn check_valid_zdd<V: Eq + Hash + Ord + Clone>(x: SetFamily<V>, holder: &ZddHolder<V>) {
     if x.is_one() || x.is_zero() {
         return;
     }
