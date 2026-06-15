@@ -96,8 +96,24 @@ impl<V> SetFamily<V> {
         if self.is_zero() || self.is_one() {
             1
         } else {
+            let mut count_cache = HashMap::<SetFamily<V>, usize, RandomState>::default();
+            self.n_nodes_inner(&mut count_cache, holder)
+        }
+    }
+    fn n_nodes_inner(
+        self,
+        count_cache: &mut HashMap<SetFamily<V>, usize, RandomState>,
+        holder: &ZddHolder<V>,
+    ) -> usize {
+        if self.is_zero() || self.is_one() {
+            1
+        } else if let Some(r) = count_cache.get(&self) {
+            *r
+        } else {
             let (_, lo, hi) = self.get(holder).unwrap();
-            lo.n_nodes(holder) + hi.n_nodes(holder) + 1
+            let res = lo.n_nodes(holder) + hi.n_nodes(holder) + 1;
+            count_cache.insert(self, res);
+            res
         }
     }
 }
