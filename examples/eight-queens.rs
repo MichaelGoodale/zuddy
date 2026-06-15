@@ -84,7 +84,11 @@ fn n_queens(board_size: u8, rng: &mut impl Rng) -> usize {
 
     let n_sol = state.size(&mut holder).unwrap();
 
-    println!("{board_size}-Queens has {n_sol} solutions!\nHere's a random one for you:");
+    println!(
+        "{board_size}-Queens has {n_sol} solutions! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
+        state.n_nodes(&holder),
+        holder.n_nodes()
+    );
     let sampled_queens = state.sample(rng, &mut holder);
     print_solution(&sampled_queens, board_size);
 

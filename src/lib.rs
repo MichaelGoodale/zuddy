@@ -86,6 +86,20 @@ impl<V> SetFamily<V> {
     fn get(self, holder: &ZddHolder<V>) -> Option<(&V, SetFamily<V>, SetFamily<V>)> {
         holder.data[self.0].as_ref().map(|x| (&x.value, x.lo, x.hi))
     }
+
+    ///Counts the number of nodes in this [`SetFamily`]
+    ///
+    ///# Panics
+    ///Will panic if `self` is not defined in `holder`.
+    #[must_use]
+    pub fn n_nodes(&self, holder: &ZddHolder<V>) -> usize {
+        if self.is_zero() || self.is_one() {
+            1
+        } else {
+            let (_, lo, hi) = self.get(holder).unwrap();
+            lo.n_nodes(holder) + hi.n_nodes(holder) + 1
+        }
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
@@ -124,6 +138,12 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn new() -> ZddHolder<V> {
         ZddHolder::default()
+    }
+
+    ///Counts the number of nodes currently held by the holder.
+    #[must_use]
+    pub fn n_nodes(&self) -> usize {
+        self.uniq_table.len() + 2
     }
 
     ///Create a new [`ZddHolder`] to hold various ZDDs with a preallocated capacity.
