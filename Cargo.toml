@@ -12,6 +12,11 @@ serde = { version = "1.0.228", features = ["serde_derive"] }
 
 [dev-dependencies]
 ron = "0.12.1"
+divan = "0.1.21"
+
+[[bench]]
+name = "queens"
+harness = false
 
 [features]
 default = ["sampling"]
