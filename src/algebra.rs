@@ -45,7 +45,7 @@ pub(super) enum Operations<V> {
 
 mod unate;
 
-impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///It is defined as `f.offset(x)` = { α | α ∉ f}
@@ -71,7 +71,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn offset(&self, value: V) -> SetFamily<'a, V> {
+    pub fn offset(self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
             return self.clone();
         }
@@ -90,11 +90,13 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
             return r;
         }
 
-        let r = holder.get_node(
-            self_val,
-            self_lo.offset(value.clone()),
-            self_hi.offset(value),
-        );
+        let value_clone = value.clone();
+        let (lo, hi) = self
+            .manager
+            .pools()
+            .join(|| self_lo.offset(value), || self_hi.offset(value_clone));
+
+        let r = holder.get_node(self_val, lo, hi);
         holder.put_into_cache(op, r)
     }
 
@@ -123,7 +125,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn onset(&self, value: V) -> SetFamily<'a, V> {
+    pub fn onset(self, value: V) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || self.is_one() {
             return holder.zero();
@@ -266,8 +268,10 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
                 holder.get_node(other_val, lo, other_hi)
             }
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.union(other_lo);
-                let hi = self_hi.union(other_hi);
+                let (lo, hi) = self
+                    .manager
+                    .pools()
+                    .join(|| self_lo.union(other_lo), || self_hi.union(other_hi));
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -444,7 +448,7 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
 #[cfg(test)]
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_single_op<F: for<'a> Fn(&SetFamily<'a, char>, char) -> SetFamily<'a, char>>(
+fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char>>(
     start: &str,
     actions: Vec<char>,
     res: &str,
@@ -469,7 +473,7 @@ fn test_single_op<F: for<'a> Fn(&SetFamily<'a, char>, char) -> SetFamily<'a, cha
 
     let mut result = a.clone();
     for action in actions {
-        result = op(&result, action);
+        result = op(result, action);
         check_valid_zdd(result.as_raw(), result.manager);
     }
 

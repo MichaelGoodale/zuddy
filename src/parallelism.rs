@@ -76,8 +76,8 @@ impl<V: Eq + Hash> Clone for SetFamily<'_, V> {
                 .manager
                 .pools
                 .referenced_variables
-                .get_mut(&self.id)
-                .expect("Interal ZDD should always have its counts available");
+                .entry(self.id)
+                .or_insert(1);
             *count += 1;
         }
         Self {
@@ -94,16 +94,14 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
             //We have to use this scope so that count is dropped before trying to remove.
             //Otherwise, we deadlock :o
             let count = {
-                let mut count = self
-                    .manager
-                    .pools
-                    .referenced_variables
-                    .get_mut(&self.id)
-                    .expect("Interal ZDD should always have its counts available");
-                *count = count.saturating_sub(1);
-                *count
+                if let Some(mut count) = self.manager.pools.referenced_variables.get_mut(&self.id) {
+                    *count = count.saturating_sub(1);
+                    Some(*count)
+                } else {
+                    None
+                }
             };
-            if count == 0 {
+            if count == Some(0) {
                 self.manager.pools.referenced_variables.remove(&self.id);
             }
         }

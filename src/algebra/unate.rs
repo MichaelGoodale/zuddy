@@ -19,13 +19,13 @@ fn cmp_tops<V: Ord + Hash + Eq + Clone>(a: &SetFamily<V>, b: &SetFamily<V>) -> s
     }
 }
 
-impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
     ///
     ///It is defined as f % x = { α | α ∉ f}
     #[must_use]
-    pub fn element_remainder(&self, value: V) -> SetFamily<'a, V> {
+    pub fn element_remainder(self, value: V) -> SetFamily<'a, V> {
         self.offset(value)
     }
 
@@ -35,7 +35,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
     ///
     ///Identical to [`SetFamily::onset`]
     #[must_use]
-    pub fn element_division(&self, value: V) -> SetFamily<'a, V> {
+    pub fn element_division(self, value: V) -> SetFamily<'a, V> {
         self.onset(value)
     }
 
@@ -79,7 +79,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
         }
 
         let value = value.clone();
-        let r_lo = self.element_division(value.clone());
+        let r_lo = self.clone().element_division(value.clone());
 
         let mut r = r_lo.divide(other_hi);
 
