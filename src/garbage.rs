@@ -11,10 +11,7 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
 
     fn inner_gc(&mut self) {
         let marked = DashSet::new();
-        self.protected
-            .par_iter()
-            .copied()
-            .for_each(|g| mark(g, &marked, self));
+        self.protected_values().for_each(|g| mark(g, &marked, self));
 
         self.cache.clear();
         self.sum_cache.clear();
@@ -58,17 +55,5 @@ fn mark<V: Send + Sync + Eq + Hash>(
         if let Some((lo, hi)) = to_mark.children(holder) {
             rayon::join(|| mark(lo, marked, holder), || mark(hi, marked, holder));
         }
-    }
-}
-
-impl<V: Eq + Hash> RawZdd<V> {
-    ///Mark a node as protected from garbage collection.
-    pub fn protect(&self, holder: &mut ZddHolder<V>) {
-        holder.protected.insert(*self);
-    }
-
-    ///Unmark a node as protected from garbage collection.
-    pub fn unprotect(&self, holder: &mut ZddHolder<V>) {
-        holder.protected.remove(self);
     }
 }

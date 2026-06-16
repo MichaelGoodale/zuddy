@@ -1,23 +1,37 @@
 //! Tools for working with ZDD algorithms in parallel.
-use std::{fmt::Debug, hash::Hash, sync::Arc};
-
 use dashmap::{
     DashMap,
     Entry::{Occupied, Vacant},
 };
-use rayon::{ThreadPool, ThreadPoolBuilder};
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 
-use crate::{RawZdd, Zdd, ZddHolder, free_id};
+use crate::{RawZdd, SetFamily, Zdd, ZddHolder, free_id};
 
-///A ZDD used for local variables within a library function.
-#[derive(Debug)]
-pub(crate) struct InternalZdd<'a, V: Eq + Hash> {
-    id: usize,
-    manager: &'a ZddHolder<V>,
-}
+impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+    fn children(self, holder: &ZddHolder<V>) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
+        holder.data.read().unwrap()[self.id].as_ref().map(|x| {
+            (
+                SetFamily::from_set_family(x.lo, self.manager),
+                SetFamily::from_set_family(x.hi, self.manager),
+            )
+        })
+    }
 
-impl<'a, V: Eq + Hash> InternalZdd<'a, V> {
-    fn from_set_family(s: RawZdd<V>, manager: &'a ZddHolder<V>) -> InternalZdd<'a, V> {
+    pub(crate) fn lo(self) -> Option<SetFamily<'a, V>> {
+        self.manager.data.read().unwrap()[self.id]
+            .as_ref()
+            .map(|x| SetFamily::from_set_family(x.lo, self.manager))
+    }
+
+    fn hi(self, holder: &ZddHolder<V>) -> Option<SetFamily<'a, V>> {
+        holder.data.read().unwrap()[self.id]
+            .as_ref()
+            .map(|x| SetFamily::from_set_family(x.lo, self.manager))
+    }
+
+    pub(super) fn from_set_family(s: RawZdd<V>, manager: &'a ZddHolder<V>) -> SetFamily<'a, V> {
         let RawZdd(id, _) = s;
         match manager.pools.referenced_variables.entry(id) {
             Occupied(mut oc) => *oc.get_mut() += 1,
@@ -26,37 +40,68 @@ impl<'a, V: Eq + Hash> InternalZdd<'a, V> {
             }
         }
 
-        InternalZdd { id, manager }
+        SetFamily {
+            id,
+            manager,
+            phantom: PhantomData,
+        }
+    }
+}
+impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+    pub(crate) fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
+        (self.manager.data.read().unwrap()[self.id])
+            .clone()
+            .map(|x| {
+                (
+                    x.value,
+                    SetFamily::from_set_family(x.lo, self.manager),
+                    SetFamily::from_set_family(x.hi, self.manager),
+                )
+            })
+    }
+
+    pub(crate) fn as_raw(&self) -> RawZdd<V> {
+        RawZdd(self.id, PhantomData)
     }
 }
 
-impl<V: Eq + Hash> Clone for InternalZdd<'_, V> {
+impl<V: Eq + Hash> Clone for SetFamily<'_, V> {
     fn clone(&self) -> Self {
-        let mut count = self
-            .manager
-            .pools
-            .referenced_variables
-            .get_mut(&self.id)
-            .expect("Interal ZDD should always have its counts available");
-        *count += 1;
+        if !self.is_zero() && !self.is_one() {
+            let mut count = self
+                .manager
+                .pools
+                .referenced_variables
+                .get_mut(&self.id)
+                .expect("Interal ZDD should always have its counts available");
+            *count += 1;
+        }
         Self {
             id: self.id,
+            phantom: PhantomData,
             manager: self.manager,
         }
     }
 }
 
-impl<V: Eq + Hash> Drop for InternalZdd<'_, V> {
+impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
     fn drop(&mut self) {
-        let mut count = self
-            .manager
-            .pools
-            .referenced_variables
-            .get_mut(&self.id)
-            .expect("Interal ZDD should always have its counts available");
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            self.manager.pools.referenced_variables.remove(&self.id);
+        if !self.is_zero() && !self.is_one() {
+            //We have to use this scope so that count is dropped before trying to remove.
+            //Otherwise, we deadlock :o
+            let count = {
+                let mut count = self
+                    .manager
+                    .pools
+                    .referenced_variables
+                    .get_mut(&self.id)
+                    .expect("Interal ZDD should always have its counts available");
+                *count = count.saturating_sub(1);
+                *count
+            };
+            if count == 0 {
+                self.manager.pools.referenced_variables.remove(&self.id);
+            }
         }
     }
 }
@@ -82,24 +127,47 @@ impl Default for ZddThreadPool {
     }
 }
 
+impl<V: Eq + Hash + Clone + Send> ZddHolder<V> {
+    pub(crate) fn protected_values(&self) -> impl ParallelIterator<Item = RawZdd<V>> {
+        self.pools.referenced_variables.par_iter().filter_map(|x| {
+            if *x.value() != 0 {
+                Some(RawZdd(*x.key(), PhantomData))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 impl<V: Eq + Hash + Clone> ZddHolder<V> {
     pub(crate) fn pools(&self) -> Arc<ThreadPool> {
         self.pools.pools.clone()
     }
 
-    pub(crate) fn get_node(&self, family: Zdd<V>) -> InternalZdd<'_, V> {
-        if family.hi == RawZdd::ZERO {
-            return InternalZdd::from_set_family(family.lo, self);
+    pub(crate) fn get_node<'a>(
+        &'a self,
+        value: V,
+        lo: SetFamily<'a, V>,
+        hi: SetFamily<'a, V>,
+    ) -> SetFamily<'a, V> {
+        if hi.is_zero() {
+            return lo;
         }
 
-        if let Some(s) = self.uniq_table.get(&family) {
-            return InternalZdd::from_set_family(*s, self);
+        let zdd = Zdd {
+            value,
+            lo: lo.as_raw(),
+            hi: hi.as_raw(),
+        };
+
+        if let Some(s) = self.uniq_table.get(&zdd) {
+            return SetFamily::from_set_family(*s, self);
         }
 
         let mut data = self.data.write().unwrap();
         let s = free_id(&mut data, &mut self.free.lock().unwrap());
-        data[s.0] = Some(family.clone());
-        self.uniq_table.insert(family, s);
-        InternalZdd::from_set_family(s, self)
+        data[s.0] = Some(zdd.clone());
+        self.uniq_table.insert(zdd, s);
+        SetFamily::from_set_family(s, self)
     }
 }

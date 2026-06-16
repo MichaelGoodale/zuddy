@@ -26,17 +26,38 @@ mod garbage;
 mod parallelism;
 use parallelism::ZddThreadPool;
 
+#[derive(Debug)]
 pub struct SetFamily<'a, V: Eq + Hash> {
     id: usize,
     phantom: PhantomData<V>,
     manager: &'a ZddHolder<V>,
 }
 
+impl<V: Eq + Hash> PartialEq for SetFamily<'_, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && std::ptr::eq(self.manager, other.manager)
+    }
+}
+
+impl<V: Eq + Hash> Eq for SetFamily<'_, V> {}
+
+const ZERO_IDX: usize = 0;
+const ONE_IDX: usize = 1;
+
+impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+    fn is_zero(&self) -> bool {
+        self.id == ZERO_IDX
+    }
+    fn is_one(&self) -> bool {
+        self.id == ONE_IDX
+    }
+}
+
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RawZdd<V>(usize, PhantomData<V>);
+struct RawZdd<V>(usize, PhantomData<V>);
 
 impl<V> Copy for RawZdd<V> {}
 
@@ -73,10 +94,10 @@ impl<V> Ord for RawZdd<V> {
 
 impl<V> RawZdd<V> {
     ///The empty set {}.
-    pub const ZERO: Self = RawZdd(0, PhantomData);
+    pub const ZERO: Self = RawZdd(ZERO_IDX, PhantomData);
 
     ///The family containing the empty set {{}}.
-    pub const ONE: Self = RawZdd(1, PhantomData);
+    pub const ONE: Self = RawZdd(ONE_IDX, PhantomData);
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -123,6 +144,7 @@ impl<V: Eq + Hash> RawZdd<V> {
             edge_cache.len()
         }
     }
+
     fn n_nodes_inner(
         self,
         count_cache: &mut HashSet<RawZdd<V>, RandomState>,
@@ -148,10 +170,9 @@ pub struct ZddHolder<V: Eq + Hash> {
     #[serde(default, skip)]
     pools: ZddThreadPool,
     free: Arc<Mutex<Vec<usize>>>,
-    protected: BTreeSet<RawZdd<V>>,
     data: Arc<RwLock<Vec<Option<Zdd<V>>>>>,
     uniq_table: DashMap<Zdd<V>, RawZdd<V>, RandomState>,
-    cache: HashMap<Operations<V>, RawZdd<V>, RandomState>,
+    cache: DashMap<Operations<V>, RawZdd<V>, RandomState>,
     sum_cache: HashMap<RawZdd<V>, Option<usize>, RandomState>,
 }
 
@@ -168,12 +189,11 @@ impl<V: Eq + Hash> Default for ZddHolder<V> {
     fn default() -> Self {
         Self {
             pools: ZddThreadPool::default(),
-            protected: BTreeSet::new(),
             free: Arc::new(Mutex::new(vec![])),
             data: Arc::new(RwLock::new(vec![None, None])),
             uniq_table: DashMap::default(),
             sum_cache: HashMap::default(),
-            cache: HashMap::default(),
+            cache: DashMap::default(),
         }
     }
 }
@@ -183,6 +203,37 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn new() -> ZddHolder<V> {
         ZddHolder::default()
+    }
+
+    pub fn zero<'a>(&'a self) -> SetFamily<'a, V> {
+        SetFamily {
+            id: ZERO_IDX,
+            phantom: PhantomData,
+            manager: self,
+        }
+    }
+
+    pub fn one<'a>(&'a self) -> SetFamily<'a, V> {
+        SetFamily {
+            id: ONE_IDX,
+            phantom: PhantomData,
+            manager: self,
+        }
+    }
+
+    pub(crate) fn from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
+        self.cache
+            .get(op)
+            .map(|s| SetFamily::from_set_family(*s, self))
+    }
+
+    pub(crate) fn into_cache<'a>(
+        &'a self,
+        op: Operations<V>,
+        value: SetFamily<'a, V>,
+    ) -> SetFamily<'a, V> {
+        self.cache.insert(op, value.as_raw());
+        value
     }
 
     ///Counts the number of nodes currently held by the holder.
@@ -203,10 +254,9 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
 
         let uniq_table = DashMap::with_capacity_and_hasher(n, RandomState::new());
         let sum_cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
-        let cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
+        let cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
 
         Self {
-            protected: BTreeSet::new(),
             pools: ZddThreadPool::default(),
             free: Arc::new(Mutex::new(vec![])),
             data: Arc::new(RwLock::new(data)),
@@ -216,7 +266,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         }
     }
 
-    fn get_node_seq(&mut self, family: Zdd<V>) -> RawZdd<V> {
+    fn get_node_seq(&self, family: Zdd<V>) -> RawZdd<V> {
         if family.hi == RawZdd::ZERO {
             return family.lo;
         }
@@ -232,6 +282,83 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 }
 
+fn get_node<V: Eq + Hash + Clone>(
+    family: Zdd<V>,
+    data: &mut Vec<Option<Zdd<V>>>,
+    free: &mut Vec<usize>,
+    uniq_table: &DashMap<Zdd<V>, RawZdd<V>, RandomState>,
+) -> RawZdd<V> {
+    if family.hi == RawZdd::ZERO {
+        return family.lo;
+    }
+
+    if let Some(x) = uniq_table.get(&family) {
+        return *x;
+    }
+    let id = free_id(data, free);
+    data[id.0] = Some(family.clone());
+    uniq_table.insert(family, id);
+    id
+}
+
+fn from_sets<V: Eq + Hash + Ord + Clone>(
+    mut sets: BTreeSet<BTreeSet<V>>,
+    data: &mut Vec<Option<Zdd<V>>>,
+    free: &mut Vec<usize>,
+    uniq_table: &DashMap<Zdd<V>, RawZdd<V>, RandomState>,
+) -> RawZdd<V> {
+    if sets.is_empty() {
+        return RawZdd::ZERO;
+    }
+
+    #[expect(clippy::missing_panics_doc)]
+    if sets.len() == 1 && sets.first().unwrap().is_empty() {
+        return RawZdd::ONE;
+    }
+
+    //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
+    #[expect(clippy::missing_panics_doc)]
+    let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
+
+    let with_min_val = sets
+        .extract_if(.., |v| v.contains(&value))
+        .map(|mut x| {
+            x.remove(&value);
+            x
+        })
+        .collect::<BTreeSet<_>>();
+
+    let without_min_val = sets;
+
+    let lo = from_sets(without_min_val, data, free, uniq_table);
+    let hi = from_sets(with_min_val, data, free, uniq_table);
+
+    get_node(Zdd { value, lo, hi }, data, free, uniq_table)
+}
+
+impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
+    ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
+    ///
+    ///```
+    ///use zuddy::{ZddHolder, SetFamily};
+    ///let mut holder = ZddHolder::<char>::new();
+    ///let sets = ["abcd", "ac", "a", "bc", "b", "c"];
+    ///let x = sets.iter().map(|x| x.chars().collect()).collect();
+    ///let z = SetFamily::from_sets(x, &holder);
+    ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
+    ///assert_eq!(members, sets);
+    ///```
+    #[must_use]
+    pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+        #[expect(clippy::missing_panics_doc)]
+        let mut data = holder.data.write().unwrap();
+        #[expect(clippy::missing_panics_doc)]
+        let mut free = holder.free.lock().unwrap();
+        let uniq_table = &holder.uniq_table;
+        SetFamily::from_set_family(from_sets(sets, &mut data, &mut free, uniq_table), holder)
+    }
+}
+
 impl<V: Ord + Clone + Hash + Eq> RawZdd<V> {
     ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
     ///
@@ -244,34 +371,11 @@ impl<V: Ord + Clone + Hash + Eq> RawZdd<V> {
     ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
     ///assert_eq!(members, sets);
     ///```
-    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        if sets.is_empty() {
-            return RawZdd::ZERO;
-        }
-
-        #[expect(clippy::missing_panics_doc)]
-        if sets.len() == 1 && sets.first().unwrap().is_empty() {
-            return RawZdd::ONE;
-        }
-
-        //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
-        #[expect(clippy::missing_panics_doc)]
-        let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
-
-        let with_min_val = sets
-            .extract_if(.., |v| v.contains(&value))
-            .map(|mut x| {
-                x.remove(&value);
-                x
-            })
-            .collect::<BTreeSet<_>>();
-
-        let without_min_val = sets;
-
-        let lo = RawZdd::from_sets(without_min_val, holder);
-        let hi = RawZdd::from_sets(with_min_val, holder);
-
-        holder.get_node_seq(Zdd { value, lo, hi })
+    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &ZddHolder<V>) -> RawZdd<V> {
+        let mut data = holder.data.write().unwrap();
+        let mut free = holder.free.lock().unwrap();
+        let uniq_table = &holder.uniq_table;
+        from_sets(sets, &mut data, &mut free, uniq_table)
     }
 }
 

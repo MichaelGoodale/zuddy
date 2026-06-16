@@ -3,7 +3,7 @@ use std::{
     hash::Hash,
 };
 
-use crate::{Operations, RawZdd, Zdd, ZddHolder};
+use crate::{Operations, RawZdd, SetFamily, Zdd, ZddHolder};
 
 fn cmp_tops<V: Ord + Hash + Eq + Clone>(
     a: RawZdd<V>,
@@ -20,6 +20,79 @@ fn cmp_tops<V: Ord + Hash + Eq + Clone>(
             let (b, _, _) = b.get(holder).unwrap();
             a.cmp(&b)
         }
+    }
+}
+
+impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
+    ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
+    ///Identical to [`SetFamily::offset`]
+    ///
+    ///It is defined as f % x = { α | α ∉ f}
+    #[must_use]
+    pub fn element_remainder(&self, value: V) -> SetFamily<'a, V> {
+        self.offset(value)
+    }
+
+    ///Does `self` / {`v`} in the unate cube set algebra of Minato, 1994.
+    ///
+    ///It is defined as f / x = { α - x | α ∈ f ∧ x ∈ α}
+    ///
+    ///Identical to [`SetFamily::onset`]
+    #[must_use]
+    pub fn element_division(&self, value: V) -> SetFamily<'a, V> {
+        self.onset(value)
+    }
+
+    ///Divides `self` by `other` according to the unate cube set algebra
+    ///of Minato,
+    ///
+    /// This is defined by the quality:  f = g * (f/g) + (f%g) where * is [`SetFamily::join`]
+    ///
+    /// It can also be understood as: f / g = ⋂{ { α - β | α ∈ f ∧  β ⊆ α} | β ∈ g }
+    ///
+    /// For example, {abc,bc,ac}/{bc} = {a, {}} and {abd,abe,abg,cd,ce,ch}/{ab,c} = {d,e}
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
+    ///[`SetFamily::ZERO`] (the empty set)**.
+    #[must_use]
+    pub fn divide(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        if other.is_one() {
+            return self.clone();
+        }
+
+        let holder = self.manager;
+
+        if self.is_zero() || self.is_one() {
+            return holder.zero();
+        }
+        if self == other {
+            return holder.one();
+        }
+
+        let (value, other_lo, other_hi) = other.get().expect("Can't divide by the empty set!");
+
+        if other_lo.is_zero() && other_hi.is_one() {
+            return self.element_division(value.clone());
+        }
+
+        let op = Operations::Division(self.as_raw(), other.as_raw());
+        if let Some(r) = holder.from_cache(&op) {
+            return r;
+        }
+
+        let value = value.clone();
+        let r_lo = self.element_division(value.clone());
+
+        let mut r = r_lo.divide(other_hi);
+
+        if !r.is_zero() && !other_lo.is_zero() {
+            let r_h = self.element_remainder(value);
+            let r_l = r_h.divide(other_lo);
+            r = r.intersect(r_l);
+        }
+
+        holder.into_cache(op, r)
     }
 }
 
@@ -73,25 +146,6 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
         joined
     }
 
-    ///Does `self` / {`v`} in the unate cube set algebra of Minato, 1994.
-    ///
-    ///It is defined as f / x = { α - x | α ∈ f ∧ x ∈ α}
-    ///
-    ///Identical to [`SetFamily::onset`]
-    #[must_use]
-    pub fn element_division(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        self.onset(value, holder)
-    }
-
-    ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
-    ///Identical to [`SetFamily::offset`]
-    ///
-    ///It is defined as f % x = { α | α ∉ f}
-    #[must_use]
-    pub fn element_remainder(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        self.offset(value, holder)
-    }
-
     /// The remainder of `self` divided by `other` according to the unate cub set algebra.
     ///
     /// For example, {abc,bc,ac}/{bc} = {a, {}}, so the remainder is {ac}. See [`SetFamily::divide`]
@@ -102,68 +156,16 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
     pub fn remainder(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        self.difference(other.join(self.divide(other, holder), holder), holder)
-    }
-
-    ///Divides `self` by `other` according to the unate cube set algebra
-    ///of Minato,
-    ///
-    /// This is defined by the quality:  f = g * (f/g) + (f%g) where * is [`SetFamily::join`]
-    ///
-    /// It can also be understood as: f / g = ⋂{ { α - β | α ∈ f ∧  β ⊆ α} | β ∈ g }
-    ///
-    /// For example, {abc,bc,ac}/{bc} = {a, {}} and {abd,abe,abg,cd,ce,ch}/{ab,c} = {d,e}
-    ///
-    ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
-    ///[`SetFamily::ZERO`] (the empty set)**.
-    #[must_use]
-    pub fn divide(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        if other.is_one() {
-            return self;
-        }
-
-        if self.is_zero() || self.is_one() {
-            return RawZdd::ZERO;
-        }
-        if self == other {
-            return RawZdd::ONE;
-        }
-
-        let (value, other_lo, other_hi) =
-            other.get(holder).expect("Can't divide by the empty set!");
-
-        if other_lo.is_zero() && other_hi.is_one() {
-            return self.element_division(value.clone(), holder);
-        }
-
-        let op = Operations::Division(self, other);
-        if let Some(r) = holder.cache.get(&op) {
-            return *r;
-        }
-
-        let value = value.clone();
-        let r_lo = self.element_division(value.clone(), holder);
-
-        let mut r = r_lo.divide(other_hi, holder);
-
-        if !r.is_zero() && !other_lo.is_zero() {
-            let r_h = self.element_remainder(value, holder);
-            let r_l = r_h.divide(other_lo, holder);
-            r = r.intersect(r_l, holder);
-        }
-
-        holder.cache.insert(op, r);
-
-        r
+        todo!()
+        //self.difference(other.join(self.divide(other, holder), holder), holder)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::RawZdd;
+    use crate::{RawZdd, SetFamily};
 
-    use crate::algebra::test_op;
+    use crate::algebra::{test_op, test_op_raw};
 
     #[test]
     fn test_join() {
@@ -182,7 +184,7 @@ mod test {
             ("a b c", "d", "ad bd cd"),
             ("a b", "  ", "a b"),
         ] {
-            test_op(a, b, res, RawZdd::join, "*");
+            test_op_raw(a, b, res, RawZdd::join, "*");
         }
     }
 
@@ -194,7 +196,7 @@ mod test {
             ("ab ac a", "a", "b c "),
             ("abd abe abg cd ce ch", "ab c", "d e"),
         ] {
-            test_op(a, b, res, RawZdd::divide, "/");
+            test_op(a, b, res, |x, y| SetFamily::divide(x, y), "/");
         }
     }
 
@@ -206,7 +208,7 @@ mod test {
             ("ab ac a", "a", ""),
             ("abd abe abg cd ce ch", "ab c", "abg ch"),
         ] {
-            test_op(a, b, res, RawZdd::remainder, "%");
+            test_op_raw(a, b, res, RawZdd::remainder, "%");
         }
     }
 }

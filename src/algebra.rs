@@ -24,6 +24,8 @@
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 use serde::{Deserialize, Serialize};
 
+use crate::SetFamily;
+
 use super::{RawZdd, Zdd, ZddHolder};
 use std::{fmt::Debug, hash::Hash};
 
@@ -43,7 +45,7 @@ pub(super) enum Operations<V> {
 
 mod unate;
 
-impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
+impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///It is defined as `f.offset(x)` = { α | α ∉ f}
@@ -69,33 +71,31 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn offset(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
+    pub fn offset(&self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
-            return self;
+            return self.clone();
         }
 
-        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        let (self_val, self_lo, self_hi) = self.get().expect("Invalid index");
         if self_val == value {
             return self_lo;
         }
         if self_val > value {
-            return self;
+            return self.clone();
         }
 
-        let op = Operations::Offset(self, value.clone());
-        if let Some(r) = holder.cache.get(&op) {
-            return *r;
+        let holder = self.manager;
+        let op = Operations::Offset(self.as_raw(), value.clone());
+        if let Some(r) = holder.from_cache(&op) {
+            return r;
         }
 
-        let v = Zdd {
-            value: self_val,
-            lo: self_lo.offset(value.clone(), holder),
-            hi: self_hi.offset(value, holder),
-        };
-
-        let r = holder.get_node_seq(v);
-        holder.cache.insert(op, r);
-        r
+        let r = holder.get_node(
+            value.clone(),
+            self_lo.offset(value.clone()),
+            self_hi.offset(value),
+        );
+        holder.into_cache(op, r)
     }
 
     ///Creates a ZDD with all combinations that include `value` and then deletes `value` from those
@@ -123,33 +123,31 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn onset(self, value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
+    pub fn onset(&self, value: V) -> SetFamily<'a, V> {
+        let holder = self.manager;
         if self.is_zero() || self.is_one() {
-            return RawZdd::ZERO;
+            return holder.zero();
         }
 
-        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
+        let (self_val, self_lo, self_hi) = self.get().expect("Invalid index");
         if self_val == value {
             return self_hi;
         }
         if self_val > value {
-            return RawZdd::ZERO;
+            return holder.zero();
         }
 
-        let op = Operations::Onset(self, value.clone());
-        if let Some(r) = holder.cache.get(&op) {
-            return *r;
+        let op = Operations::Onset(self.as_raw(), value.clone());
+        if let Some(r) = holder.from_cache(&op) {
+            return r;
         }
 
-        let v = Zdd {
-            value: self_val.clone(),
-            lo: self_lo.onset(value.clone(), holder),
-            hi: self_hi.onset(value, holder),
-        };
-
-        let r = holder.get_node_seq(v);
-        holder.cache.insert(op, r);
-        r
+        let r = holder.get_node(
+            self_val.clone(),
+            self_lo.onset(value.clone()),
+            self_hi.onset(value),
+        );
+        holder.into_cache(op, r)
     }
 
     ///The set intersection of `self` and `other`
@@ -175,16 +173,17 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn intersect(self, other: Self, holder: &mut ZddHolder<V>) -> RawZdd<V> {
+    pub fn intersect(self, other: Self) -> SetFamily<'a, V> {
+        let holder = self.manager;
         if self.is_zero() || other.is_zero() {
-            return RawZdd::ZERO;
+            return holder.zero();
         }
         if self == other {
             return self;
         }
-        let op = Operations::Intersect(self, other);
-        if let Some(r) = holder.cache.get(&op) {
-            return *r;
+        let op = Operations::Intersect(self.as_raw(), other.as_raw());
+        if let Some(r) = holder.from_cache(&op) {
+            return r;
         }
 
         if self.is_one() || other.is_one() {
@@ -194,33 +193,26 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
                 std::mem::swap(&mut other, &mut one);
             }
 
-            let q = holder.data.read().unwrap()[other.0]
-                .as_ref()
-                .expect("Invalid index")
-                .clone();
-            return one.intersect(q.lo, holder);
+            return one.intersect(other.lo().unwrap());
         }
 
-        let (self_val, self_lo, self_hi) = self.get(holder).expect("Invalid index");
-        let (other_val, other_lo, other_hi) = other.get(holder).expect("Invalid index");
+        let (self_val, self_lo, self_hi) = self.get().expect("Invalid index");
+        let (other_val, other_lo, other_hi) = other.get().expect("Invalid index");
 
         let r = match self_val.cmp(&other_val) {
-            std::cmp::Ordering::Less => self_lo.intersect(other, holder),
-            std::cmp::Ordering::Greater => self.intersect(other_lo, holder),
+            std::cmp::Ordering::Less => self_lo.intersect(other),
+            std::cmp::Ordering::Greater => self.intersect(other_lo),
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.intersect(other_lo, holder);
-                let hi = self_hi.intersect(other_hi, holder);
-                holder.get_node_seq(Zdd {
-                    value: self_val,
-                    lo,
-                    hi,
-                })
+                let lo = self_lo.intersect(other_lo);
+                let hi = self_hi.intersect(other_hi);
+                holder.get_node(self_val, lo, hi)
             }
         };
-        holder.cache.insert(op, r);
-        r
+        holder.into_cache(op, r)
     }
+}
 
+impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///The set difference of `self` and `other`
     ///
     ///```
@@ -465,7 +457,7 @@ fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
 #[cfg(test)]
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_op<F: Fn(RawZdd<char>, RawZdd<char>, &mut ZddHolder<char>) -> RawZdd<char>>(
+fn test_op_raw<F: Fn(RawZdd<char>, RawZdd<char>, &mut ZddHolder<char>) -> RawZdd<char>>(
     a: &str,
     b: &str,
     res: &str,
@@ -498,7 +490,45 @@ fn test_op<F: Fn(RawZdd<char>, RawZdd<char>, &mut ZddHolder<char>) -> RawZdd<cha
 #[cfg(test)]
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_single_op<F: Fn(RawZdd<char>, char, &mut ZddHolder<char>) -> RawZdd<char>>(
+fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<'a, char>>(
+    a: &str,
+    b: &str,
+    res: &str,
+    op: F,
+    op_name: &'static str,
+) {
+    let a_sets = str_to_sets(a);
+    let b_sets = str_to_sets(b);
+    let a_op_b = str_to_sets(res);
+    println!("{a_sets:?} {op_name} {b_sets:?} = {a_op_b:?}");
+    let a_set_len = a_sets.len();
+    let b_set_len = b_sets.len();
+
+    let mut holder = ZddHolder::new();
+    let a = SetFamily::from_sets(a_sets, &holder);
+    let b = SetFamily::from_sets(b_sets, &holder);
+    let a_raw = a.as_raw();
+    let b_raw = b.as_raw();
+
+    {
+        let result = op(a, b);
+
+        let result = result.as_raw();
+        let result_recon: BTreeSet<BTreeSet<char>> = result
+            .members(&holder)
+            .map(|x| x.into_iter().collect())
+            .collect();
+        assert_eq!(result_recon, a_op_b);
+    }
+
+    assert_eq!(a_raw.size(&mut holder), Some(a_set_len));
+    assert_eq!(b_raw.size(&mut holder), Some(b_set_len));
+}
+
+#[cfg(test)]
+///Allows for easy testing of operations, taking family of sets of chars as strings seperated
+///by spaces, with `res` being the intended result with the operand supplied by `op`
+fn test_single_op<F: for<'a> Fn(&SetFamily<'a, char>, char) -> SetFamily<'a, char>>(
     a: &str,
     b: char,
     res: &str,
@@ -511,7 +541,40 @@ fn test_single_op<F: Fn(RawZdd<char>, char, &mut ZddHolder<char>) -> RawZdd<char
     let a_set_len = a_sets.len();
 
     let mut holder = ZddHolder::new();
-    let a = RawZdd::from_sets(a_sets, &mut holder);
+    let a = SetFamily::from_sets(a_sets, &holder);
+    let a_raw = a.as_raw();
+    {
+        let result = op(&a, b);
+
+        let result_recon: BTreeSet<BTreeSet<char>> = result
+            .as_raw()
+            .members(&holder)
+            .map(|x| x.into_iter().collect())
+            .collect();
+
+        assert_eq!(result_recon, a_op_b);
+        drop(a);
+    }
+    assert_eq!(a_raw.size(&mut holder), Some(a_set_len));
+}
+
+#[cfg(test)]
+///Allows for easy testing of operations, taking family of sets of chars as strings seperated
+///by spaces, with `res` being the intended result with the operand supplied by `op`
+fn test_single_op_raw<F: Fn(RawZdd<char>, char, &mut ZddHolder<char>) -> RawZdd<char>>(
+    a: &str,
+    b: char,
+    res: &str,
+    op: F,
+    op_name: &'static str,
+) {
+    let a_sets = str_to_sets(a);
+    let a_op_b = str_to_sets(res);
+    println!("{a_sets:?} {op_name} {b} = {a_op_b:?}");
+    let a_set_len = a_sets.len();
+
+    let mut holder = ZddHolder::new();
+    let a = RawZdd::from_sets(a_sets, &holder);
     assert_eq!(a.size(&mut holder), Some(a_set_len));
     let result = op(a, b, &mut holder);
 
@@ -550,7 +613,7 @@ mod test {
 
         let sets = str_to_sets("ab a b");
 
-        let z = RawZdd::from_sets(sets.clone(), &mut holder);
+        let z = RawZdd::from_sets(sets.clone(), &holder);
         let members: BTreeSet<Vec<char>> = z.members(&holder).collect();
 
         let sets: BTreeSet<Vec<_>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
@@ -562,7 +625,7 @@ mod test {
         let mut holder = ZddHolder::<char>::new();
         let sets = BTreeSet::new();
 
-        let z = RawZdd::from_sets(sets, &mut holder);
+        let z = RawZdd::from_sets(sets, &holder);
         let members: Vec<Vec<char>> = z.members(&holder).collect();
 
         assert_eq!(members.len(), 0);
@@ -594,7 +657,7 @@ mod test {
             (" ", 'a', " "),
             ("", 'a', ""),
         ] {
-            test_single_op(a, b, res, RawZdd::offset, "offset");
+            test_single_op(a, b, res, |x, y| SetFamily::offset(x, y), "offset");
         }
     }
 
@@ -611,7 +674,7 @@ mod test {
             ("", 'a', ""),
             ("ab b ac c", 'a', "b c"),
         ] {
-            test_single_op(a, b, res, RawZdd::onset, "onset");
+            test_single_op(a, b, res, |x, y| SetFamily::onset(x, y), "onset");
         }
     }
 
@@ -627,7 +690,7 @@ mod test {
             ("ab a b c", 'a', "b ab ac "),
             ("abc bc", 'a', "bc abc"),
         ] {
-            test_single_op(a, b, res, RawZdd::change, "change");
+            test_single_op_raw(a, b, res, RawZdd::change, "change");
         }
     }
 
@@ -645,7 +708,7 @@ mod test {
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
         ] {
-            test_op(a, b, res, RawZdd::intersect, "∩");
+            test_op(a, b, res, |x, y| SetFamily::intersect(x, y), "∩");
         }
     }
 
@@ -663,7 +726,7 @@ mod test {
             ("ab bc cd", "bc", "ab cd"),
             ("", "a b", ""),
         ] {
-            test_op(a, b, res, RawZdd::difference, "-");
+            test_op_raw(a, b, res, RawZdd::difference, "-");
         }
     }
 
@@ -681,7 +744,7 @@ mod test {
             (" a", " b", " a b"),
             ("ab c", "a bc", "ab c a bc"),
         ] {
-            test_op(a, b, res, RawZdd::union, "∪");
+            test_op_raw(a, b, res, RawZdd::union, "∪");
         }
     }
 }
