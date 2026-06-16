@@ -1,11 +1,17 @@
 //! An example of the usage of ZDDs using the 8 queens problem.
 
 use rand::prelude::*;
-use zuddy::ZddHolder;
+use zuddy::{SetFamily, ZddHolder};
 
 ///The position of a queen on a board.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 struct QueenPosition(u8, u8);
+
+impl std::fmt::Display for QueenPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}_{}", self.0, self.1)
+    }
+}
 
 impl QueenPosition {
     ///Get the the queens on earlier rows that would be affected by this queen.
@@ -65,41 +71,34 @@ fn queens_at_row(i: u8, board_size: u8) -> impl Iterator<Item = QueenPosition> {
 }
 
 fn n_queens(board_size: u8, rng: &mut impl Rng) -> usize {
-    let mut holder = ZddHolder::<QueenPosition>::with_capacity(10000);
-    /*
-        let mut state = queens_at_row(0, board_size).fold(RawZdd::ZERO, |acc, x| {
-            acc.union(RawZdd::singleton(x, &mut holder), &mut holder)
-        });
-        for i in 1..board_size {
-            let mut new_state = RawZdd::ZERO;
-            for queen in queens_at_row(i, board_size) {
-                let mut x = state;
-                for interfering_queen in queen.interferes_with_preceeding(board_size) {
-                    x = x.element_remainder(interfering_queen, &mut holder);
-                }
-                x = x.change(queen, &mut holder);
-                new_state = new_state.union(x, &mut holder);
+    let holder = ZddHolder::<QueenPosition>::with_capacity(10000);
+    let mut state = queens_at_row(0, board_size).fold(holder.zero(), |acc, x| {
+        acc.union(SetFamily::singleton(x, &holder))
+    });
+    for i in 1..board_size {
+        let mut new_state = holder.zero();
+        for queen in queens_at_row(i, board_size) {
+            let mut x = state.clone();
+            for interfering_queen in queen.interferes_with_preceeding(board_size) {
+                x = x.element_remainder(interfering_queen);
             }
-            state = new_state;
-
-            state.protect(&mut holder);
-            holder.gc();
-            state.unprotect(&mut holder);
+            x = x.change(queen);
+            new_state = new_state.union(x);
         }
+        state = new_state;
+    }
 
-        let n_sol = state.size(&mut holder).unwrap();
+    let n_sol = state.size().unwrap();
 
-        println!(
-            "{board_size}-Queens has {n_sol} solutions! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
-            state.n_nodes(&holder),
-            holder.n_nodes()
-        );
-        let sampled_queens = state.sample(rng, &mut holder);
-        print_solution(&sampled_queens, board_size);
+    println!(
+        "{board_size}-Queens has {n_sol} solutions! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
+        state.n_nodes(),
+        holder.n_nodes()
+    );
+    let sampled_queens = state.sample(rng);
+    print_solution(&sampled_queens, board_size);
 
-        n_sol
-    */
-    todo!()
+    n_sol
 }
 
 fn main() {

@@ -10,6 +10,7 @@ use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 use crate::{RawZdd, SetFamily, Zdd, ZddHolder, free_id};
 
 impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+    #[expect(dead_code)]
     pub(crate) fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
         self.manager.data.read().unwrap()[self.id]
             .as_ref()
@@ -27,8 +28,9 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
-    pub(crate) fn hi(self, holder: &ZddHolder<V>) -> Option<SetFamily<'a, V>> {
-        holder.data.read().unwrap()[self.id]
+    #[expect(dead_code)]
+    pub(crate) fn hi(self) -> Option<SetFamily<'a, V>> {
+        self.manager.data.read().unwrap()[self.id]
             .as_ref()
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
@@ -151,7 +153,6 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         &'a self,
         value: V,
         lo: SetFamily<'a, V>,
-
         hi: SetFamily<'a, V>,
     ) -> SetFamily<'a, V> {
         if hi.is_zero() {

@@ -1,6 +1,7 @@
 use crate::{Operations, SetFamily};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
+    fmt::Debug,
     hash::Hash,
 };
 
@@ -18,7 +19,7 @@ fn cmp_tops<V: Ord + Hash + Eq + Clone>(a: &SetFamily<V>, b: &SetFamily<V>) -> s
     }
 }
 
-impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
     ///
@@ -51,6 +52,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
     ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn divide(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
         if other.is_one() {
             return self.clone();
@@ -151,12 +153,12 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
 #[cfg(test)]
 mod test {
-    use crate::SetFamily;
-
-    use crate::algebra::test_op;
+    #![expect(clippy::redundant_closure_for_method_calls)]
+    use crate::{ZddHolder, algebra::test_op};
 
     #[test]
     fn test_join() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("ab b c", "ab  ", "ab abc b c"),
             ("a b", "d c", "ad bd ac bc"),
@@ -172,31 +174,33 @@ mod test {
             ("a b c", "d", "ad bd cd"),
             ("a b", "  ", "a b"),
         ] {
-            test_op(a, b, res, |x, y| SetFamily::join(x, y), "*");
+            test_op(a, b, res, |x, y| x.join(y), "*", &holder);
         }
     }
 
     #[test]
     fn test_divide() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("a  ", "a", " "),
             ("abc bc ac", "bc", "a "),
             ("ab ac a", "a", "b c "),
             ("abd abe abg cd ce ch", "ab c", "d e"),
         ] {
-            test_op(a, b, res, |x, y| SetFamily::divide(x, y), "/");
+            test_op(a, b, res, |x, y| x.divide(y), "/", &holder);
         }
     }
 
     #[test]
     fn test_remainder() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("a  ", "a", " "),
             ("abc bc ac", "bc", "ac"),
             ("ab ac a", "a", ""),
             ("abd abe abg cd ce ch", "ab c", "abg ch"),
         ] {
-            test_op(a, b, res, |x, y| x.remainder(y), "%");
+            test_op(a, b, res, |x, y| x.remainder(y), "%", &holder);
         }
     }
 }

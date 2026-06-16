@@ -29,11 +29,15 @@ use parallelism::ZddThreadPool;
 ///A representation of a family of sets (or otherwise a set of sets).
 ///
 ///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
-#[derive(Debug)]
 pub struct SetFamily<'a, V: Eq + Hash> {
     id: usize,
     phantom: PhantomData<V>,
     manager: &'a ZddHolder<V>,
+}
+impl<V: Eq + Hash> Debug for SetFamily<'_, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetFamily").field("id", &self.id).finish()
+    }
 }
 
 impl<V: Eq + Hash> Hash for SetFamily<'_, V> {
@@ -55,7 +59,7 @@ impl<V: Eq + Hash> Eq for SetFamily<'_, V> {}
 const ZERO_IDX: usize = 0;
 const ONE_IDX: usize = 1;
 
-impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+impl<V: Eq + Hash> SetFamily<'_, V> {
     fn is_zero(&self) -> bool {
         self.id == ZERO_IDX
     }
@@ -75,6 +79,7 @@ impl<V> Clone for RawZdd<V> {
         *self
     }
 }
+
 impl<V> PartialEq for RawZdd<V> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
@@ -368,6 +373,14 @@ impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
         let mut free = holder.free.lock().unwrap();
         let uniq_table = &holder.uniq_table;
         SetFamily::from_set_family(from_sets(sets, &mut data, &mut free, uniq_table), holder)
+    }
+}
+
+#[cfg(test)]
+impl<V: Eq + Hash + Ord + Clone> SetFamily<'_, V> {
+    ///Panics if the ZDD is corrupted
+    pub fn check_valid_zdd(&self) {
+        check_valid_zdd(self.as_raw(), self.manager);
     }
 }
 

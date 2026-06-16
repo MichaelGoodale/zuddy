@@ -1,5 +1,5 @@
 //! Benchmarks for zuddy using 8-queens as an example problem
-use zuddy::{RawZdd, ZddHolder};
+use zuddy::{SetFamily, ZddHolder};
 
 ///The position of a queen on a board.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -42,26 +42,22 @@ fn main() {
 
 #[divan::bench(args = [1, 4, 8, 10])]
 fn n_queens(board_size: u8) -> usize {
-    let mut holder = ZddHolder::<QueenPosition>::with_capacity(10000);
-    let mut state = queens_at_row(0, board_size).fold(RawZdd::ZERO, |acc, x| {
-        acc.union(RawZdd::singleton(x, &mut holder), &mut holder)
+    let holder = ZddHolder::<QueenPosition>::with_capacity(10000);
+    let mut state = queens_at_row(0, board_size).fold(holder.zero(), |acc, x| {
+        acc.union(SetFamily::singleton(x, &holder))
     });
     for i in 1..board_size {
-        let mut new_state = RawZdd::ZERO;
+        let mut new_state = holder.zero();
         for queen in queens_at_row(i, board_size) {
-            let mut x = state;
+            let mut x = state.clone();
             for interfering_queen in queen.interferes_with_preceeding(board_size) {
-                x = x.element_remainder(interfering_queen, &mut holder);
+                x = x.element_remainder(interfering_queen);
             }
-            x = x.change(queen, &mut holder);
-            new_state = new_state.union(x, &mut holder);
+            x = x.change(queen);
+            new_state = new_state.union(x);
         }
         state = new_state;
-
-        state.protect(&mut holder);
-        holder.gc();
-        state.unprotect(&mut holder);
     }
 
-    state.size(&mut holder).unwrap()
+    state.size().unwrap()
 }

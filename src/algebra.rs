@@ -31,7 +31,7 @@ use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
 //doubled.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub(super) enum Operations<V> {
     Change(RawZdd<V>, V),
     Offset(RawZdd<V>, V),
@@ -45,7 +45,7 @@ pub(super) enum Operations<V> {
 
 mod unate;
 
-impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Debug> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///It is defined as `f.offset(x)` = { α | α ∉ f}
@@ -91,7 +91,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
         }
 
         let r = holder.get_node(
-            value.clone(),
+            self_val,
             self_lo.offset(value.clone()),
             self_hi.offset(value),
         );
@@ -395,7 +395,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 use std::collections::BTreeSet;
 
 #[cfg(test)]
-use crate::ZddHolder;
+use crate::{ZddHolder, check_valid_zdd};
 
 #[cfg(test)]
 fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
@@ -417,6 +417,7 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
     res: &str,
     op: F,
     op_name: &'static str,
+    holder: &ZddHolder<char>,
 ) {
     let a_sets = str_to_sets(a);
     let b_sets = str_to_sets(b);
@@ -425,13 +426,15 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
     let a_set_len = a_sets.len();
     let b_set_len = b_sets.len();
 
-    let holder = ZddHolder::new();
-    let a = SetFamily::from_sets(a_sets, &holder);
-    let b = SetFamily::from_sets(b_sets, &holder);
+    let a = SetFamily::from_sets(a_sets, holder);
+    let b = SetFamily::from_sets(b_sets, holder);
     assert_eq!(a.size(), Some(a_set_len));
+    check_valid_zdd(a.as_raw(), a.manager);
     assert_eq!(b.size(), Some(b_set_len));
+    check_valid_zdd(b.as_raw(), b.manager);
 
     let result = op(a, b);
+    check_valid_zdd(result.as_raw(), result.manager);
 
     let result_recon: BTreeSet<BTreeSet<char>> =
         result.members().map(|x| x.into_iter().collect()).collect();
@@ -442,26 +445,39 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
 ///Allows for easy testing of operations, taking family of sets of chars as strings seperated
 ///by spaces, with `res` being the intended result with the operand supplied by `op`
 fn test_single_op<F: for<'a> Fn(&SetFamily<'a, char>, char) -> SetFamily<'a, char>>(
-    a: &str,
-    b: char,
+    start: &str,
+    actions: Vec<char>,
     res: &str,
     op: F,
     op_name: &'static str,
+    holder: &ZddHolder<char>,
 ) {
-    let a_sets = str_to_sets(a);
-    let a_op_b = str_to_sets(res);
-    println!("{a_sets:?} {op_name} {b} = {a_op_b:?}");
-    let a_set_len = a_sets.len();
+    let start = str_to_sets(start);
 
-    let holder = ZddHolder::new();
-    let a = SetFamily::from_sets(a_sets, &holder);
-    assert_eq!(a.size(), Some(a_set_len));
-    let result = op(&a, b);
+    let ops = actions
+        .iter()
+        .map(char::to_string)
+        .collect::<Vec<_>>()
+        .join(format!(" {op_name} ").as_str());
+    let intended = str_to_sets(res);
+    println!("{start:?} {op_name} {ops} = {intended:?}");
 
+    let start_len = start.len();
+    let a = SetFamily::from_sets(start, holder);
+    check_valid_zdd(a.as_raw(), a.manager);
+    assert_eq!(a.size(), Some(start_len));
+
+    let mut result = a.clone();
+    for action in actions {
+        result = op(&result, action);
+        check_valid_zdd(result.as_raw(), result.manager);
+    }
+
+    check_valid_zdd(result.as_raw(), result.manager);
     let result_recon: BTreeSet<BTreeSet<char>> =
         result.members().map(|x| x.into_iter().collect()).collect();
 
-    assert_eq!(result_recon, a_op_b);
+    assert_eq!(result_recon, intended);
 }
 
 #[cfg(test)]
@@ -524,57 +540,65 @@ mod test {
 
     #[test]
     fn test_offset() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
-            ("ab a b c", 'a', "b c"),
-            ("a ab", 'a', ""),
-            ("b c d", 'a', "b c d"),
-            ("ab a b c ", 'a', "b c "),
-            ("a", 'a', ""),
-            ("b", 'a', "b"),
-            ("a ab abc", 'a', ""),
-            ("bc bd", 'a', "bc bd"),
-            (" ", 'a', " "),
-            ("", 'a', ""),
+            ("ab a b c", vec!['a'], "b c"),
+            ("a ab", vec!['a'], ""),
+            ("b c d", vec!['a'], "b c d"),
+            ("ab a b c ", vec!['a'], "b c "),
+            ("a", vec!['a'], ""),
+            ("b", vec!['a'], "b"),
+            ("a ab abc", vec!['a'], ""),
+            ("bc bd", vec!['a'], "bc bd"),
+            (" ", vec!['a'], " "),
+            ("", vec!['a'], ""),
+            ("ef g h l", vec!['g'], "ef h l"),
+            ("ab a b c df e g h l", "abceghl".chars().collect(), "df"),
         ] {
-            test_single_op(a, b, res, |x, y| x.offset(y), "offset");
+            test_single_op(a, b, res, |x, y| x.offset(y), "offset", &holder);
         }
     }
 
     #[test]
     fn test_onset() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
-            ("ab a b c", 'a', "b  "),
-            ("b c", 'a', ""),
-            ("a ab abc", 'a', " b bc"),
-            ("a ab", 'a', " b"),
-            ("a", 'a', " "),
-            ("b bc", 'a', ""),
-            (" ", 'a', ""),
-            ("", 'a', ""),
-            ("ab b ac c", 'a', "b c"),
+            ("ab a b c", vec!['a'], "b  "),
+            ("b c", vec!['a'], ""),
+            ("a ab abc", vec!['a'], " b bc"),
+            ("a ab", vec!['a'], " b"),
+            ("a", vec!['a'], " "),
+            ("b bc", vec!['a'], ""),
+            (" ", vec!['a'], ""),
+            ("", vec!['a'], ""),
+            ("ab b ac c", vec!['a'], "b c"),
         ] {
-            test_single_op(a, b, res, |x, y| x.onset(y), "onset");
+            test_single_op(a, b, res, |x, y| x.onset(y), "onset", &holder);
         }
     }
 
     #[test]
     fn test_change() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
-            ("ab a b c", 'a', "b ab ac "),
-            ("b c", 'a', "ab ac"),
-            ("a", 'a', " "),
-            (" ", 'a', "a"),
-            ("b", 'a', "ab"),
-            ("ab b", 'a', "b ab"),
-            ("ab a b c", 'a', "b ab ac "),
-            ("abc bc", 'a', "bc abc"),
+            ("ab a b c", vec!['a'], "b ab ac "),
+            ("b c", vec!['a'], "ab ac"),
+            ("a", vec!['a'], " "),
+            (" ", vec!['a'], "a"),
+            ("b", vec!['a'], "ab"),
+            ("ab b", vec!['a'], "b ab"),
+            ("ab a b c", vec!['a'], "b ab ac "),
+            ("ab a b c", vec!['a', 'a', 'a', 'a'], "ab a b c"),
+            ("ab a b c", vec!['a', 'b'], " a b abc"),
+            ("abc bc", vec!['a'], "bc abc"),
         ] {
-            test_single_op(a, b, res, |x, v| x.change(v), "change");
+            test_single_op(a, b, res, |x, v| x.change(v), "change", &holder);
         }
     }
 
     #[test]
     fn test_intersect() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("ab a b", "ab a c", "ab a"),
             ("a", "b", ""),
@@ -587,12 +611,13 @@ mod test {
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
         ] {
-            test_op(a, b, res, |x, y| x.intersect(y), "∩");
+            test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
         }
     }
 
     #[test]
     fn test_difference() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("ab a b c", "ab a", "b c"),
             ("a", "b", "a"),
@@ -605,12 +630,13 @@ mod test {
             ("ab bc cd", "bc", "ab cd"),
             ("", "a b", ""),
         ] {
-            test_op(a, b, res, |x, y| x.difference(y), "-");
+            test_op(a, b, res, |x, y| x.difference(y), "-", &holder);
         }
     }
 
     #[test]
     fn test_union() {
+        let holder = ZddHolder::new();
         for (a, b, res) in [
             ("ab ", "a", "ab a "),
             ("", "", ""),
@@ -623,7 +649,7 @@ mod test {
             (" a", " b", " a b"),
             ("ab c", "a bc", "ab c a bc"),
         ] {
-            test_op(a, b, res, |x, y| x.union(y), "∪");
+            test_op(a, b, res, |x, y| x.union(y), "∪", &holder);
         }
     }
 }

@@ -10,9 +10,9 @@ use std::{
     hash::Hash,
 };
 
-use crate::{SetFamily, Zdd};
+use crate::SetFamily;
 
-use super::{RawZdd, ZddHolder};
+use super::RawZdd;
 
 enum OptimizationFrame<V> {
     Search(RawZdd<V>),
@@ -145,7 +145,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///
     ///# Panics
     ///May panic if `self` is an invalid index for the [`ZddHolder`]
-    pub fn minimal_sets<'b, F: Fn(&V) -> usize>(&'b self, f: F) -> MinimalSetIterator<'a, 'b, V> {
+    pub fn minimal_sets<F: Fn(&V) -> usize>(&self, f: F) -> MinimalSetIterator<'a, V> {
         let minimum_cost_lookup = self.minimal_set_inner(f);
         let min_cost = minimum_cost_lookup
             .get(&self.as_raw())
@@ -155,7 +155,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
         MinimalSetIterator {
             stack: vec![(self.as_raw(), (vec![], 0))],
             minimum_cost_lookup,
-            root: self,
+            root: self.clone(),
             min_cost,
         }
     }
@@ -225,22 +225,23 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
 ///Iterates over all sets that are minimal by weight.
 ///
 ///See [`SetFamily::only_minimal_sets`]
-pub struct MinimalSetIterator<'a, 'b, V: Eq + Hash> {
+pub struct MinimalSetIterator<'a, V: Eq + Hash> {
     #[expect(clippy::type_complexity)]
     stack: Vec<(RawZdd<V>, (Vec<V>, usize))>,
-    root: &'b SetFamily<'a, V>,
+    root: SetFamily<'a, V>,
     minimum_cost_lookup: HashMap<RawZdd<V>, MinWeightCost>,
     min_cost: UsizeOrPositiveInfinity,
 }
 
-impl<'a, V: Eq + Hash> MinimalSetIterator<'a, '_, V> {
+impl<V: Eq + Hash> MinimalSetIterator<'_, V> {
     ///Find the minimal cost of all sets.
     #[must_use]
     pub fn min_cost(&self) -> Option<usize> {
         self.min_cost.into()
     }
 
-    fn minimum_costs(&self) -> HashMap<SetFamily<'a, V>, MinWeightCost> {
+    #[cfg(test)]
+    fn minimum_costs(&self) -> HashMap<SetFamily<'_, V>, MinWeightCost> {
         self.minimum_cost_lookup
             .iter()
             .map(|(x, y)| (SetFamily::from_set_family(*x, self.root.manager), *y))
@@ -248,7 +249,7 @@ impl<'a, V: Eq + Hash> MinimalSetIterator<'a, '_, V> {
     }
 }
 
-impl<V: Clone + Debug + Eq + Hash> Iterator for MinimalSetIterator<'_, '_, V> {
+impl<V: Clone + Debug + Eq + Hash> Iterator for MinimalSetIterator<'_, V> {
     type Item = Vec<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -296,7 +297,7 @@ mod test {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::check_valid_zdd;
+    use crate::{ZddHolder, check_valid_zdd};
 
     use super::*;
 
