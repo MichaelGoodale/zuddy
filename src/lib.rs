@@ -33,6 +33,14 @@ pub struct SetFamily<'a, V: Eq + Hash> {
     manager: &'a ZddHolder<V>,
 }
 
+impl<'a, V: Eq + Hash> Hash for SetFamily<'a, V> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.phantom.hash(state);
+        std::ptr::from_ref(self.manager).hash(state);
+    }
+}
+
 impl<V: Eq + Hash> PartialEq for SetFamily<'_, V> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && std::ptr::eq(self.manager, other.manager)

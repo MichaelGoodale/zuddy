@@ -369,10 +369,12 @@ mod test {
         assert_eq!(lorem.minimal_set_size(char_value, &holder).unwrap(), n);
 
         let min_sets = lorem.minimal_sets(char_value, &holder);
+        todo!();
+        /*
         println!(
             "{}",
             lorem.graphviz_with_extra(&min_sets.minimum_cost_lookup, &holder)
-        );
+        );*/
         let sets = min_sets
             .map(|x| x.into_iter().collect::<BTreeSet<_>>())
             .collect::<Vec<_>>();
@@ -413,7 +415,8 @@ mod test {
 
         let mut all_grammar = RawZdd::ONE;
         for s in sets {
-            all_grammar = all_grammar.join(s, &mut holder);
+            all_grammar = todo!();
+            //all_grammar = all_grammar.join(s, &mut holder);
             check_valid_zdd(all_grammar, &holder);
         }
 
@@ -442,8 +445,10 @@ mod test {
         let mut iterated_sets = vec![];
         let iter = all_grammar.minimal_sets(|x| usize::from(x.weight), &holder);
 
+        todo!();
+        /*
         let gviz = all_grammar.graphviz_with_extra(&iter.minimum_cost_lookup, &holder);
-        println!("{gviz}");
+        println!("{gviz}");*/
 
         for g in iter {
             let size = g.iter().map(|x| usize::from(x.weight)).sum::<usize>();

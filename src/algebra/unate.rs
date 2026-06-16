@@ -5,7 +5,7 @@ use std::{
 
 use crate::{Operations, RawZdd, SetFamily, Zdd, ZddHolder};
 
-fn cmp_tops<V: Ord + Hash + Eq + Clone>(
+fn cmp_tops_raw<V: Ord + Hash + Eq + Clone>(
     a: RawZdd<V>,
     b: RawZdd<V>,
     holder: &ZddHolder<V>,
@@ -18,6 +18,20 @@ fn cmp_tops<V: Ord + Hash + Eq + Clone>(
         (_, _) => {
             let (a, _, _) = a.get(holder).unwrap();
             let (b, _, _) = b.get(holder).unwrap();
+            a.cmp(&b)
+        }
+    }
+}
+
+fn cmp_tops<V: Ord + Hash + Eq + Clone>(a: &SetFamily<V>, b: &SetFamily<V>) -> std::cmp::Ordering {
+    match (a.id, b.id) {
+        (a, b) if a == b => Equal,
+        (1 | 0, 0 | 1) => Equal,
+        (1 | 0, _) => Greater,
+        (_, 0 | 1) => Less,
+        (_, _) => {
+            let (a, _, _) = a.get().unwrap();
+            let (b, _, _) = b.get().unwrap();
             a.cmp(&b)
         }
     }
@@ -94,9 +108,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
         holder.into_cache(op, r)
     }
-}
 
-impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets.
     ///
@@ -105,45 +117,40 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
-    pub fn join(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        if cmp_tops(self, other, holder) == Greater {
-            return other.join(self, holder);
+    pub fn join(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        if cmp_tops(&self, &other) == Greater {
+            return other.join(self);
         }
 
         if other.is_zero() {
-            return RawZdd::ZERO;
+            return other;
         }
         if other.is_one() {
             return self;
         }
 
-        let op = Operations::Join(self, other);
-        if let Some(r) = holder.cache.get(&op) {
-            return *r;
+        let holder = self.manager;
+        let op = Operations::Join(self.as_raw(), other.as_raw());
+        if let Some(r) = holder.from_cache(&op) {
+            return r;
         }
 
-        let (value, self_lo, self_hi) = self.get(holder).expect("Invalid index!");
-        let (other_v, mut other_lo, mut other_hi) = other.get(holder).expect("Invalid index!");
+        let (value, self_lo, self_hi) = self.get().expect("Invalid index!");
+        let (other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
 
         if other_v > value {
             other_lo = other;
-            other_hi = RawZdd::ZERO;
+            other_hi = self.manager.zero();
         }
-        let a = self_hi.join(other_hi, holder);
-        let b = self_hi.join(other_lo, holder);
-        let c = self_lo.join(other_hi, holder);
-        let product = a.union(b, holder).union(c, holder);
-        let v_product = holder.get_node_seq(Zdd {
-            value,
-            lo: RawZdd::ZERO,
-            hi: product,
-        });
+        let a = self_hi.clone().join(other_hi.clone());
+        let b = self_hi.clone().join(other_lo.clone());
+        let c = self_lo.clone().join(other_hi);
+        let product = a.union(b).union(c);
+        let v_product = holder.get_node(value, holder.zero(), product);
 
-        let joined = v_product.union(self_lo.join(other_lo, holder), holder);
+        let joined = v_product.union(self_lo.join(other_lo));
 
-        holder.cache.insert(op, joined);
-
-        joined
+        holder.into_cache(op, joined)
     }
 
     /// The remainder of `self` divided by `other` according to the unate cub set algebra.
@@ -155,17 +162,17 @@ impl<V: Hash + Ord + Eq + Clone> RawZdd<V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
     ///[`SetFamily::ZERO`] (the empty set)**.
     #[must_use]
-    pub fn remainder(self, other: RawZdd<V>, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        todo!()
-        //self.difference(other.join(self.divide(other, holder), holder), holder)
+    pub fn remainder(self, other: Self) -> Self {
+        self.clone()
+            .difference(other.clone().join(self.divide(other)))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{RawZdd, SetFamily};
+    use crate::SetFamily;
 
-    use crate::algebra::{test_op, test_op_raw};
+    use crate::algebra::test_op;
 
     #[test]
     fn test_join() {
@@ -184,7 +191,7 @@ mod test {
             ("a b c", "d", "ad bd cd"),
             ("a b", "  ", "a b"),
         ] {
-            test_op_raw(a, b, res, RawZdd::join, "*");
+            test_op(a, b, res, |x, y| SetFamily::join(x, y), "*");
         }
     }
 
@@ -208,7 +215,7 @@ mod test {
             ("ab ac a", "a", ""),
             ("abd abe abg cd ce ch", "ab c", "abg ch"),
         ] {
-            test_op_raw(a, b, res, RawZdd::remainder, "%");
+            test_op(a, b, res, |x, y| x.remainder(y), "%");
         }
     }
 }

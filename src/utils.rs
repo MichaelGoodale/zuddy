@@ -2,20 +2,23 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt::{Display, Write},
     hash::{BuildHasher, Hash},
+    marker::PhantomData,
 };
+
+use crate::SetFamily;
 
 use super::{RawZdd, Zdd, ZddHolder};
 
-impl<V: Display + Eq + Hash> RawZdd<V> {
+impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
     ///
     ///# Panics
     ///
     ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
     #[must_use]
-    pub fn graphviz(&self, holder: &ZddHolder<V>) -> String {
+    pub fn graphviz(&self) -> String {
         let extra = HashMap::new();
-        self.graphviz_with_extra::<char, _>(&extra, holder)
+        self.graphviz_with_extra::<char, _>(&extra)
     }
 
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -28,17 +31,16 @@ impl<V: Display + Eq + Hash> RawZdd<V> {
     #[must_use]
     pub fn graphviz_with_extra<T: Display, S: BuildHasher>(
         &self,
-        extra: &HashMap<RawZdd<V>, T, S>,
-        holder: &ZddHolder<V>,
+        extra: &HashMap<SetFamily<'a, V>, T, S>,
     ) -> String {
         let mut s = String::new();
         writeln!(s, "digraph DAG {{\n  node [ordering=\"out\"];").unwrap();
-        let mut q = VecDeque::from([self]);
+        let mut q = VecDeque::from([RawZdd(self.id, PhantomData)]);
         let mut nodes = BTreeMap::new();
         let mut seen: BTreeSet<&RawZdd<_>> = BTreeSet::new();
         let mut edges = vec![];
 
-        let data = holder.data.read().unwrap();
+        let data = self.manager.data.read().unwrap();
         while let Some(x) = q.pop_front() {
             if x.is_zero() {
                 nodes.insert(x, "⊥".to_string());
@@ -56,7 +58,7 @@ impl<V: Display + Eq + Hash> RawZdd<V> {
         }
 
         for (n, i) in nodes {
-            if let Some(x) = extra.get(n) {
+            if let Some(x) = extra.get(&SetFamily::from_set_family(n, self.manager)) {
                 writeln!(s, "  {} [label=\"{} ({})\"];", n.0, i, x).unwrap();
             } else {
                 writeln!(s, "  {} [label=\"{}\"];", n.0, i).unwrap();
@@ -99,6 +101,28 @@ impl<V: Eq + Hash> RawZdd<V> {
 
         holder.sum_cache.insert(*self, sum);
         sum
+    }
+}
+
+impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+    ///Creates a singleton set from a value.
+    ///```
+    ///use zuddy::{ZddHolder, SetFamily};
+    ///let mut holder = ZddHolder::<char>::new();
+    ///
+    /// let a = SetFamily::singleton('a', &mut holder);
+    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
+    ///```
+    #[must_use]
+    pub fn singleton(value: V, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+        SetFamily::from_set_family(
+            holder.get_node_seq(Zdd {
+                value,
+                lo: RawZdd::ZERO,
+                hi: RawZdd::ONE,
+            }),
+            holder,
+        )
     }
 }
 

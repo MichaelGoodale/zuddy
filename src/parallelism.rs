@@ -144,10 +144,12 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self.pools.pools.clone()
     }
 
+    #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn get_node<'a>(
         &'a self,
         value: V,
         lo: SetFamily<'a, V>,
+
         hi: SetFamily<'a, V>,
     ) -> SetFamily<'a, V> {
         if hi.is_zero() {
