@@ -3,7 +3,9 @@ use std::hash::Hash;
 use rand::Rng;
 use rand::prelude::*;
 
-use crate::{RawZdd, ZddHolder};
+use crate::RawZdd;
+use crate::SetFamily;
+use crate::ZddHolder;
 
 enum EdgeType {
     Lo,
@@ -13,8 +15,8 @@ enum EdgeType {
 fn choose_lo_or_hi<V: Hash + Eq + Ord + Clone>(
     lo: RawZdd<V>,
     hi: RawZdd<V>,
+    holder: &ZddHolder<V>,
     rng: &mut impl Rng,
-    holder: &mut ZddHolder<V>,
 ) -> EdgeType {
     let hi_c = hi.size(holder).unwrap();
     let lo_c = lo.size(holder).unwrap();
@@ -33,22 +35,26 @@ fn choose_lo_or_hi<V: Hash + Eq + Ord + Clone>(
     }
 }
 
-impl<V: Hash + Eq + Ord + Clone> RawZdd<V> {
+impl<V: Hash + Eq + Ord + Clone> SetFamily<'_, V> {
     ///Randomly samples from the [`SetFamily`] according to a uniform distribution.
     ///
     ///# Panics
     /// - If trying to sample from an empty family.
     /// - May panic if the number of possible paths is too large to be represented as a usize
-    pub fn sample(mut self: RawZdd<V>, rng: &mut impl Rng, holder: &mut ZddHolder<V>) -> Vec<V> {
+    pub fn sample(&self, rng: &mut impl Rng) -> Vec<V> {
         assert!(!self.is_zero(), "Cannot sample from the empty set!");
         let mut path = vec![];
-        while !self.is_zero() && !self.is_one() {
-            let (_, lo, hi) = self.get(holder).unwrap();
-            match choose_lo_or_hi(lo, hi, rng, holder) {
-                EdgeType::Lo => self = lo,
+        let mut this = self.as_raw();
+        //We can do everything with RawZdd without worry as they are all descendants of `self` and
+        //thus won't be garbage collected.
+
+        while !this.is_zero() && !this.is_one() {
+            let (lo, hi) = this.children(self.manager).unwrap();
+            match choose_lo_or_hi(lo, hi, self.manager, rng) {
+                EdgeType::Lo => this = lo,
                 EdgeType::Hi => {
-                    path.push(self.get(holder).unwrap().0.clone());
-                    self = hi;
+                    path.push(this.get(self.manager).unwrap().0.clone());
+                    this = hi;
                 }
             }
         }
@@ -61,7 +67,7 @@ mod test {
     use rand::prelude::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    use crate::{RawZdd, ZddHolder};
+    use crate::{SetFamily, ZddHolder};
 
     #[expect(clippy::cast_precision_loss)]
     fn chi_squared_uniform(counts: &[usize]) -> bool {
@@ -105,13 +111,10 @@ mod test {
             .collect::<BTreeMap<_, _>>();
 
         let mut holder = ZddHolder::new();
-        let set = RawZdd::from_sets(sets, &mut holder);
+        let set = SetFamily::from_sets(sets, &mut holder);
         let mut rng = rand::rngs::StdRng::seed_from_u64(0);
         for _ in 0..1000 {
-            let sample = set
-                .sample(&mut rng, &mut holder)
-                .into_iter()
-                .collect::<BTreeSet<_>>();
+            let sample = set.sample(&mut rng).into_iter().collect::<BTreeSet<_>>();
             *sample_counts.get_mut(&sample).unwrap() += 1;
         }
         println!("{sample_counts:?}");

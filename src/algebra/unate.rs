@@ -1,27 +1,8 @@
+use crate::{Operations, SetFamily};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     hash::Hash,
 };
-
-use crate::{Operations, RawZdd, SetFamily, Zdd, ZddHolder};
-
-fn cmp_tops_raw<V: Ord + Hash + Eq + Clone>(
-    a: RawZdd<V>,
-    b: RawZdd<V>,
-    holder: &ZddHolder<V>,
-) -> std::cmp::Ordering {
-    match (a.0, b.0) {
-        (a, b) if a == b => Equal,
-        (1 | 0, 0 | 1) => Equal,
-        (1 | 0, _) => Greater,
-        (_, 0 | 1) => Less,
-        (_, _) => {
-            let (a, _, _) = a.get(holder).unwrap();
-            let (b, _, _) = b.get(holder).unwrap();
-            a.cmp(&b)
-        }
-    }
-}
 
 fn cmp_tops<V: Ord + Hash + Eq + Clone>(a: &SetFamily<V>, b: &SetFamily<V>) -> std::cmp::Ordering {
     match (a.id, b.id) {
@@ -91,7 +72,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
         }
 
         let op = Operations::Division(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -106,7 +87,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             r = r.intersect(r_l);
         }
 
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///Performs join (Minato, 1994 refers to this as "product") over two family
@@ -131,7 +112,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
         let holder = self.manager;
         let op = Operations::Join(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -150,7 +131,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
         let joined = v_product.union(self_lo.join(other_lo));
 
-        holder.into_cache(op, joined)
+        holder.put_into_cache(op, joined)
     }
 
     /// The remainder of `self` divided by `other` according to the unate cub set algebra.

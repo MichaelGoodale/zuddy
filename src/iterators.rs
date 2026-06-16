@@ -1,12 +1,14 @@
 use std::hash::Hash;
 
-use super::{RawZdd, ZddHolder};
+use crate::SetFamily;
+
+use super::RawZdd;
 
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.
 pub struct ZddIter<'a, V: Eq + Hash> {
     stack: Vec<(RawZdd<V>, Vec<V>)>,
-    holder: &'a ZddHolder<V>,
+    root: SetFamily<'a, V>,
 }
 
 impl<V: Eq + Clone + Hash> Iterator for ZddIter<'_, V> {
@@ -21,7 +23,7 @@ impl<V: Eq + Clone + Hash> Iterator for ZddIter<'_, V> {
                 return Some(current_set);
             }
 
-            let (v, lo, hi) = node.get(self.holder).unwrap();
+            let (v, lo, hi) = node.get(self.root.manager).unwrap();
 
             if !lo.is_zero() {
                 self.stack.push((lo, current_set.clone()));
@@ -36,13 +38,14 @@ impl<V: Eq + Clone + Hash> Iterator for ZddIter<'_, V> {
     }
 }
 
-impl<V: Eq + Hash> RawZdd<V> {
+impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     ///Returns a [`ZddIter`] to iterate over all the valid combinations in this family.
     #[must_use]
-    pub fn members(self, holder: &ZddHolder<V>) -> ZddIter<'_, V> {
+    pub fn members(&self) -> ZddIter<'a, V> {
+        //We can use raws here since they will all be children of self.
         ZddIter {
-            stack: vec![(self, Vec::new())],
-            holder,
+            stack: vec![(self.as_raw(), Vec::new())],
+            root: self.clone(),
         }
     }
 }

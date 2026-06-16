@@ -74,7 +74,7 @@ impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
     }
 }
 
-impl<V: Eq + Hash> RawZdd<V> {
+impl<V: Eq + Hash> SetFamily<'_, V> {
     ///Count the number of possible comibinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
@@ -82,7 +82,14 @@ impl<V: Eq + Hash> RawZdd<V> {
     ///
     ///# Panics
     ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
-    pub fn size(&self, holder: &mut ZddHolder<V>) -> Option<usize> {
+    #[must_use]
+    pub fn size(&self) -> Option<usize> {
+        self.as_raw().size(self.manager)
+    }
+}
+
+impl<V: Eq + Hash> RawZdd<V> {
+    pub(crate) fn size(self, holder: &ZddHolder<V>) -> Option<usize> {
         if self.is_zero() {
             return Some(0);
         }
@@ -90,8 +97,8 @@ impl<V: Eq + Hash> RawZdd<V> {
             return Some(1);
         }
 
-        if let Some(&sum) = holder.sum_cache.get(self) {
-            return sum;
+        if let Some(sum) = holder.sum_cache.get(&self) {
+            return *sum;
         }
         let (lo, hi) = self.children(holder).unwrap();
 
@@ -99,7 +106,7 @@ impl<V: Eq + Hash> RawZdd<V> {
             .size(holder)
             .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
 
-        holder.sum_cache.insert(*self, sum);
+        holder.sum_cache.insert(self, sum);
         sum
     }
 }
@@ -110,8 +117,8 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
     ///
-    /// let a = SetFamily::singleton('a', &mut holder);
-    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
+    /// let a = SetFamily::singleton('a', &holder);
+    /// assert_eq!(a.members().collect::<Vec<_>>(), vec![vec!['a']]);
     ///```
     #[must_use]
     pub fn singleton(value: V, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
@@ -123,24 +130,5 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
             }),
             holder,
         )
-    }
-}
-
-impl<V: Eq + Hash + Clone> RawZdd<V> {
-    ///Creates a singleton set from a value.
-    ///```
-    ///use zuddy::{ZddHolder, SetFamily};
-    ///let mut holder = ZddHolder::<char>::new();
-    ///
-    /// let a = SetFamily::singleton('a', &mut holder);
-    /// assert_eq!(a.members(&holder).collect::<Vec<_>>(), vec![vec!['a']]);
-    ///```
-    #[must_use]
-    pub fn singleton(value: V, holder: &mut ZddHolder<V>) -> RawZdd<V> {
-        holder.get_node_seq(Zdd {
-            value,
-            lo: RawZdd::ZERO,
-            hi: RawZdd::ONE,
-        })
     }
 }

@@ -10,13 +10,15 @@ use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 use crate::{RawZdd, SetFamily, Zdd, ZddHolder, free_id};
 
 impl<'a, V: Eq + Hash> SetFamily<'a, V> {
-    fn children(self, holder: &ZddHolder<V>) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
-        holder.data.read().unwrap()[self.id].as_ref().map(|x| {
-            (
-                SetFamily::from_set_family(x.lo, self.manager),
-                SetFamily::from_set_family(x.hi, self.manager),
-            )
-        })
+    pub(crate) fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
+        self.manager.data.read().unwrap()[self.id]
+            .as_ref()
+            .map(|x| {
+                (
+                    SetFamily::from_set_family(x.lo, self.manager),
+                    SetFamily::from_set_family(x.hi, self.manager),
+                )
+            })
     }
 
     pub(crate) fn lo(self) -> Option<SetFamily<'a, V>> {
@@ -25,7 +27,7 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
-    fn hi(self, holder: &ZddHolder<V>) -> Option<SetFamily<'a, V>> {
+    pub(crate) fn hi(self, holder: &ZddHolder<V>) -> Option<SetFamily<'a, V>> {
         holder.data.read().unwrap()[self.id]
             .as_ref()
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
@@ -46,6 +48,10 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
             phantom: PhantomData,
         }
     }
+
+    pub(crate) fn as_raw(&self) -> RawZdd<V> {
+        RawZdd(self.id, PhantomData)
+    }
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     pub(crate) fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
@@ -58,10 +64,6 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
                     SetFamily::from_set_family(x.hi, self.manager),
                 )
             })
-    }
-
-    pub(crate) fn as_raw(&self) -> RawZdd<V> {
-        RawZdd(self.id, PhantomData)
     }
 }
 

@@ -1,6 +1,6 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
@@ -26,6 +26,9 @@ mod garbage;
 mod parallelism;
 use parallelism::ZddThreadPool;
 
+///A representation of a family of sets (or otherwise a set of sets).
+///
+///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
 #[derive(Debug)]
 pub struct SetFamily<'a, V: Eq + Hash> {
     id: usize,
@@ -33,7 +36,7 @@ pub struct SetFamily<'a, V: Eq + Hash> {
     manager: &'a ZddHolder<V>,
 }
 
-impl<'a, V: Eq + Hash> Hash for SetFamily<'a, V> {
+impl<V: Eq + Hash> Hash for SetFamily<'_, V> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.phantom.hash(state);
@@ -61,9 +64,7 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     }
 }
 
-///A representation of a family of sets (or otherwise a set of sets).
-///
-///It is always connected to a particular [`ZddHolder`] which holds the actual memory.
+///A raw ZDD index without memory management for GC.
 #[derive(Debug, Serialize, Deserialize)]
 struct RawZdd<V>(usize, PhantomData<V>);
 
@@ -138,21 +139,6 @@ impl<V: Eq + Hash> RawZdd<V> {
             .map(|x| (x.lo, x.hi))
     }
 
-    ///Counts the number of nodes in this [`SetFamily`]
-    ///
-    ///# Panics
-    ///Will panic if `self` is not defined in `holder`.
-    #[must_use]
-    pub fn n_nodes(&self, holder: &ZddHolder<V>) -> usize {
-        if self.is_zero() || self.is_one() {
-            1
-        } else {
-            let mut edge_cache = HashSet::<RawZdd<V>, RandomState>::default();
-            self.n_nodes_inner(&mut edge_cache, holder);
-            edge_cache.len()
-        }
-    }
-
     fn n_nodes_inner(
         self,
         count_cache: &mut HashSet<RawZdd<V>, RandomState>,
@@ -170,6 +156,22 @@ impl<V: Eq + Hash> RawZdd<V> {
         }
     }
 }
+impl<V: Eq + Hash> SetFamily<'_, V> {
+    ///Counts the number of nodes in this [`SetFamily`]
+    ///
+    ///# Panics
+    ///Will panic if `self` is not defined in `holder`.
+    #[must_use]
+    pub fn n_nodes(&self) -> usize {
+        if self.is_zero() || self.is_one() {
+            1
+        } else {
+            let mut edge_cache = HashSet::<RawZdd<V>, RandomState>::default();
+            self.as_raw().n_nodes_inner(&mut edge_cache, self.manager);
+            edge_cache.len()
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
@@ -181,7 +183,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     data: Arc<RwLock<Vec<Option<Zdd<V>>>>>,
     uniq_table: DashMap<Zdd<V>, RawZdd<V>, RandomState>,
     cache: DashMap<Operations<V>, RawZdd<V>, RandomState>,
-    sum_cache: HashMap<RawZdd<V>, Option<usize>, RandomState>,
+    sum_cache: DashMap<RawZdd<V>, Option<usize>, RandomState>,
 }
 
 fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> RawZdd<V> {
@@ -200,7 +202,7 @@ impl<V: Eq + Hash> Default for ZddHolder<V> {
             free: Arc::new(Mutex::new(vec![])),
             data: Arc::new(RwLock::new(vec![None, None])),
             uniq_table: DashMap::default(),
-            sum_cache: HashMap::default(),
+            sum_cache: DashMap::default(),
             cache: DashMap::default(),
         }
     }
@@ -213,7 +215,9 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         ZddHolder::default()
     }
 
-    pub fn zero<'a>(&'a self) -> SetFamily<'a, V> {
+    ///Create a new `[SetFamily]` representing the empty set ({}).
+    #[must_use]
+    pub fn zero(&self) -> SetFamily<'_, V> {
         SetFamily {
             id: ZERO_IDX,
             phantom: PhantomData,
@@ -221,7 +225,9 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         }
     }
 
-    pub fn one<'a>(&'a self) -> SetFamily<'a, V> {
+    ///Create a new `[SetFamily]` representing the set containing only the empty set ({{}}).
+    #[must_use]
+    pub fn one(&self) -> SetFamily<'_, V> {
         SetFamily {
             id: ONE_IDX,
             phantom: PhantomData,
@@ -229,13 +235,13 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         }
     }
 
-    pub(crate) fn from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
+    pub(crate) fn get_from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
         self.cache
             .get(op)
             .map(|s| SetFamily::from_set_family(*s, self))
     }
 
-    pub(crate) fn into_cache<'a>(
+    pub(crate) fn put_into_cache<'a>(
         &'a self,
         op: Operations<V>,
         value: SetFamily<'a, V>,
@@ -261,7 +267,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         data.push(None);
 
         let uniq_table = DashMap::with_capacity_and_hasher(n, RandomState::new());
-        let sum_cache = HashMap::with_capacity_and_hasher(n, RandomState::new());
+        let sum_cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
         let cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
 
         Self {
@@ -319,13 +325,11 @@ fn from_sets<V: Eq + Hash + Ord + Clone>(
         return RawZdd::ZERO;
     }
 
-    #[expect(clippy::missing_panics_doc)]
     if sets.len() == 1 && sets.first().unwrap().is_empty() {
         return RawZdd::ONE;
     }
 
     //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
-    #[expect(clippy::missing_panics_doc)]
     let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
 
     let with_min_val = sets
@@ -353,7 +357,7 @@ impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
     ///let sets = ["abcd", "ac", "a", "bc", "b", "c"];
     ///let x = sets.iter().map(|x| x.chars().collect()).collect();
     ///let z = SetFamily::from_sets(x, &holder);
-    ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
+    ///let members: Vec<String> = z.members().map(|x| x.into_iter().collect()).collect();
     ///assert_eq!(members, sets);
     ///```
     #[must_use]
@@ -364,26 +368,6 @@ impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
         let mut free = holder.free.lock().unwrap();
         let uniq_table = &holder.uniq_table;
         SetFamily::from_set_family(from_sets(sets, &mut data, &mut free, uniq_table), holder)
-    }
-}
-
-impl<V: Ord + Clone + Hash + Eq> RawZdd<V> {
-    ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
-    ///
-    ///```
-    ///use zuddy::{ZddHolder, SetFamily};
-    ///let mut holder = ZddHolder::<char>::new();
-    ///let sets = ["abcd", "ac", "a", "bc", "b", "c"];
-    ///let x = sets.iter().map(|x| x.chars().collect()).collect();
-    ///let z = SetFamily::from_sets(x, &mut holder);
-    ///let members: Vec<String> = z.members(&mut holder).map(|x| x.into_iter().collect()).collect();
-    ///assert_eq!(members, sets);
-    ///```
-    pub fn from_sets(mut sets: BTreeSet<BTreeSet<V>>, holder: &ZddHolder<V>) -> RawZdd<V> {
-        let mut data = holder.data.write().unwrap();
-        let mut free = holder.free.lock().unwrap();
-        let uniq_table = &holder.uniq_table;
-        from_sets(sets, &mut data, &mut free, uniq_table)
     }
 }
 
@@ -445,14 +429,11 @@ mod tests {
         let universe = BTreeSet::from([1, 2, 3]);
         let subsets = all_subsets(&universe);
         let combos_of_subsets = all_subsets(&subsets);
-        let mut holder = ZddHolder::<usize>::default();
+        let holder = ZddHolder::<usize>::default();
         for x in combos_of_subsets {
-            let set_zdd = RawZdd::from_sets(x.clone(), &mut holder);
-            check_valid_zdd(set_zdd, &holder);
-            let reconstructed_set = set_zdd
-                .members(&holder)
-                .map(|x| x.into_iter().collect())
-                .collect();
+            let set_zdd = SetFamily::from_sets(x.clone(), &holder);
+            check_valid_zdd(set_zdd.as_raw(), &holder);
+            let reconstructed_set = set_zdd.members().map(|x| x.into_iter().collect()).collect();
             assert_eq!(x, reconstructed_set);
         }
     }

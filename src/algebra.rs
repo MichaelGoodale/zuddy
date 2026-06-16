@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SetFamily;
 
-use super::{RawZdd, Zdd, ZddHolder};
+use super::RawZdd;
 use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
@@ -61,10 +61,10 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     /// sets.insert(BTreeSet::from(['a']));
     /// sets.insert(BTreeSet::from(['b']));
     ///
-    /// let z = SetFamily::from_sets(sets, &mut holder);
-    /// let z_offset = z.offset('a', &mut holder);
+    /// let z = SetFamily::from_sets(sets, &holder);
+    /// let z_offset = z.offset('a');
     ///
-    /// let members: Vec<Vec<char>> = z_offset.members(&holder).collect();
+    /// let members: Vec<Vec<char>> = z_offset.members().collect();
     /// assert_eq!(members, vec![vec!['b']]);
     ///```
     ///
@@ -86,7 +86,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
         let holder = self.manager;
         let op = Operations::Offset(self.as_raw(), value.clone());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -95,7 +95,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             self_lo.offset(value.clone()),
             self_hi.offset(value),
         );
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///Creates a ZDD with all combinations that include `value` and then deletes `value` from those
@@ -113,10 +113,10 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     /// sets.insert(BTreeSet::from(['a']));
     /// sets.insert(BTreeSet::from(['b']));
     ///
-    /// let z = SetFamily::from_sets(sets, &mut holder);
-    /// let z_offset = z.onset('a', &mut holder);
+    /// let z = SetFamily::from_sets(sets, &holder);
+    /// let z_offset = z.onset('a');
     ///
-    /// let members: Vec<Vec<char>> = z_offset.members(&holder).collect();
+    /// let members: Vec<Vec<char>> = z_offset.members().collect();
     /// assert_eq!(members, vec![vec!['b'], vec![]]);
     ///```
     ///
@@ -138,7 +138,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
         }
 
         let op = Operations::Onset(self.as_raw(), value.clone());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -147,7 +147,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             self_lo.onset(value.clone()),
             self_hi.onset(value),
         );
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///The set intersection of `self` and `other`
@@ -160,13 +160,13 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     /// let mut sets1 = BTreeSet::new();
     /// sets1.insert(BTreeSet::from(['a', 'b']));
     /// sets1.insert(BTreeSet::from(['a']));
-    /// let z1 = SetFamily::from_sets(sets1, &mut holder);
+    /// let z1 = SetFamily::from_sets(sets1, &holder);
     ///
-    /// let mut z2 = SetFamily::singleton('a', &mut holder);
+    /// let mut z2 = SetFamily::singleton('a', &holder);
     ///
-    /// let z_intersect = z1.intersect(z2, &mut holder);
+    /// let z_intersect = z1.intersect(z2);
     ///
-    /// let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
+    /// let members: Vec<Vec<char>> = z_intersect.members().collect();
     /// assert_eq!(members, vec![vec!['a']]);
     ///```
     ///
@@ -182,7 +182,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             return self;
         }
         let op = Operations::Intersect(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -208,7 +208,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
                 holder.get_node(self_val, lo, hi)
             }
         };
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///Takes the set union of two families of sets.
@@ -217,11 +217,11 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     ///use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
     ///
-    /// let a = SetFamily::singleton('a', &mut holder);
-    /// let b = SetFamily::singleton('b', &mut holder);
-    /// let c = SetFamily::singleton('c', &mut holder);
-    /// assert_eq!(a.union(b, &mut holder).size(&mut holder), Some(2));
-    /// assert_eq!(a.union(b, &mut holder).union(c, &mut holder).size(&mut holder), Some(3));
+    /// let a = SetFamily::singleton('a', & holder);
+    /// let b = SetFamily::singleton('b', & holder);
+    /// let c = SetFamily::singleton('c', & holder);
+    /// assert_eq!(a.clone().union(b.clone()).size(), Some(2));
+    /// assert_eq!(a.union(b).union(c).size(), Some(3));
     ///```
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
@@ -236,7 +236,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
 
         let holder = self.manager;
         let op = Operations::Union(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -272,7 +272,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             }
         };
 
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///The set difference of `self` and `other`
@@ -285,13 +285,13 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     /// let mut sets1 = BTreeSet::new();
     /// sets1.insert(BTreeSet::from(['a', 'b']));
     /// sets1.insert(BTreeSet::from(['a']));
-    /// let z1 = SetFamily::from_sets(sets1, &mut holder);
+    /// let z1 = SetFamily::from_sets(sets1, &holder);
     ///
-    /// let mut z2 = SetFamily::singleton('a', &mut holder);
+    /// let mut z2 = SetFamily::singleton('a', &holder);
     ///
-    /// let z_intersect = z1.difference(z2, &mut holder);
+    /// let z_intersect = z1.difference(z2);
     ///
-    /// let members: Vec<Vec<char>> = z_intersect.members(&holder).collect();
+    /// let members: Vec<Vec<char>> = z_intersect.members().collect();
     /// assert_eq!(members, vec![vec!['a', 'b']]);
     ///```
     ///
@@ -307,7 +307,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
         }
         let holder = self.manager;
         let op = Operations::Difference(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -336,7 +336,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
                 holder.get_node(self_val, lo, hi)
             }
         };
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 
     ///Inverts whether a value is included or not included on each combination in the family.
@@ -346,15 +346,15 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
     ///use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
     ///
-    ///let a = SetFamily::singleton('a', &mut holder);
-    ///let b = SetFamily::singleton('b', &mut holder);
-    ///let c = SetFamily::singleton('c', &mut holder);
-    ///let a_b_c = a.union(b, &mut holder).union(c, &mut holder);
-    ///assert_eq!(a_b_c.members(&holder).map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec![ "a", "b", "c",]);
-    ///println!("{}", a_b_c.graphviz(&holder));
-    ///let changed = a_b_c.change('c', &mut holder);
-    ///println!("{}", changed.graphviz(&holder));
-    ///assert_eq!(changed.members(&holder).map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec!["ac", "bc", ""]);
+    ///let a = SetFamily::singleton('a', &holder);
+    ///let b = SetFamily::singleton('b', &holder);
+    ///let c = SetFamily::singleton('c', &holder);
+    ///let a_b_c = a.union(b).union(c);
+    ///assert_eq!(a_b_c.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec![ "a", "b", "c",]);
+    ///println!("{}", a_b_c.graphviz());
+    ///let changed = a_b_c.change('c');
+    ///println!("{}", changed.graphviz());
+    ///assert_eq!(changed.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec!["ac", "bc", ""]);
     ///
     ///```
     ///# Panics
@@ -378,7 +378,7 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
             return holder.get_node(value, holder.zero(), self.clone());
         }
         let op = Operations::Change(self.as_raw(), value.clone());
-        if let Some(r) = holder.from_cache(&op) {
+        if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
@@ -387,12 +387,15 @@ impl<'a, V: Hash + Ord + Eq + Clone> SetFamily<'a, V> {
         let new_hi = hi.change(value);
 
         let r = holder.get_node(this_val, new_lo, new_hi);
-        holder.into_cache(op, r)
+        holder.put_into_cache(op, r)
     }
 }
 
 #[cfg(test)]
 use std::collections::BTreeSet;
+
+#[cfg(test)]
+use crate::ZddHolder;
 
 #[cfg(test)]
 fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
@@ -422,25 +425,17 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
     let a_set_len = a_sets.len();
     let b_set_len = b_sets.len();
 
-    let mut holder = ZddHolder::new();
+    let holder = ZddHolder::new();
     let a = SetFamily::from_sets(a_sets, &holder);
     let b = SetFamily::from_sets(b_sets, &holder);
-    let a_raw = a.as_raw();
-    let b_raw = b.as_raw();
+    assert_eq!(a.size(), Some(a_set_len));
+    assert_eq!(b.size(), Some(b_set_len));
 
-    {
-        let result = op(a, b);
+    let result = op(a, b);
 
-        let result = result.as_raw();
-        let result_recon: BTreeSet<BTreeSet<char>> = result
-            .members(&holder)
-            .map(|x| x.into_iter().collect())
-            .collect();
-        assert_eq!(result_recon, a_op_b);
-    }
-
-    assert_eq!(a_raw.size(&mut holder), Some(a_set_len));
-    assert_eq!(b_raw.size(&mut holder), Some(b_set_len));
+    let result_recon: BTreeSet<BTreeSet<char>> =
+        result.members().map(|x| x.into_iter().collect()).collect();
+    assert_eq!(result_recon, a_op_b);
 }
 
 #[cfg(test)]
@@ -458,41 +453,36 @@ fn test_single_op<F: for<'a> Fn(&SetFamily<'a, char>, char) -> SetFamily<'a, cha
     println!("{a_sets:?} {op_name} {b} = {a_op_b:?}");
     let a_set_len = a_sets.len();
 
-    let mut holder = ZddHolder::new();
+    let holder = ZddHolder::new();
     let a = SetFamily::from_sets(a_sets, &holder);
-    let a_raw = a.as_raw();
-    {
-        let result = op(&a, b);
+    assert_eq!(a.size(), Some(a_set_len));
+    let result = op(&a, b);
 
-        let result_recon: BTreeSet<BTreeSet<char>> = result
-            .as_raw()
-            .members(&holder)
-            .map(|x| x.into_iter().collect())
-            .collect();
+    let result_recon: BTreeSet<BTreeSet<char>> =
+        result.members().map(|x| x.into_iter().collect()).collect();
 
-        assert_eq!(result_recon, a_op_b);
-        drop(a);
-    }
-    assert_eq!(a_raw.size(&mut holder), Some(a_set_len));
+    assert_eq!(result_recon, a_op_b);
 }
 
 #[cfg(test)]
 mod test {
+    #![expect(clippy::redundant_closure_for_method_calls)]
+
     use super::*;
     use std::collections::BTreeSet;
 
     #[test]
     fn singleton() {
-        let mut holder = ZddHolder::<char>::default();
+        let holder = ZddHolder::<char>::default();
 
         for ch in ['a', 'b', 'c'] {
-            let set = RawZdd::singleton(ch, &mut holder);
-            assert_eq!(set.size(&mut holder).unwrap(), 1);
-            assert_eq!(set.members(&holder).collect::<Vec<_>>(), vec![vec![ch]]);
-            let (ch2, lo, hi) = set.get(&holder).unwrap();
+            let set = SetFamily::singleton(ch, &holder);
+            assert_eq!(set.size().unwrap(), 1);
+            assert_eq!(set.clone().members().collect::<Vec<_>>(), vec![vec![ch]]);
+            let (ch2, lo, hi) = set.get().unwrap();
             assert_eq!(ch2, ch);
-            assert_eq!(lo, RawZdd::ZERO);
-            assert_eq!(hi, RawZdd::ONE);
+            assert_eq!(lo.as_raw(), RawZdd::ZERO);
+            assert_eq!(hi.as_raw(), RawZdd::ONE);
         }
     }
 
@@ -502,8 +492,8 @@ mod test {
 
         let sets = str_to_sets("ab a b");
 
-        let z = RawZdd::from_sets(sets.clone(), &holder);
-        let members: BTreeSet<Vec<char>> = z.members(&holder).collect();
+        let z = SetFamily::from_sets(sets.clone(), &holder);
+        let members: BTreeSet<Vec<char>> = z.members().collect();
 
         let sets: BTreeSet<Vec<_>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
         assert_eq!(members, sets);
@@ -514,20 +504,20 @@ mod test {
         let holder = ZddHolder::<char>::new();
         let sets = BTreeSet::new();
 
-        let z = RawZdd::from_sets(sets, &holder);
-        let members: Vec<Vec<char>> = z.members(&holder).collect();
+        let z = SetFamily::from_sets(sets, &holder);
+        let members: Vec<Vec<char>> = z.members().collect();
 
         assert_eq!(members.len(), 0);
     }
 
     #[test]
     fn test_from_sets_single_element() {
-        let mut holder = ZddHolder::<char>::new();
+        let holder = ZddHolder::<char>::new();
         let mut sets = BTreeSet::new();
         sets.insert(BTreeSet::from(['x']));
 
-        let z = RawZdd::from_sets(sets, &mut holder);
-        let members: Vec<Vec<char>> = z.members(&holder).collect();
+        let z = SetFamily::from_sets(sets, &holder);
+        let members: Vec<Vec<char>> = z.members().collect();
 
         assert_eq!(members, vec![vec!['x']]);
     }
@@ -546,7 +536,7 @@ mod test {
             (" ", 'a', " "),
             ("", 'a', ""),
         ] {
-            test_single_op(a, b, res, |x, y| SetFamily::offset(x, y), "offset");
+            test_single_op(a, b, res, |x, y| x.offset(y), "offset");
         }
     }
 
@@ -563,7 +553,7 @@ mod test {
             ("", 'a', ""),
             ("ab b ac c", 'a', "b c"),
         ] {
-            test_single_op(a, b, res, |x, y| SetFamily::onset(x, y), "onset");
+            test_single_op(a, b, res, |x, y| x.onset(y), "onset");
         }
     }
 
@@ -597,7 +587,7 @@ mod test {
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
         ] {
-            test_op(a, b, res, |x, y| SetFamily::intersect(x, y), "∩");
+            test_op(a, b, res, |x, y| x.intersect(y), "∩");
         }
     }
 
