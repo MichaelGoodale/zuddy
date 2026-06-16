@@ -57,6 +57,7 @@ fn n_queens(board_size: u8) -> usize {
             new_state = new_state.union(x);
         }
         state = new_state;
+        holder.gc();
     }
 
     state.size().unwrap()

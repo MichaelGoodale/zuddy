@@ -86,6 +86,7 @@ fn n_queens(board_size: u8, rng: &mut impl Rng) -> usize {
             new_state = new_state.union(x);
         }
         state = new_state;
+        holder.gc();
     }
 
     let n_sol = state.size().unwrap();

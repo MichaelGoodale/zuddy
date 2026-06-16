@@ -5,11 +5,11 @@ use std::{fmt::Debug, hash::Hash, marker::PhantomData};
 
 impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
-    pub fn gc(&mut self) {
+    pub fn gc(&self) {
         self.pools().install(|| self.inner_gc());
     }
 
-    fn inner_gc(&mut self) {
+    fn inner_gc(&self) {
         let marked = DashSet::new();
         self.protected_values().for_each(|g| mark(g, &marked, self));
 
@@ -34,14 +34,16 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
                 }),
         );
 
-        self.uniq_table.par_extend(
-            self.data
-                .read()
-                .unwrap()
-                .par_iter()
-                .enumerate()
-                .filter_map(|(i, x)| x.as_ref().map(|x| (x.clone(), RawZdd(i, PhantomData)))),
-        );
+        self.data
+            .read()
+            .unwrap()
+            .par_iter()
+            .enumerate()
+            .for_each(|(i, x)| {
+                if let Some(k) = x {
+                    self.uniq_table.insert(k.clone(), RawZdd(i, PhantomData));
+                }
+            });
     }
 }
 
