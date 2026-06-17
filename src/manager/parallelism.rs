@@ -171,6 +171,22 @@ impl<V: Eq + Hash> ZddHolder<V> {
                 .extend((0..how_many_to_add).filter_map(|_| iter.next()));
         }
     }
+    pub(super) fn distribute_free_index_count<I>(&self, indices: I, s: usize)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut iter = indices.into_iter();
+        let n_per = s / self.pools.free_slots.len();
+        let extra = s % self.pools.free_slots.len();
+
+        for (i, x) in self.pools.free_slots.iter().enumerate() {
+            let how_many_to_add = if i < extra { n_per + 1 } else { n_per };
+
+            x.lock()
+                .unwrap()
+                .extend((0..how_many_to_add).filter_map(|_| iter.next()));
+        }
+    }
 
     pub(super) fn drain_free_indices(&self) {
         for x in &self.pools.free_slots {
