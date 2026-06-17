@@ -1,8 +1,5 @@
+use crate::{SetFamily, manager::RawZdd};
 use std::hash::Hash;
-
-use crate::SetFamily;
-
-use super::RawZdd;
 
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.

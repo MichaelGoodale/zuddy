@@ -3,9 +3,9 @@ use std::hash::Hash;
 use rand::Rng;
 use rand::prelude::*;
 
-use crate::RawZdd;
 use crate::SetFamily;
 use crate::ZddHolder;
+use crate::manager::RawZdd;
 
 enum EdgeType {
     Lo,

@@ -10,9 +10,7 @@ use std::{
     hash::Hash,
 };
 
-use crate::SetFamily;
-
-use super::RawZdd;
+use crate::{SetFamily, manager::RawZdd};
 
 enum OptimizationFrame<V> {
     Search(RawZdd<V>),
@@ -297,7 +295,7 @@ mod test {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::{ZddHolder, check_valid_zdd};
+    use crate::ZddHolder;
 
     use super::*;
 
@@ -387,15 +385,12 @@ mod test {
         let (sets, holder) =
             ron::from_str::<(Vec<RawZdd<WeightedId>>, ZddHolder<WeightedId>)>(s).unwrap();
 
-        for x in &sets {
-            check_valid_zdd(*x, &holder);
-        }
-
         let mut all_grammar = holder.one();
         for s in sets {
             let s = SetFamily::from_set_family(s, &holder);
+            s.check_valid_zdd();
             all_grammar = all_grammar.join(s);
-            check_valid_zdd(all_grammar.as_raw(), &holder);
+            all_grammar.check_valid_zdd();
         }
 
         let mut min_size = usize::MAX;

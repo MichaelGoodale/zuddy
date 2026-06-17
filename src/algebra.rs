@@ -24,9 +24,8 @@
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 use serde::{Deserialize, Serialize};
 
-use crate::SetFamily;
+use crate::{SetFamily, manager::RawZdd};
 
-use super::RawZdd;
 use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
@@ -399,7 +398,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
 use std::collections::BTreeSet;
 
 #[cfg(test)]
-use crate::{ZddHolder, check_valid_zdd};
+use crate::ZddHolder;
 
 #[cfg(test)]
 fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
@@ -433,12 +432,12 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
     let a = SetFamily::from_sets(a_sets, holder);
     let b = SetFamily::from_sets(b_sets, holder);
     assert_eq!(a.size(), Some(a_set_len));
-    check_valid_zdd(a.as_raw(), a.manager);
+    a.check_valid_zdd();
     assert_eq!(b.size(), Some(b_set_len));
-    check_valid_zdd(b.as_raw(), b.manager);
+    b.check_valid_zdd();
 
     let result = op(a, b);
-    check_valid_zdd(result.as_raw(), result.manager);
+    result.check_valid_zdd();
 
     let result_recon: BTreeSet<BTreeSet<char>> =
         result.members().map(|x| x.into_iter().collect()).collect();
@@ -468,16 +467,16 @@ fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char
 
     let start_len = start.len();
     let a = SetFamily::from_sets(start, holder);
-    check_valid_zdd(a.as_raw(), a.manager);
+    a.check_valid_zdd();
     assert_eq!(a.size(), Some(start_len));
 
     let mut result = a.clone();
     for action in actions {
         result = op(result, action);
-        check_valid_zdd(result.as_raw(), result.manager);
+        result.check_valid_zdd();
     }
 
-    check_valid_zdd(result.as_raw(), result.manager);
+    result.check_valid_zdd();
     let result_recon: BTreeSet<BTreeSet<char>> =
         result.members().map(|x| x.into_iter().collect()).collect();
 

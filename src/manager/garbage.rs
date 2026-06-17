@@ -1,7 +1,7 @@
-use crate::{RawZdd, ZddHolder};
+use crate::{ZddHolder, manager::RawZdd};
 use dashmap::DashSet;
 use rayon::prelude::*;
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use std::{fmt::Debug, hash::Hash};
 
 impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
@@ -25,7 +25,7 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
                 .enumerate()
                 .skip(2)
                 .filter_map(|(i, x)| {
-                    if marked.contains(&RawZdd(i, PhantomData)) {
+                    if marked.contains(&RawZdd::from(i)) {
                         None
                     } else {
                         *x = None;
@@ -41,7 +41,7 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
             .enumerate()
             .for_each(|(i, x)| {
                 if let Some(k) = x {
-                    self.uniq_table.insert(k.clone(), RawZdd(i, PhantomData));
+                    self.uniq_table.insert(k.clone(), RawZdd::from(i));
                 }
             });
     }

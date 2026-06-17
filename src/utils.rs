@@ -2,14 +2,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt::{Display, Write},
     hash::{BuildHasher, Hash},
-    marker::PhantomData,
 };
 
 use crate::SetFamily;
+use crate::manager::{RawZdd, ZddHolder};
 
-use super::{RawZdd, Zdd, ZddHolder};
-
-impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
+impl<'a, V: Display + Eq + Hash + Clone> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
     ///
     ///# Panics
@@ -35,12 +33,11 @@ impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
     ) -> String {
         let mut s = String::new();
         writeln!(s, "digraph DAG {{\n  node [ordering=\"out\"];").unwrap();
-        let mut q = VecDeque::from([RawZdd(self.id, PhantomData)]);
+        let mut q = VecDeque::from([self.as_raw()]);
         let mut nodes = BTreeMap::new();
-        let mut seen: BTreeSet<&RawZdd<_>> = BTreeSet::new();
+        let mut seen: BTreeSet<_> = BTreeSet::new();
         let mut edges = vec![];
 
-        let data = self.manager.data.read().unwrap();
         while let Some(x) = q.pop_front() {
             if x.is_zero() {
                 nodes.insert(x, "⊥".to_string());
@@ -50,7 +47,7 @@ impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
                 nodes.insert(x, "⊤".to_string());
                 continue;
             }
-            let Zdd { value, lo, hi } = data[x.0].as_ref().unwrap();
+            let (value, lo, hi) = x.get(self.manager).unwrap();
             nodes.insert(x, value.to_string());
             edges.extend([(x, lo, "dashed"), (x, hi, "solid")]);
             q.extend([lo, hi].into_iter().filter(|x| !seen.contains(x)));
@@ -59,14 +56,21 @@ impl<'a, V: Display + Eq + Hash> SetFamily<'a, V> {
 
         for (n, i) in nodes {
             if let Some(x) = extra.get(&SetFamily::from_set_family(n, self.manager)) {
-                writeln!(s, "  {} [label=\"{} ({})\"];", n.0, i, x).unwrap();
+                writeln!(s, "  {} [label=\"{} ({})\"];", usize::from(n), i, x).unwrap();
             } else {
-                writeln!(s, "  {} [label=\"{}\"];", n.0, i).unwrap();
+                writeln!(s, "  {} [label=\"{}\"];", usize::from(n), i).unwrap();
             }
         }
 
         for (src, end, style) in edges {
-            writeln!(s, "  {} -> {} [style={}];", src.0, end.0, style).unwrap();
+            writeln!(
+                s,
+                "  {} -> {} [style={}];",
+                usize::from(src),
+                usize::from(end),
+                style
+            )
+            .unwrap();
         }
 
         writeln!(s, "}}").unwrap();
@@ -97,8 +101,8 @@ impl<V: Eq + Hash> RawZdd<V> {
             return Some(1);
         }
 
-        if let Some(sum) = holder.sum_cache.get(&self) {
-            return *sum;
+        if let Some(sum) = holder.sum_cache_get(&self) {
+            return sum;
         }
         let (lo, hi) = self.children(holder).unwrap();
 
@@ -106,8 +110,7 @@ impl<V: Eq + Hash> RawZdd<V> {
             .size(holder)
             .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
 
-        holder.sum_cache.insert(self, sum);
-        sum
+        holder.sum_cache_insert(self, sum)
     }
 }
 
@@ -122,13 +125,6 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///```
     #[must_use]
     pub fn singleton(value: V, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
-        SetFamily::from_set_family(
-            holder.get_node_seq(Zdd {
-                value,
-                lo: RawZdd::ZERO,
-                hi: RawZdd::ONE,
-            }),
-            holder,
-        )
+        holder.get_node(value, holder.zero(), holder.one())
     }
 }

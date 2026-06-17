@@ -7,7 +7,8 @@ use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator};
 use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 
-use crate::{RawZdd, SetFamily, Zdd, ZddHolder, free_id};
+use crate::manager::{RawZdd, Zdd, free_id};
+use crate::{SetFamily, ZddHolder};
 
 impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     #[expect(dead_code)]
@@ -35,8 +36,8 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
-    pub(super) fn from_set_family(s: RawZdd<V>, manager: &'a ZddHolder<V>) -> SetFamily<'a, V> {
-        let RawZdd(id, _) = s;
+    pub(crate) fn from_set_family(s: RawZdd<V>, manager: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+        let id = usize::from(s);
         match manager.pools.referenced_variables.entry(id) {
             Occupied(mut oc) => *oc.get_mut() += 1,
             Vacant(vac) => {
@@ -52,7 +53,7 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     }
 
     pub(crate) fn as_raw(&self) -> RawZdd<V> {
-        RawZdd(self.id, PhantomData)
+        RawZdd::from(self.id)
     }
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
@@ -133,7 +134,7 @@ impl<V: Eq + Hash + Clone + Send> ZddHolder<V> {
     pub(crate) fn protected_values(&self) -> impl ParallelIterator<Item = RawZdd<V>> {
         self.pools.referenced_variables.par_iter().filter_map(|x| {
             if *x.value() != 0 {
-                Some(RawZdd(*x.key(), PhantomData))
+                Some(RawZdd::from(*x.key()))
             } else {
                 None
             }
@@ -169,7 +170,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
 
         let mut data = self.data.write().unwrap();
         let s = free_id(&mut data, &mut self.free.lock().unwrap());
-        data[s.0] = Some(zdd.clone());
+        data[usize::from(s)] = Some(zdd.clone());
         self.uniq_table.insert(zdd, s);
         SetFamily::from_set_family(s, self)
     }
