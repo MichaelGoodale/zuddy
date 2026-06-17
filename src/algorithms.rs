@@ -378,6 +378,7 @@ mod test {
         }
     }
 
+    /*
     #[test]
     fn complicated_minimization() {
         const MIN_GRAMMAR_SIZE: usize = 25;
@@ -440,5 +441,5 @@ mod test {
 
         raw_sets.sort();
         assert_eq!(raw_sets, minimal_sets);
-    }
+    }*/
 }

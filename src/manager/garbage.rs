@@ -17,33 +17,28 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
         self.sum_cache.clear();
         self.uniq_table.clear();
 
-        self.free.lock().unwrap().par_extend(
-            self.data
-                .write()
-                .unwrap()
-                .par_iter_mut()
-                .enumerate()
-                .skip(2)
-                .filter_map(|(i, x)| {
-                    if marked.contains(&ZddIndex::from(i)) {
-                        None
-                    } else {
-                        *x = None;
-                        Some(i)
-                    }
-                }),
-        );
-
-        self.data
-            .read()
-            .unwrap()
+        let no_longer_used_ids = self
+            .data
             .par_iter()
             .enumerate()
-            .for_each(|(i, x)| {
-                if let Some(k) = x {
-                    self.uniq_table.insert(k.clone(), ZddIndex::from(i));
+            .skip(2)
+            .filter_map(|(i, x)| {
+                if marked.contains(&ZddIndex::from(i)) {
+                    None
+                } else {
+                    *x.write().unwrap() = None;
+                    Some(i)
                 }
-            });
+            })
+            .collect::<Vec<_>>();
+        self.drain_free_indices();
+        self.distribute_free_index(no_longer_used_ids);
+
+        self.data.par_iter().enumerate().for_each(|(i, x)| {
+            if let Some(k) = x.read().unwrap().as_ref() {
+                self.uniq_table.insert(k.clone(), ZddIndex::from(i));
+            }
+        });
     }
 }
 

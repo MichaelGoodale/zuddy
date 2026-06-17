@@ -3,17 +3,19 @@ use dashmap::{
     DashMap,
     Entry::{Occupied, Vacant},
 };
-use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator};
-use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
+use rayon::{current_thread_index, prelude::*};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Mutex};
 
-use crate::manager::{RawZddData, ZddIndex, free_id};
+use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
 
 impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     #[expect(dead_code)]
     pub(crate) fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
-        self.manager.data.read().unwrap()[self.id]
+        self.manager.data[self.id]
+            .read()
+            .unwrap()
             .as_ref()
             .map(|x| {
                 (
@@ -24,14 +26,18 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     }
 
     pub(crate) fn lo(self) -> Option<SetFamily<'a, V>> {
-        self.manager.data.read().unwrap()[self.id]
+        self.manager.data[self.id]
+            .read()
+            .unwrap()
             .as_ref()
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
     #[expect(dead_code)]
     pub(crate) fn hi(self) -> Option<SetFamily<'a, V>> {
-        self.manager.data.read().unwrap()[self.id]
+        self.manager.data[self.id]
+            .read()
+            .unwrap()
             .as_ref()
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
@@ -58,7 +64,7 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     pub(crate) fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
-        (self.manager.data.read().unwrap()[self.id])
+        (self.manager.data[self.id].read().unwrap())
             .clone()
             .map(|x| {
                 (
@@ -111,20 +117,20 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
 
 #[derive(Debug)]
 pub(super) struct ZddThreadPool {
-    pools: Arc<ThreadPool>,
+    pools: ThreadPool,
     referenced_variables: DashMap<usize, usize>,
+    free_slots: Vec<Mutex<Vec<usize>>>,
 }
 
 impl Default for ZddThreadPool {
     fn default() -> Self {
         let n_threads = rayon::current_num_threads();
         Self {
-            pools: Arc::new(
-                ThreadPoolBuilder::new()
-                    .num_threads(n_threads)
-                    .build()
-                    .unwrap(),
-            ),
+            free_slots: (0..n_threads).map(|_| Mutex::new(vec![])).collect(),
+            pools: ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .unwrap(),
             referenced_variables: DashMap::new(),
         }
     }
@@ -142,11 +148,49 @@ impl<V: Eq + Hash + Clone + Send> ZddHolder<V> {
     }
 }
 
-impl<V: Eq + Hash + Clone> ZddHolder<V> {
-    pub(crate) fn pools(&self) -> Arc<ThreadPool> {
-        self.pools.pools.clone()
+impl<V: Eq + Hash> ZddHolder<V> {
+    pub(crate) fn pools(&self) -> &ThreadPool {
+        &self.pools.pools
     }
 
+    pub(super) fn distribute_free_index<I>(&self, indices: I)
+    where
+        I: IntoIterator<Item = usize>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let mut iter = indices.into_iter();
+        let s = iter.len();
+        let n_per = s / self.pools.free_slots.len();
+        let extra = s % self.pools.free_slots.len();
+
+        for (i, x) in self.pools.free_slots.iter().enumerate() {
+            let how_many_to_add = if i < extra { n_per + 1 } else { n_per };
+
+            x.lock()
+                .unwrap()
+                .extend((0..how_many_to_add).filter_map(|_| iter.next()));
+        }
+    }
+
+    pub(super) fn drain_free_indices(&self) {
+        for x in &self.pools.free_slots {
+            x.lock().unwrap().clear();
+        }
+    }
+
+    pub(super) fn insert(&self, v: RawZddData<V>) -> ZddIndex<V> {
+        let thread_id = current_thread_index().unwrap_or(0);
+        let free_id = self.pools.free_slots[thread_id]
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap();
+        *self.data[free_id].write().unwrap() = Some(v);
+        ZddIndex::from(free_id)
+    }
+}
+
+impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn get_node<'a>(
         &'a self,
@@ -168,9 +212,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             return SetFamily::from_set_family(*s, self);
         }
 
-        let mut data = self.data.write().unwrap();
-        let s = free_id(&mut data, &mut self.free.lock().unwrap());
-        data[usize::from(s)] = Some(zdd.clone());
+        let s = self.insert(zdd.clone());
         self.uniq_table.insert(zdd, s);
         SetFamily::from_set_family(s, self)
     }

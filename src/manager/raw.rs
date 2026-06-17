@@ -70,7 +70,9 @@ pub(super) struct RawZddData<V> {
 
 impl<V: Eq + Hash + Clone> ZddIndex<V> {
     pub fn get(self, holder: &ZddHolder<V>) -> Option<(V, ZddIndex<V>, ZddIndex<V>)> {
-        holder.data.read().unwrap()[self.0]
+        holder.data[self.0]
+            .read()
+            .unwrap()
             .as_ref()
             .map(|x| (x.value.clone(), x.lo, x.hi))
     }
@@ -86,7 +88,9 @@ impl<V: Eq + Hash> ZddIndex<V> {
     }
 
     pub fn children(self, holder: &ZddHolder<V>) -> Option<(ZddIndex<V>, ZddIndex<V>)> {
-        holder.data.read().unwrap()[self.0]
+        holder.data[self.0]
+            .read()
+            .unwrap()
             .as_ref()
             .map(|x| (x.lo, x.hi))
     }

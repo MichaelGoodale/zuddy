@@ -1,11 +1,5 @@
 //! Zuddy is a crate for handling ZDDs
-use std::{
-    collections::BTreeSet,
-    fmt::Debug,
-    hash::Hash,
-    marker::PhantomData,
-    sync::{Mutex, RwLock},
-};
+use std::{collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::RwLock};
 
 use ahash::RandomState;
 use dashmap::DashMap;
@@ -26,32 +20,23 @@ use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 pub struct ZddHolder<V: Eq + Hash> {
     #[serde(default, skip)]
     pools: ZddThreadPool,
-    free: Mutex<Vec<usize>>,
-    data: RwLock<Vec<Option<RawZddData<V>>>>,
+    data: Vec<RwLock<Option<RawZddData<V>>>>,
     uniq_table: DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
 }
 
-fn free_id<V>(data: &mut Vec<Option<RawZddData<V>>>, free: &mut Vec<usize>) -> ZddIndex<V> {
-    if let Some(x) = free.pop() {
-        x.into()
-    } else {
-        data.push(None);
-        (data.len() - 1).into()
-    }
-}
-
 impl<V: Eq + Hash> Default for ZddHolder<V> {
     fn default() -> Self {
-        Self {
+        let s = Self {
             pools: ZddThreadPool::default(),
-            free: Mutex::new(vec![]),
-            data: RwLock::new(vec![None, None]),
+            data: (0..10_000).map(|_| RwLock::new(None)).collect(),
             uniq_table: DashMap::default(),
             sum_cache: DashMap::default(),
             cache: DashMap::default(),
-        }
+        };
+        s.distribute_free_index(2..10_000);
+        s
     }
 }
 
@@ -118,22 +103,19 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///May panic if there is difficulty making thing thread pool in Rayon.
     #[must_use]
     pub fn with_capacity(n: usize) -> ZddHolder<V> {
-        let mut data = Vec::with_capacity(n);
-        data.push(None);
-        data.push(None);
-
         let uniq_table = DashMap::with_capacity_and_hasher(n, RandomState::new());
         let sum_cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
         let cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
 
-        Self {
+        let s = Self {
             pools: ZddThreadPool::default(),
-            free: Mutex::new(vec![]),
-            data: RwLock::new(data),
+            data: (0..n).map(|_| RwLock::new(None)).collect(),
             uniq_table,
             sum_cache,
             cache,
-        }
+        };
+        s.distribute_free_index(2..n);
+        s
     }
 }
 
