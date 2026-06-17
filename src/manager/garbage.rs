@@ -1,4 +1,4 @@
-use crate::{ZddHolder, manager::RawZdd};
+use crate::{ZddHolder, manager::ZddIndex};
 use dashmap::DashSet;
 use rayon::prelude::*;
 use std::{fmt::Debug, hash::Hash};
@@ -25,7 +25,7 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
                 .enumerate()
                 .skip(2)
                 .filter_map(|(i, x)| {
-                    if marked.contains(&RawZdd::from(i)) {
+                    if marked.contains(&ZddIndex::from(i)) {
                         None
                     } else {
                         *x = None;
@@ -41,15 +41,15 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
             .enumerate()
             .for_each(|(i, x)| {
                 if let Some(k) = x {
-                    self.uniq_table.insert(k.clone(), RawZdd::from(i));
+                    self.uniq_table.insert(k.clone(), ZddIndex::from(i));
                 }
             });
     }
 }
 
 fn mark<V: Send + Sync + Eq + Hash>(
-    to_mark: RawZdd<V>,
-    marked: &DashSet<RawZdd<V>>,
+    to_mark: ZddIndex<V>,
+    marked: &DashSet<ZddIndex<V>>,
     holder: &ZddHolder<V>,
 ) {
     if !marked.contains(&to_mark) {

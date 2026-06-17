@@ -5,7 +5,7 @@ use rand::prelude::*;
 
 use crate::SetFamily;
 use crate::ZddHolder;
-use crate::manager::RawZdd;
+use crate::manager::ZddIndex;
 
 enum EdgeType {
     Lo,
@@ -13,8 +13,8 @@ enum EdgeType {
 }
 
 fn choose_lo_or_hi<V: Hash + Eq + Ord + Clone>(
-    lo: RawZdd<V>,
-    hi: RawZdd<V>,
+    lo: ZddIndex<V>,
+    hi: ZddIndex<V>,
     holder: &ZddHolder<V>,
     rng: &mut impl Rng,
 ) -> EdgeType {

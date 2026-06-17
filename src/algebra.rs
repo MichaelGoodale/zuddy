@@ -24,7 +24,7 @@
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 use serde::{Deserialize, Serialize};
 
-use crate::{SetFamily, manager::RawZdd};
+use crate::{SetFamily, manager::ZddIndex};
 
 use std::{fmt::Debug, hash::Hash};
 
@@ -32,14 +32,14 @@ use std::{fmt::Debug, hash::Hash};
 //doubled.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub(super) enum Operations<V> {
-    Change(RawZdd<V>, V),
-    Offset(RawZdd<V>, V),
-    Onset(RawZdd<V>, V),
-    Union(RawZdd<V>, RawZdd<V>),
-    Intersect(RawZdd<V>, RawZdd<V>),
-    Difference(RawZdd<V>, RawZdd<V>),
-    Join(RawZdd<V>, RawZdd<V>),
-    Division(RawZdd<V>, RawZdd<V>),
+    Change(ZddIndex<V>, V),
+    Offset(ZddIndex<V>, V),
+    Onset(ZddIndex<V>, V),
+    Union(ZddIndex<V>, ZddIndex<V>),
+    Intersect(ZddIndex<V>, ZddIndex<V>),
+    Difference(ZddIndex<V>, ZddIndex<V>),
+    Join(ZddIndex<V>, ZddIndex<V>),
+    Division(ZddIndex<V>, ZddIndex<V>),
 }
 
 mod unate;
@@ -500,8 +500,8 @@ mod test {
             assert_eq!(set.clone().members().collect::<Vec<_>>(), vec![vec![ch]]);
             let (ch2, lo, hi) = set.get().unwrap();
             assert_eq!(ch2, ch);
-            assert_eq!(lo.as_raw(), RawZdd::ZERO);
-            assert_eq!(hi.as_raw(), RawZdd::ONE);
+            assert_eq!(lo.as_raw(), ZddIndex::ZERO);
+            assert_eq!(hi.as_raw(), ZddIndex::ONE);
         }
     }
 

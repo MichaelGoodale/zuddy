@@ -5,87 +5,87 @@ use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 ///A raw ZDD index without memory management for GC.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct RawZdd<V>(usize, PhantomData<V>);
+pub(crate) struct ZddIndex<V>(usize, PhantomData<V>);
 
-impl<V> From<usize> for RawZdd<V> {
+impl<V> From<usize> for ZddIndex<V> {
     fn from(value: usize) -> Self {
-        RawZdd(value, PhantomData)
+        ZddIndex(value, PhantomData)
     }
 }
 
-impl<V> From<RawZdd<V>> for usize {
-    fn from(value: RawZdd<V>) -> Self {
+impl<V> From<ZddIndex<V>> for usize {
+    fn from(value: ZddIndex<V>) -> Self {
         value.0
     }
 }
 
-impl<V> Copy for RawZdd<V> {}
+impl<V> Copy for ZddIndex<V> {}
 
-impl<V> Clone for RawZdd<V> {
+impl<V> Clone for ZddIndex<V> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<V> PartialEq for RawZdd<V> {
+impl<V> PartialEq for ZddIndex<V> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<V> Hash for RawZdd<V> {
+impl<V> Hash for ZddIndex<V> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl<V> Eq for RawZdd<V> {}
+impl<V> Eq for ZddIndex<V> {}
 
-impl<V> PartialOrd for RawZdd<V> {
+impl<V> PartialOrd for ZddIndex<V> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<V> Ord for RawZdd<V> {
+impl<V> Ord for ZddIndex<V> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl<V> RawZdd<V> {
+impl<V> ZddIndex<V> {
     ///The empty set {}.
-    pub const ZERO: Self = RawZdd(ZERO_IDX, PhantomData);
+    pub const ZERO: Self = ZddIndex(ZERO_IDX, PhantomData);
 
     ///The family containing the empty set {{}}.
-    pub const ONE: Self = RawZdd(ONE_IDX, PhantomData);
+    pub const ONE: Self = ZddIndex(ONE_IDX, PhantomData);
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub(super) struct Zdd<V> {
+pub(super) struct RawZddData<V> {
     pub(super) value: V,
-    pub(super) lo: RawZdd<V>,
-    pub(super) hi: RawZdd<V>,
+    pub(super) lo: ZddIndex<V>,
+    pub(super) hi: ZddIndex<V>,
 }
 
-impl<V: Eq + Hash + Clone> RawZdd<V> {
-    pub fn get(self, holder: &ZddHolder<V>) -> Option<(V, RawZdd<V>, RawZdd<V>)> {
+impl<V: Eq + Hash + Clone> ZddIndex<V> {
+    pub fn get(self, holder: &ZddHolder<V>) -> Option<(V, ZddIndex<V>, ZddIndex<V>)> {
         holder.data.read().unwrap()[self.0]
             .as_ref()
             .map(|x| (x.value.clone(), x.lo, x.hi))
     }
 }
 
-impl<V: Eq + Hash> RawZdd<V> {
+impl<V: Eq + Hash> ZddIndex<V> {
     pub fn is_zero(self) -> bool {
-        self == RawZdd::ZERO
+        self == ZddIndex::ZERO
     }
 
     pub fn is_one(self) -> bool {
-        self == RawZdd::ONE
+        self == ZddIndex::ONE
     }
 
-    pub fn children(self, holder: &ZddHolder<V>) -> Option<(RawZdd<V>, RawZdd<V>)> {
+    pub fn children(self, holder: &ZddHolder<V>) -> Option<(ZddIndex<V>, ZddIndex<V>)> {
         holder.data.read().unwrap()[self.0]
             .as_ref()
             .map(|x| (x.lo, x.hi))
@@ -93,7 +93,7 @@ impl<V: Eq + Hash> RawZdd<V> {
 
     fn n_nodes_inner(
         self,
-        count_cache: &mut HashSet<RawZdd<V>, RandomState>,
+        count_cache: &mut HashSet<ZddIndex<V>, RandomState>,
         holder: &ZddHolder<V>,
     ) {
         if !count_cache.contains(&self) {

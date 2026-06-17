@@ -15,8 +15,8 @@ mod parallelism;
 mod raw;
 
 use parallelism::ZddThreadPool;
-pub(crate) use raw::RawZdd;
-use raw::Zdd;
+use raw::RawZddData;
+pub(crate) use raw::ZddIndex;
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
@@ -27,13 +27,13 @@ pub struct ZddHolder<V: Eq + Hash> {
     #[serde(default, skip)]
     pools: ZddThreadPool,
     free: Arc<Mutex<Vec<usize>>>,
-    data: Arc<RwLock<Vec<Option<Zdd<V>>>>>,
-    uniq_table: DashMap<Zdd<V>, RawZdd<V>, RandomState>,
-    cache: DashMap<Operations<V>, RawZdd<V>, RandomState>,
-    sum_cache: DashMap<RawZdd<V>, Option<usize>, RandomState>,
+    data: Arc<RwLock<Vec<Option<RawZddData<V>>>>>,
+    uniq_table: DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
+    cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
+    sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
 }
 
-fn free_id<V>(data: &mut Vec<Option<Zdd<V>>>, free: &mut Vec<usize>) -> RawZdd<V> {
+fn free_id<V>(data: &mut Vec<Option<RawZddData<V>>>, free: &mut Vec<usize>) -> ZddIndex<V> {
     if let Some(x) = free.pop() {
         x.into()
     } else {
@@ -88,11 +88,11 @@ impl<V: Eq + Hash> ZddHolder<V> {
             .map(|s| SetFamily::from_set_family(*s, self))
     }
 
-    pub(crate) fn sum_cache_get(&self, key: &RawZdd<V>) -> Option<Option<usize>> {
-        self.sum_cache.get(key).map(|x| x.value().clone())
+    pub(crate) fn sum_cache_get(&self, key: &ZddIndex<V>) -> Option<Option<usize>> {
+        self.sum_cache.get(key).map(|x| *x.value())
     }
 
-    pub(crate) fn sum_cache_insert(&self, key: RawZdd<V>, value: Option<usize>) -> Option<usize> {
+    pub(crate) fn sum_cache_insert(&self, key: ZddIndex<V>, value: Option<usize>) -> Option<usize> {
         self.sum_cache.insert(key, value);
         value
     }
@@ -138,12 +138,12 @@ impl<V: Eq + Hash> ZddHolder<V> {
 }
 
 fn get_node<V: Eq + Hash + Clone>(
-    family: Zdd<V>,
-    data: &mut Vec<Option<Zdd<V>>>,
+    family: RawZddData<V>,
+    data: &mut Vec<Option<RawZddData<V>>>,
     free: &mut Vec<usize>,
-    uniq_table: &DashMap<Zdd<V>, RawZdd<V>, RandomState>,
-) -> RawZdd<V> {
-    if family.hi == RawZdd::ZERO {
+    uniq_table: &DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
+) -> ZddIndex<V> {
+    if family.hi == ZddIndex::ZERO {
         return family.lo;
     }
 
@@ -158,16 +158,16 @@ fn get_node<V: Eq + Hash + Clone>(
 
 fn from_sets<V: Eq + Hash + Ord + Clone>(
     mut sets: BTreeSet<BTreeSet<V>>,
-    data: &mut Vec<Option<Zdd<V>>>,
+    data: &mut Vec<Option<RawZddData<V>>>,
     free: &mut Vec<usize>,
-    uniq_table: &DashMap<Zdd<V>, RawZdd<V>, RandomState>,
-) -> RawZdd<V> {
+    uniq_table: &DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
+) -> ZddIndex<V> {
     if sets.is_empty() {
-        return RawZdd::ZERO;
+        return ZddIndex::ZERO;
     }
 
     if sets.len() == 1 && sets.first().unwrap().is_empty() {
-        return RawZdd::ONE;
+        return ZddIndex::ONE;
     }
 
     //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
@@ -186,7 +186,7 @@ fn from_sets<V: Eq + Hash + Ord + Clone>(
     let lo = from_sets(without_min_val, data, free, uniq_table);
     let hi = from_sets(with_min_val, data, free, uniq_table);
 
-    get_node(Zdd { value, lo, hi }, data, free, uniq_table)
+    get_node(RawZddData { value, lo, hi }, data, free, uniq_table)
 }
 
 impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {

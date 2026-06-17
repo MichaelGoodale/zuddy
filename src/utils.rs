@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::SetFamily;
-use crate::manager::{RawZdd, ZddHolder};
+use crate::manager::{ZddHolder, ZddIndex};
 
 impl<'a, V: Display + Eq + Hash + Clone> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -92,7 +92,7 @@ impl<V: Eq + Hash> SetFamily<'_, V> {
     }
 }
 
-impl<V: Eq + Hash> RawZdd<V> {
+impl<V: Eq + Hash> ZddIndex<V> {
     pub(crate) fn size(self, holder: &ZddHolder<V>) -> Option<usize> {
         if self.is_zero() {
             return Some(0);

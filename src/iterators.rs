@@ -1,10 +1,10 @@
-use crate::{SetFamily, manager::RawZdd};
+use crate::{SetFamily, manager::ZddIndex};
 use std::hash::Hash;
 
 ///A simple iterator over the members of the ZDD.
 ///May not be very memory efficient.
 pub struct ZddIter<'a, V: Eq + Hash> {
-    stack: Vec<(RawZdd<V>, Vec<V>)>,
+    stack: Vec<(ZddIndex<V>, Vec<V>)>,
     root: SetFamily<'a, V>,
 }
 
