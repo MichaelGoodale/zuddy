@@ -10,6 +10,8 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
     }
 
     fn inner_gc(&self) {
+        todo!();
+        /*
         let marked = DashSet::new();
         self.protected_values().for_each(|g| mark(g, &marked, self));
 
@@ -28,11 +30,11 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
         self.distribute_free_index_count(
             (2..self.data.len()).filter(|x| !marked.contains(&ZddIndex::from(*x))),
             c,
-        );
+        );*/
     }
 }
 
-fn mark<V: Send + Sync + Eq + Hash>(
+fn mark<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
     marked: &DashSet<ZddIndex<V>>,
     holder: &ZddHolder<V>,

@@ -3,45 +3,41 @@ use dashmap::{
     DashMap,
     Entry::{Occupied, Vacant},
 };
+use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator};
-use rayon::{current_thread_index, prelude::*};
 use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Mutex};
 
 use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
 
-impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     #[expect(dead_code)]
     pub(crate) fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
-        self.manager.data[self.id]
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|x| {
-                (
-                    SetFamily::from_set_family(x.lo, self.manager),
-                    SetFamily::from_set_family(x.hi, self.manager),
-                )
-            })
+        self.manager.uniq_table.get(self.id).map(|x| {
+            (
+                SetFamily::from_set_family(x.lo, self.manager),
+                SetFamily::from_set_family(x.hi, self.manager),
+            )
+        })
     }
 
     pub(crate) fn lo(self) -> Option<SetFamily<'a, V>> {
-        self.manager.data[self.id]
-            .read()
-            .unwrap()
-            .as_ref()
+        self.manager
+            .uniq_table
+            .get(self.id)
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
     #[expect(dead_code)]
     pub(crate) fn hi(self) -> Option<SetFamily<'a, V>> {
-        self.manager.data[self.id]
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|x| SetFamily::from_set_family(x.lo, self.manager))
+        self.manager
+            .uniq_table
+            .get(self.id)
+            .map(|x| SetFamily::from_set_family(x.hi, self.manager))
     }
+}
 
+impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     pub(crate) fn from_set_family(s: ZddIndex<V>, manager: &'a ZddHolder<V>) -> SetFamily<'a, V> {
         let id = usize::from(s);
         match manager.pools.referenced_variables.entry(id) {
@@ -64,15 +60,13 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     pub(crate) fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
-        (self.manager.data[self.id].read().unwrap())
-            .clone()
-            .map(|x| {
-                (
-                    x.value,
-                    SetFamily::from_set_family(x.lo, self.manager),
-                    SetFamily::from_set_family(x.hi, self.manager),
-                )
-            })
+        self.manager.uniq_table.get(self.id).map(|x| {
+            (
+                x.value,
+                SetFamily::from_set_family(x.lo, self.manager),
+                SetFamily::from_set_family(x.hi, self.manager),
+            )
+        })
     }
 }
 
@@ -135,6 +129,11 @@ impl Default for ZddThreadPool {
         }
     }
 }
+impl ZddThreadPool {
+    pub(super) fn n_pools(&self) -> usize {
+        self.pools.current_num_threads()
+    }
+}
 
 impl<V: Eq + Hash + Clone + Send> ZddHolder<V> {
     pub(crate) fn protected_values(&self) -> impl ParallelIterator<Item = ZddIndex<V>> {
@@ -151,58 +150,6 @@ impl<V: Eq + Hash + Clone + Send> ZddHolder<V> {
 impl<V: Eq + Hash> ZddHolder<V> {
     pub(crate) fn pools(&self) -> &ThreadPool {
         &self.pools.pools
-    }
-
-    pub(super) fn distribute_free_index<I>(&self, indices: I)
-    where
-        I: IntoIterator<Item = usize>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        let mut iter = indices.into_iter();
-        let s = iter.len();
-        let n_per = s / self.pools.free_slots.len();
-        let extra = s % self.pools.free_slots.len();
-
-        for (i, x) in self.pools.free_slots.iter().enumerate() {
-            let how_many_to_add = if i < extra { n_per + 1 } else { n_per };
-
-            x.lock()
-                .unwrap()
-                .extend((0..how_many_to_add).filter_map(|_| iter.next()));
-        }
-    }
-    pub(super) fn distribute_free_index_count<I>(&self, indices: I, s: usize)
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        let mut iter = indices.into_iter();
-        let n_per = s / self.pools.free_slots.len();
-        let extra = s % self.pools.free_slots.len();
-
-        for (i, x) in self.pools.free_slots.iter().enumerate() {
-            let how_many_to_add = if i < extra { n_per + 1 } else { n_per };
-
-            x.lock()
-                .unwrap()
-                .extend((0..how_many_to_add).filter_map(|_| iter.next()));
-        }
-    }
-
-    pub(super) fn drain_free_indices(&self) {
-        for x in &self.pools.free_slots {
-            x.lock().unwrap().clear();
-        }
-    }
-
-    pub(super) fn insert(&self, v: RawZddData<V>) -> ZddIndex<V> {
-        let thread_id = current_thread_index().unwrap_or(0);
-        let free_id = self.pools.free_slots[thread_id]
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap();
-        *self.data[free_id].write().unwrap() = Some(v);
-        ZddIndex::from(free_id)
     }
 }
 
@@ -224,12 +171,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             hi: hi.as_raw(),
         };
 
-        if let Some(s) = self.uniq_table.get(&zdd) {
-            return SetFamily::from_set_family(*s, self);
-        }
-
-        let s = self.insert(zdd.clone());
-        self.uniq_table.insert(zdd, s);
+        let s = ZddIndex::from(self.uniq_table.find_or_insert(zdd));
         SetFamily::from_set_family(s, self)
     }
 }

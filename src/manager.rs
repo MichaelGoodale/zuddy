@@ -13,41 +13,38 @@ use parallelism::ZddThreadPool;
 use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
 
+use crate::manager::hashtable::HashTable;
+
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
+#[derive(Debug)]
+//#[serde(bound = "V: Eq+Serialize+DeserializeOwned+Hash")]
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V: Eq + Hash> {
-    #[serde(default, skip)]
+    //#[serde(default, skip)]
     pools: ZddThreadPool,
-    data: Vec<RwLock<Option<RawZddData<V>>>>,
-    uniq_table: DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
+    uniq_table: HashTable<RawZddData<V>>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
 }
 
-impl<V: Eq + Hash> Default for ZddHolder<V> {
-    fn default() -> Self {
-        let s = Self {
+impl<V: Eq + Hash + Clone> ZddHolder<V> {
+    ///Create a new [`ZddHolder`] to hold various ZDDs.
+    #[must_use]
+    pub fn new() -> ZddHolder<V> {
+        let pools = ZddThreadPool::default();
+        let n_pools = pools.n_pools();
+
+        Self {
             pools: ZddThreadPool::default(),
-            data: (0..10_000).map(|_| RwLock::new(None)).collect(),
-            uniq_table: DashMap::default(),
+            uniq_table: HashTable::new(1000, n_pools),
             sum_cache: DashMap::default(),
             cache: DashMap::default(),
-        };
-        s.distribute_free_index(2..10_000);
-        s
+        }
     }
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
-    ///Create a new [`ZddHolder`] to hold various ZDDs.
-    #[must_use]
-    pub fn new() -> ZddHolder<V> {
-        ZddHolder::default()
-    }
-
     ///Create a new `[SetFamily]` representing the empty set ({}).
     #[must_use]
     pub fn zero(&self) -> SetFamily<'_, V> {
@@ -95,28 +92,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Counts the number of nodes currently held by the holder.
     #[must_use]
     pub fn n_nodes(&self) -> usize {
-        self.uniq_table.len() + 2
-    }
-
-    ///Create a new [`ZddHolder`] to hold various ZDDs with a preallocated capacity.
-    ///
-    ///# Panics
-    ///May panic if there is difficulty making thing thread pool in Rayon.
-    #[must_use]
-    pub fn with_capacity(n: usize) -> ZddHolder<V> {
-        let uniq_table = DashMap::with_capacity_and_hasher(n, RandomState::new());
-        let sum_cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
-        let cache = DashMap::with_capacity_and_hasher(n, RandomState::new());
-
-        let s = Self {
-            pools: ZddThreadPool::default(),
-            data: (0..n).map(|_| RwLock::new(None)).collect(),
-            uniq_table,
-            sum_cache,
-            cache,
-        };
-        s.distribute_free_index(2..n);
-        s
+        todo!()
     }
 }
 

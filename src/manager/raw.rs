@@ -70,29 +70,11 @@ pub(super) struct RawZddData<V> {
 
 impl<V: Eq + Hash + Clone> ZddIndex<V> {
     pub fn get(self, holder: &ZddHolder<V>) -> Option<(V, ZddIndex<V>, ZddIndex<V>)> {
-        holder.data[self.0]
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|x| (x.value.clone(), x.lo, x.hi))
-    }
-}
-
-impl<V: Eq + Hash> ZddIndex<V> {
-    pub fn is_zero(self) -> bool {
-        self == ZddIndex::ZERO
-    }
-
-    pub fn is_one(self) -> bool {
-        self == ZddIndex::ONE
+        holder.uniq_table.get(self.0).map(|x| (x.value, x.lo, x.hi))
     }
 
     pub fn children(self, holder: &ZddHolder<V>) -> Option<(ZddIndex<V>, ZddIndex<V>)> {
-        holder.data[self.0]
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|x| (x.lo, x.hi))
+        holder.uniq_table.get(self.0).map(|x| (x.lo, x.hi))
     }
 
     fn n_nodes_inner(
@@ -113,7 +95,17 @@ impl<V: Eq + Hash> ZddIndex<V> {
     }
 }
 
-impl<V: Eq + Hash> SetFamily<'_, V> {
+impl<V: Eq + Hash> ZddIndex<V> {
+    pub fn is_zero(self) -> bool {
+        self == ZddIndex::ZERO
+    }
+
+    pub fn is_one(self) -> bool {
+        self == ZddIndex::ONE
+    }
+}
+
+impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///Counts the number of nodes in this [`SetFamily`]
     ///
     ///# Panics

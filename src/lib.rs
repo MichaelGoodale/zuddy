@@ -122,7 +122,7 @@ mod tests {
         let universe = BTreeSet::from([1, 2, 3]);
         let subsets = all_subsets(&universe);
         let combos_of_subsets = all_subsets(&subsets);
-        let holder = ZddHolder::<usize>::default();
+        let holder = ZddHolder::<usize>::new();
         for x in combos_of_subsets {
             let set_zdd = SetFamily::from_sets(x.clone(), &holder);
             set_zdd.check_valid_zdd();

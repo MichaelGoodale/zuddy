@@ -11,6 +11,7 @@ use std::{
     },
 };
 
+use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
 
 const N_BYTES_PER_HASH: usize = 3;
@@ -86,7 +87,7 @@ impl HashEntry {
 }
 
 #[derive(Debug)]
-struct HashTable<V> {
+pub(super) struct HashTable<V> {
     hashes: Vec<AtomicU64>,
     databits: Vec<AtomicBool>,
     regionbits: Vec<AtomicBool>,
@@ -109,8 +110,8 @@ fn noned_unsafe_cell<V: Clone>(n: usize) -> Vec<UnsafeCell<Option<V>>> {
 
 const REGION_SIZE: usize = 512;
 
-impl<V: Clone + Hash + Eq + Display> HashTable<V> {
-    fn new(size: usize, n_pools: usize) -> Self {
+impl<V: Clone + Hash + Eq> HashTable<V> {
+    pub fn new(size: usize, n_pools: usize) -> Self {
         let n_region_bits = size * n_pools;
         let size = size * REGION_SIZE * n_pools;
         let databits = zeroed_atomic_bool(size);
@@ -203,18 +204,14 @@ impl<V: Clone + Hash + Eq + Display> HashTable<V> {
         }
     }
 
+    pub(crate) fn get(&self, i: usize) -> Option<V> {
+        unsafe { (&*self.data[i].get()).clone() }
+    }
+
     pub(crate) fn find_or_insert(&self, data: V) -> usize {
-        println!(
-            "{}: Looking for {data}",
-            rayon::current_thread_index().unwrap_or(0)
-        );
         let h = self.hash(&data);
         let mut index = 0;
         for (s, mut v) in self.probe(h) {
-            println!(
-                "{}: \tTrying {s} {v:?}",
-                rayon::current_thread_index().unwrap_or(0)
-            );
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
@@ -230,10 +227,6 @@ impl<V: Clone + Hash + Eq + Display> HashTable<V> {
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        println!(
-                            "{}: Made {data} at {index}",
-                            rayon::current_thread_index().unwrap_or(0)
-                        );
                         return index;
                     }
                     Err(new_v) => v = HashEntry::from_u64(new_v),
@@ -244,11 +237,6 @@ impl<V: Clone + Hash + Eq + Display> HashTable<V> {
                 if index != 0 {
                     self.databits[index].store(false, Relaxed);
                 }
-                println!(
-                    "{}: Found {data} at {}",
-                    rayon::current_thread_index().unwrap_or(0),
-                    v.index(),
-                );
                 return v.index();
             }
         }

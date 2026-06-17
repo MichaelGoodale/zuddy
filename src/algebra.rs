@@ -492,7 +492,7 @@ mod test {
 
     #[test]
     fn singleton() {
-        let holder = ZddHolder::<char>::default();
+        let holder = ZddHolder::<char>::new();
 
         for ch in ['a', 'b', 'c'] {
             let set = SetFamily::singleton(ch, &holder);

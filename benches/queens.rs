@@ -42,8 +42,8 @@ fn main() {
 
 #[divan::bench(args = [(1,1000),(4, 5_000), (8, 50_000), (10, 1_000_000)])]
 fn n_queens(arg: (u8, usize)) -> usize {
-    let (board_size, capacity) = arg;
-    let holder = ZddHolder::<QueenPosition>::with_capacity(capacity);
+    let (board_size, _capacity) = arg;
+    let holder = ZddHolder::<QueenPosition>::new();
     let mut state = queens_at_row(0, board_size).fold(holder.zero(), |acc, x| {
         acc.union(SetFamily::singleton(x, &holder))
     });
@@ -58,7 +58,7 @@ fn n_queens(arg: (u8, usize)) -> usize {
             new_state = new_state.union(x);
         }
         state = new_state;
-        holder.gc();
+        //holder.gc();
     }
 
     state.size().unwrap()

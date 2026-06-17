@@ -78,7 +78,7 @@ impl<'a, V: Display + Eq + Hash + Clone> SetFamily<'a, V> {
     }
 }
 
-impl<V: Eq + Hash> SetFamily<'_, V> {
+impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///Count the number of possible comibinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
@@ -92,7 +92,7 @@ impl<V: Eq + Hash> SetFamily<'_, V> {
     }
 }
 
-impl<V: Eq + Hash> ZddIndex<V> {
+impl<V: Eq + Hash + Clone> ZddIndex<V> {
     pub(crate) fn size(self, holder: &ZddHolder<V>) -> Option<usize> {
         if self.is_zero() {
             return Some(0);

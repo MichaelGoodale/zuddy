@@ -85,7 +85,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
             new_state = new_state.union(x);
         }
         state = new_state;
-        holder.gc();
+        //holder.gc();
     }
 
     let n_sol = state.size().unwrap();
@@ -93,7 +93,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
     println!(
         "{board_size}-Queens has {n_sol} solutions! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
         state.n_nodes(),
-        holder.n_nodes()
+        0 //holder.n_nodes()
     );
     let sampled_queens = state.sample(rng);
     print_solution(&sampled_queens, board_size);
@@ -103,7 +103,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
 
 fn main() {
     let mut rng = ThreadRng::default();
-    let holder = ZddHolder::<QueenPosition>::with_capacity(10_000_000);
+    let holder = ZddHolder::<QueenPosition>::new();
     //no solution for n=2,3
     for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         .into_iter()
