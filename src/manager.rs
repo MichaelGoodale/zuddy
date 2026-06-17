@@ -4,7 +4,7 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Mutex, RwLock},
 };
 
 use ahash::RandomState;
@@ -26,8 +26,8 @@ use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 pub struct ZddHolder<V: Eq + Hash> {
     #[serde(default, skip)]
     pools: ZddThreadPool,
-    free: Arc<Mutex<Vec<usize>>>,
-    data: Arc<RwLock<Vec<Option<RawZddData<V>>>>>,
+    free: Mutex<Vec<usize>>,
+    data: RwLock<Vec<Option<RawZddData<V>>>>,
     uniq_table: DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
@@ -46,8 +46,8 @@ impl<V: Eq + Hash> Default for ZddHolder<V> {
     fn default() -> Self {
         Self {
             pools: ZddThreadPool::default(),
-            free: Arc::new(Mutex::new(vec![])),
-            data: Arc::new(RwLock::new(vec![None, None])),
+            free: Mutex::new(vec![]),
+            data: RwLock::new(vec![None, None]),
             uniq_table: DashMap::default(),
             sum_cache: DashMap::default(),
             cache: DashMap::default(),
@@ -128,8 +128,8 @@ impl<V: Eq + Hash> ZddHolder<V> {
 
         Self {
             pools: ZddThreadPool::default(),
-            free: Arc::new(Mutex::new(vec![])),
-            data: Arc::new(RwLock::new(data)),
+            free: Mutex::new(vec![]),
+            data: RwLock::new(data),
             uniq_table,
             sum_cache,
             cache,
@@ -137,59 +137,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     }
 }
 
-fn get_node<V: Eq + Hash + Clone>(
-    family: RawZddData<V>,
-    data: &mut Vec<Option<RawZddData<V>>>,
-    free: &mut Vec<usize>,
-    uniq_table: &DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
-) -> ZddIndex<V> {
-    if family.hi == ZddIndex::ZERO {
-        return family.lo;
-    }
-
-    if let Some(x) = uniq_table.get(&family) {
-        return *x;
-    }
-    let id = free_id(data, free);
-    data[usize::from(id)] = Some(family.clone());
-    uniq_table.insert(family, id);
-    id
-}
-
-fn from_sets<V: Eq + Hash + Ord + Clone>(
-    mut sets: BTreeSet<BTreeSet<V>>,
-    data: &mut Vec<Option<RawZddData<V>>>,
-    free: &mut Vec<usize>,
-    uniq_table: &DashMap<RawZddData<V>, ZddIndex<V>, RandomState>,
-) -> ZddIndex<V> {
-    if sets.is_empty() {
-        return ZddIndex::ZERO;
-    }
-
-    if sets.len() == 1 && sets.first().unwrap().is_empty() {
-        return ZddIndex::ONE;
-    }
-
-    //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
-    let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
-
-    let with_min_val = sets
-        .extract_if(.., |v| v.contains(&value))
-        .map(|mut x| {
-            x.remove(&value);
-            x
-        })
-        .collect::<BTreeSet<_>>();
-
-    let without_min_val = sets;
-
-    let lo = from_sets(without_min_val, data, free, uniq_table);
-    let hi = from_sets(with_min_val, data, free, uniq_table);
-
-    get_node(RawZddData { value, lo, hi }, data, free, uniq_table)
-}
-
-impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
+impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
     ///
     ///```
@@ -202,12 +150,38 @@ impl<'a, V: Ord + Clone + Hash + Eq> SetFamily<'a, V> {
     ///assert_eq!(members, sets);
     ///```
     #[must_use]
-    pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+    pub fn from_sets(
+        mut sets: BTreeSet<BTreeSet<V>>,
+        holder: &'a ZddHolder<V>,
+    ) -> SetFamily<'a, V> {
+        if sets.is_empty() {
+            return holder.zero();
+        }
+
         #[expect(clippy::missing_panics_doc)]
-        let mut data = holder.data.write().unwrap();
+        if sets.len() == 1 && sets.first().unwrap().is_empty() {
+            return holder.one();
+        }
+
+        //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
         #[expect(clippy::missing_panics_doc)]
-        let mut free = holder.free.lock().unwrap();
-        let uniq_table = &holder.uniq_table;
-        SetFamily::from_set_family(from_sets(sets, &mut data, &mut free, uniq_table), holder)
+        let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
+
+        let with_min_val = sets
+            .extract_if(.., |v| v.contains(&value))
+            .map(|mut x| {
+                x.remove(&value);
+                x
+            })
+            .collect::<BTreeSet<_>>();
+
+        let without_min_val = sets;
+
+        let (lo, hi) = holder.pools().join(
+            || SetFamily::from_sets(without_min_val, holder),
+            || SetFamily::from_sets(with_min_val, holder),
+        );
+
+        holder.get_node(value, lo, hi)
     }
 }
