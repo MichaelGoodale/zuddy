@@ -5,6 +5,7 @@ use ahash::RandomState;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 mod garbage;
+mod hashtable;
 mod parallelism;
 mod raw;
 

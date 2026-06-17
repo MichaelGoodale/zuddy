@@ -746,4 +746,5 @@ dependencies = [
  "rayon",
  "ron",
  "serde",
+ "zerocopy",
 ]
