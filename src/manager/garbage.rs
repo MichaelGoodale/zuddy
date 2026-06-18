@@ -10,7 +10,6 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
     pub fn gc(&self) {
         if let Some(x) = self.uniq_table.start_gc() {
-            println!("Doing garbage collection!");
             self.cache.clear();
             self.sum_cache.clear();
 

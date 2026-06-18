@@ -189,8 +189,13 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         databits[0].store(true, Ordering::SeqCst);
         databits[1].store(true, Ordering::SeqCst);
         let gap = n_region_bits / n_pools;
+        let regionbits = zeroed_atomic_bool(n_region_bits);
         let current_region = (0..n_pools)
-            .map(|x| AtomicU64::from(u64::try_from(x * gap).unwrap()))
+            .map(|x| {
+                let i = x * gap;
+                regionbits[i].store(true, Relaxed);
+                AtomicU64::from(u64::try_from(i).unwrap())
+            })
             .collect();
 
         HashTable {
@@ -365,7 +370,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         }
                         let x = self.count.fetch_add(1, Relaxed);
                         let used_capacity = ((x + 1) as f64) / (self.data.len() as f64);
-                        if used_capacity > 0.10 {
+                        if used_capacity > 0.80 {
                             return Err(InsertionError::CapacityWarning(index));
                         }
                         return Ok(index);
@@ -400,6 +405,27 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             let vec_ptr = (&raw const self.databits).cast_mut();
             std::ptr::write(vec_ptr, zeroed_atomic_bool(n));
         }
+
+        let n_region_bits = self.regionbits.len();
+        unsafe {
+            let vec_ptr = (&raw const self.regionbits).cast_mut();
+            std::ptr::write(vec_ptr, zeroed_atomic_bool(n_region_bits));
+        }
+
+        let gap = self.regionbits.len() / self.current_region.len();
+        let new_current_regions = (0..self.current_region.len())
+            .map(|x| {
+                let i = x * gap;
+                self.regionbits[i].store(true, Relaxed);
+                AtomicU64::from(u64::try_from(i).unwrap())
+            })
+            .collect::<Vec<_>>();
+
+        unsafe {
+            let vec_ptr = (&raw const self.current_region).cast_mut();
+            std::ptr::write(vec_ptr, new_current_regions);
+        }
+
         self.databits[0].store(true, Relaxed);
         self.databits[1].store(true, Relaxed);
         let _old_count = self.count.swap(2, Relaxed);
