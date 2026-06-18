@@ -1,6 +1,5 @@
 //! Tools for working with ZDD algorithms in parallel.
-use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use std::{hash::Hash, marker::PhantomData};
 
 use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
@@ -80,34 +79,6 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct ZddThreadPool {
-    pools: ThreadPool,
-}
-
-impl Default for ZddThreadPool {
-    fn default() -> Self {
-        let n_threads = rayon::current_num_threads();
-        Self {
-            pools: ThreadPoolBuilder::new()
-                .num_threads(n_threads)
-                .build()
-                .unwrap(),
-        }
-    }
-}
-impl ZddThreadPool {
-    pub(super) fn n_pools(&self) -> usize {
-        self.pools.current_num_threads()
-    }
-}
-
-impl<V: Eq + Hash> ZddHolder<V> {
-    pub(crate) fn pools(&self) -> &ThreadPool {
-        &self.pools.pools
-    }
-}
-
 impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn get_node<'a>(
@@ -126,7 +97,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             hi: hi.as_raw(),
         };
 
-        let s = ZddIndex::from(self.uniq_table.find_or_insert(zdd));
+        let s = ZddIndex::from(self.uniq_table.find_or_insert(zdd).expect("Table is full!"));
         SetFamily::from_set_family(s, self)
     }
 }

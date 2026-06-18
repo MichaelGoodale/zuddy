@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-
-use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use std::{
     cell::UnsafeCell,
     hash::{Hash, Hasher},
@@ -13,6 +11,7 @@ use std::{
         },
     },
 };
+use thiserror::Error;
 
 use ahash::HashSet;
 use serde::{Deserialize, Serialize};
@@ -94,15 +93,16 @@ impl HashEntry {
 
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
+    pools: ThreadPool,
     hashes: Vec<AtomicU64>,
     databits: Vec<AtomicBool>,
     regionbits: Vec<AtomicBool>,
     data: Vec<UnsafeCell<Option<V>>>,
     current_region: Vec<AtomicU64>,
     counts: Vec<AtomicU64>,
-    included: Arc<Mutex<HashSet<usize>>>,
 }
-unsafe impl<V: Sync> Sync for HashTable<V> {}
+
+unsafe impl<V> Sync for HashTable<V> {}
 
 fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
     vec![0u64; n].into_iter().map(AtomicU64::new).collect()
@@ -124,7 +124,16 @@ impl<V: Hash + Eq> ZddHolder<V> {
     pub(super) fn dec_count(&self, i: usize) {
         self.uniq_table.dec_count(i);
     }
+
+    pub(super) fn n_pools(&self) -> usize {
+        self.uniq_table.pools.current_num_threads()
+    }
+
+    pub(crate) fn pools(&self) -> &ThreadPool {
+        &self.uniq_table.pools
+    }
 }
+
 impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
     pub(super) fn used_variables(&self) -> impl ParallelIterator<Item = ZddIndex<V>> {
         self.uniq_table
@@ -150,10 +159,19 @@ impl<V: Hash + Eq> HashTable<V> {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("The table is full!")]
+pub(crate) struct FullTable;
+
 const REGION_SIZE: usize = 512;
 
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
+        let pools = ThreadPoolBuilder::new()
+            .num_threads(n_pools)
+            .build()
+            .unwrap();
+
         let n_region_bits = size * n_pools;
         let size = size * REGION_SIZE * n_pools;
         let databits = zeroed_atomic_bool(size);
@@ -165,13 +183,13 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             .collect();
 
         HashTable {
+            pools,
             hashes: zeroed_atomic(size),
             databits,
             counts: zeroed_atomic(size),
             regionbits: zeroed_atomic_bool(n_region_bits),
             data: noned_unsafe_cell(size),
             current_region,
-            included: Arc::new(Mutex::new(HashSet::default())),
         }
     }
 
@@ -207,14 +225,18 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     fn set_region_id(&self, x: u64) {
-        let d = rayon::current_thread_index().unwrap_or(0);
-        let r = &self.current_region[d];
+        let r = &self.current_region[self.thread_id()];
         r.store(x, Relaxed);
     }
 
+    fn thread_id(&self) -> usize {
+        self.pools.current_thread_index().unwrap_or_else(|| {
+            rayon::current_thread_index().unwrap_or(0) % self.current_region.len()
+        })
+    }
+
     fn region_id(&self) -> usize {
-        let d = rayon::current_thread_index().unwrap_or(0);
-        let r = &self.current_region[d];
+        let r = &self.current_region[self.thread_id()];
         usize::try_from(r.load(Relaxed)).unwrap()
     }
 
@@ -223,28 +245,32 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         (REGION_SIZE * region)..(REGION_SIZE * region + REGION_SIZE - 1)
     }
 
-    fn reserve_data_bucket(&self) -> usize {
-        'outer: loop {
+    ///Tries to claim a new region for the current thread id and returns whether it could.
+    fn claim_region(&self) -> Result<(), FullTable> {
+        let old_region = self.region_id();
+        let mut new_region = (old_region + 1) % (self.data.len() / REGION_SIZE);
+
+        while old_region != new_region {
+            if !self.regionbits[new_region].load(Relaxed)
+                && let Ok(_) =
+                    self.regionbits[new_region].compare_exchange(false, true, Relaxed, Relaxed)
+            {
+                self.set_region_id(u64::try_from(new_region).unwrap());
+                return Ok(());
+            }
+            new_region = (new_region + 1) % (self.data.len() / REGION_SIZE);
+        }
+        Err(FullTable)
+    }
+
+    fn reserve_data_bucket(&self) -> Result<usize, FullTable> {
+        loop {
             if let Some(index) = self.region().find(|i| !self.databits[*i].load(Relaxed)) {
                 self.databits[index].store(true, Relaxed);
-                return index;
+                return Ok(index);
             }
 
-            //Try a new region since we couldn't find anything :(
-            let old_region = self.region_id();
-            let mut new_region = (old_region + 1) % (self.data.len() / REGION_SIZE);
-
-            while old_region != new_region {
-                if !self.regionbits[new_region].load(Relaxed)
-                    && let Ok(_) =
-                        self.regionbits[new_region].compare_exchange(false, true, Relaxed, Relaxed)
-                {
-                    self.set_region_id(u64::try_from(new_region).unwrap());
-                    continue 'outer;
-                }
-                new_region = (new_region + 1) % (self.data.len() / REGION_SIZE);
-            }
-            panic!("Table is full :(");
+            self.claim_region()?;
         }
     }
 
@@ -252,14 +278,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { (&*self.data[i].get()).clone() }
     }
 
-    pub(crate) fn find_or_insert(&self, data: V) -> usize {
+    pub(crate) fn find_or_insert(&self, data: V) -> Result<usize, FullTable> {
         let h = self.hash(&data);
         let mut index = 0;
         for (s, mut v) in self.probe(h) {
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
-                    index = self.reserve_data_bucket();
+                    index = self.reserve_data_bucket()?;
                     unsafe {
                         self.write_at_index(index, data.clone());
                     }
@@ -271,7 +297,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        return index;
+                        return Ok(index);
                     }
                     Err(new_v) => v = HashEntry::from_u64(new_v),
                 }
@@ -281,10 +307,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 if index != 0 {
                     self.databits[index].store(false, Relaxed);
                 }
-                return v.index();
+                return Ok(v.index());
             }
         }
-        panic!("Table full :(");
+        Err(FullTable)
     }
 }
 
@@ -293,19 +319,37 @@ mod test {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use rayon::{ThreadPoolBuilder, prelude::*};
+    use rayon::ThreadPoolBuilder;
 
     #[test]
-    fn hash_table() {
+    fn hash_table_with_other_pool() -> Result<(), FullTable> {
+        let hash_table = HashTable::<char>::new(100, 8);
+        let used_chars = MOBY.chars().collect::<HashSet<_>>();
+
+        let vals = MOBY
+            .par_chars()
+            .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut map = HashMap::new();
+        for (k, v) in vals {
+            let old_v = *map.entry(k).or_insert(v);
+            assert!(old_v == v, "{k} cannot be at {old_v} and {v}");
+        }
+        assert_eq!(map.len(), used_chars.len());
+        Ok(())
+    }
+
+    #[test]
+    fn hash_table() -> Result<(), FullTable> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
         let pools = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
         let hash_table = HashTable::<char>::new(100, 8);
         let vals = pools.install(|| {
             "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
                 .par_chars()
-                .map(|k| (k, hash_table.find_or_insert(k)))
-                .collect::<Vec<_>>()
-        });
+                .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
         println!("{vals:?}");
         let mut map = HashMap::new();
         for (k, v) in vals {
@@ -318,15 +362,16 @@ mod test {
 
         let vals = pools.install(|| {
             MOBY.par_chars()
-                .map(|k| (k, hash_table.find_or_insert(k)))
-                .collect::<Vec<_>>()
-        });
+                .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
         let mut map = HashMap::new();
         for (k, v) in vals {
             let old_v = *map.entry(k).or_insert(v);
             assert!(old_v == v, "{k} cannot be at {old_v} and {v}");
         }
         assert_eq!(map.len(), used_chars.len());
+        Ok(())
     }
 
     const MOBY: &str = "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.

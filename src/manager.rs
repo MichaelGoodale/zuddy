@@ -9,7 +9,6 @@ mod hashtable;
 mod parallelism;
 mod raw;
 
-use parallelism::ZddThreadPool;
 use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
 
@@ -22,7 +21,6 @@ use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V: Eq + Hash> {
     //#[serde(default, skip)]
-    pools: ZddThreadPool,
     uniq_table: HashTable<RawZddData<V>>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
@@ -32,11 +30,8 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn new() -> ZddHolder<V> {
-        let pools = ZddThreadPool::default();
-        let n_pools = pools.n_pools();
-
+        let n_pools = rayon::current_num_threads();
         Self {
-            pools: ZddThreadPool::default(),
             uniq_table: HashTable::new(1000, n_pools),
             sum_cache: DashMap::default(),
             cache: DashMap::default(),
