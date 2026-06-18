@@ -6,30 +6,13 @@ use std::{fmt::Debug, hash::Hash};
 impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
     pub fn gc(&self) {
-        self.pools().install(|| self.inner_gc());
-    }
-
-    fn inner_gc(&self) {
-        /*
-        let marked = DashSet::new();
-        self.protected_values().for_each(|g| mark(g, &marked, self));
-
         self.cache.clear();
         self.sum_cache.clear();
-        self.uniq_table.clear();
 
-        marked.par_iter().for_each(|i| {
-            let i = *i.key();
-            if let Some(k) = self.data[usize::from(i)].read().unwrap().as_ref() {
-                self.uniq_table.insert(k.clone(), i);
-            }
-        });
-
-        let c = self.data.len() - 2 - marked.len();
-        self.distribute_free_index_count(
-            (2..self.data.len()).filter(|x| !marked.contains(&ZddIndex::from(*x))),
-            c,
-        );*/
+        let marked = DashSet::new();
+        self.used_variables().for_each(|g| mark(g, &marked, self));
+        let marked = marked.into_iter().map(usize::from).collect::<Vec<_>>();
+        self.uniq_table.clear(marked);
     }
 }
 

@@ -100,6 +100,7 @@ pub(super) struct HashTable<V> {
     data: Vec<UnsafeCell<Option<V>>>,
     current_region: Vec<AtomicU64>,
     counts: Vec<AtomicU64>,
+    count: AtomicU64,
 }
 
 unsafe impl<V> Sync for HashTable<V> {}
@@ -125,10 +126,6 @@ impl<V: Hash + Eq> ZddHolder<V> {
         self.uniq_table.dec_count(i);
     }
 
-    pub(super) fn n_pools(&self) -> usize {
-        self.uniq_table.pools.current_num_threads()
-    }
-
     pub(crate) fn pools(&self) -> &ThreadPool {
         &self.uniq_table.pools
     }
@@ -141,7 +138,8 @@ impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
             .par_iter()
             .enumerate()
             .filter_map(|(i, x)| {
-                if x.load(Relaxed) != 0 {
+                let v = x.load(Relaxed);
+                if v != 0 {
                     Some(ZddIndex::from(i))
                 } else {
                     None
@@ -156,6 +154,10 @@ impl<V: Hash + Eq> HashTable<V> {
 
     fn dec_count(&self, i: usize) {
         self.counts[i].fetch_sub(1, Relaxed);
+    }
+
+    pub(super) fn n_used(&self) -> usize {
+        usize::try_from(self.count.load(Relaxed)).unwrap()
     }
 }
 
@@ -190,6 +192,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             regionbits: zeroed_atomic_bool(n_region_bits),
             data: noned_unsafe_cell(size),
             current_region,
+            count: AtomicU64::from(2),
         }
     }
 
@@ -297,6 +300,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     Relaxed,
                 ) {
                     Ok(_) => {
+                        self.count.fetch_add(1, Relaxed);
                         return Ok(index);
                     }
                     Err(new_v) => v = HashEntry::from_u64(new_v),
@@ -311,6 +315,53 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             }
         }
         Err(FullTable)
+    }
+
+    ///Empties the hashtable except for keys in `except`
+    pub(super) fn clear(&self, except: Vec<usize>) {
+        let n = self.hashes.len();
+        unsafe {
+            let vec_ptr = (&raw const self.hashes).cast_mut();
+            std::ptr::write(vec_ptr, zeroed_atomic(n));
+        }
+
+        unsafe {
+            let vec_ptr = (&raw const self.databits).cast_mut();
+            std::ptr::write(vec_ptr, zeroed_atomic_bool(n));
+        }
+        self.databits[0].store(true, Relaxed);
+        self.databits[1].store(true, Relaxed);
+        let mut new_count = 2;
+
+        'rehash_index: for index in except {
+            self.databits[index].store(true, Relaxed);
+            if index == 0 || index == 1 {
+                continue;
+            }
+
+            let data =
+                unsafe { (&*self.data[index].get()).as_ref() }.expect("A marked value is None!");
+            let h = self.hash(data);
+            let hash_entry = HashEntry::new(index, h);
+
+            for (s, _) in self.probe(h) {
+                match self.hashes[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
+                    Ok(_) => {
+                        new_count += 1;
+                        continue 'rehash_index;
+                    }
+                    Err(new_v) => {
+                        //We had a collision!
+                        let v = HashEntry::from_u64(new_v);
+                        if v.hash() == h && self.equal_at_index(v.index(), data) {
+                            //unlikely to happen unless except has duplicates or we convert this to multi-threaded
+                            continue 'rehash_index;
+                        }
+                    }
+                }
+            }
+        }
+        let _old_count = self.count.swap(new_count, Relaxed);
     }
 }
 

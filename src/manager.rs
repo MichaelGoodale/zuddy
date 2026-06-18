@@ -87,7 +87,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Counts the number of nodes currently held by the holder.
     #[must_use]
     pub fn n_nodes(&self) -> usize {
-        todo!()
+        self.uniq_table.n_used()
     }
 }
 
