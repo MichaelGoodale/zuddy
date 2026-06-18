@@ -3,17 +3,13 @@ use std::{
     cell::UnsafeCell,
     hash::{Hash, Hasher},
     ops::Range,
-    sync::{
-        Arc, Mutex,
-        atomic::{
-            AtomicBool, AtomicU64,
-            Ordering::{self, Relaxed},
-        },
+    sync::atomic::{
+        AtomicBool, AtomicU64,
+        Ordering::{self, Relaxed},
     },
 };
 use thiserror::Error;
 
-use ahash::HashSet;
 use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
 
@@ -209,10 +205,12 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     fn probe(&self, h: u32) -> impl Iterator<Item = (usize, HashEntry)> {
+        let start = usize::try_from(h).unwrap();
         self.hashes
             .iter()
             .enumerate()
-            .skip(usize::try_from(h).unwrap())
+            .skip(start)
+            .chain(self.hashes.iter().enumerate().take(start).skip(2))
             .map(|(i, h)| (i, HashEntry::from_atomic_u64(h)))
     }
 
@@ -331,37 +329,42 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         }
         self.databits[0].store(true, Relaxed);
         self.databits[1].store(true, Relaxed);
-        let mut new_count = 2;
+        let _old_count = self.count.swap(2, Relaxed);
 
-        'rehash_index: for index in except {
-            self.databits[index].store(true, Relaxed);
-            if index == 0 || index == 1 {
-                continue;
-            }
+        for index in except {
+            self.insert_known_data(index);
+        }
+    }
 
-            let data =
-                unsafe { (&*self.data[index].get()).as_ref() }.expect("A marked value is None!");
-            let h = self.hash(data);
-            let hash_entry = HashEntry::new(index, h);
+    ///Re-inserts the hash of the data at an index.
+    ///Returns false if the data is already in the hash.
+    fn insert_known_data(&self, index: usize) -> bool {
+        if index == 0 || index == 1 {
+            return false;
+        }
+        self.databits[index].store(true, Relaxed);
 
-            for (s, _) in self.probe(h) {
-                match self.hashes[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
-                    Ok(_) => {
-                        new_count += 1;
-                        continue 'rehash_index;
-                    }
-                    Err(new_v) => {
-                        //We had a collision!
-                        let v = HashEntry::from_u64(new_v);
-                        if v.hash() == h && self.equal_at_index(v.index(), data) {
-                            //unlikely to happen unless except has duplicates or we convert this to multi-threaded
-                            continue 'rehash_index;
-                        }
+        let data = unsafe { (&*self.data[index].get()).as_ref() }.expect("A marked value is None!");
+        let h = self.hash(data);
+        let hash_entry = HashEntry::new(index, h);
+
+        for (s, _) in self.probe(h) {
+            match self.hashes[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
+                Ok(_) => {
+                    self.count.fetch_add(1, Relaxed);
+                    return true;
+                }
+                Err(new_v) => {
+                    //We had a collision!
+                    let v = HashEntry::from_u64(new_v);
+                    if v.hash() == h && self.equal_at_index(v.index(), data) {
+                        //unlikely to happen unless except has duplicates
+                        return false;
                     }
                 }
             }
         }
-        let _old_count = self.count.swap(new_count, Relaxed);
+        panic!("Full table!")
     }
 }
 
