@@ -10,7 +10,6 @@ impl<V: Eq + Hash + Clone + Debug + Send + Sync> ZddHolder<V> {
     }
 
     fn inner_gc(&self) {
-        todo!();
         /*
         let marked = DashSet::new();
         self.protected_values().for_each(|g| mark(g, &marked, self));

@@ -1,18 +1,24 @@
 #![allow(dead_code)]
 
+use rayon::prelude::*;
 use std::{
     cell::UnsafeCell,
-    fmt::Display,
     hash::{Hash, Hasher},
     ops::Range,
-    sync::atomic::{
-        AtomicBool, AtomicU64,
-        Ordering::{self, Relaxed},
+    sync::{
+        Arc, Mutex,
+        atomic::{
+            AtomicBool, AtomicU64,
+            Ordering::{self, Relaxed},
+        },
     },
 };
 
+use ahash::HashSet;
 use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
+
+use crate::{ZddHolder, manager::ZddIndex};
 
 const N_BYTES_PER_HASH: usize = 3;
 const N_BYTES_PER_INDEX: usize = 5;
@@ -93,6 +99,8 @@ pub(super) struct HashTable<V> {
     regionbits: Vec<AtomicBool>,
     data: Vec<UnsafeCell<Option<V>>>,
     current_region: Vec<AtomicU64>,
+    counts: Vec<AtomicU64>,
+    included: Arc<Mutex<HashSet<usize>>>,
 }
 unsafe impl<V: Sync> Sync for HashTable<V> {}
 
@@ -106,6 +114,40 @@ fn zeroed_atomic_bool(n: usize) -> Vec<AtomicBool> {
 
 fn noned_unsafe_cell<V: Clone>(n: usize) -> Vec<UnsafeCell<Option<V>>> {
     vec![None; n].into_iter().map(UnsafeCell::new).collect()
+}
+
+impl<V: Hash + Eq> ZddHolder<V> {
+    pub(super) fn inc_count(&self, i: usize) {
+        self.uniq_table.inc_count(i);
+    }
+
+    pub(super) fn dec_count(&self, i: usize) {
+        self.uniq_table.dec_count(i);
+    }
+}
+impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
+    pub(super) fn used_variables(&self) -> impl ParallelIterator<Item = ZddIndex<V>> {
+        self.uniq_table
+            .counts
+            .par_iter()
+            .enumerate()
+            .filter_map(|(i, x)| {
+                if x.load(Relaxed) != 0 {
+                    Some(ZddIndex::from(i))
+                } else {
+                    None
+                }
+            })
+    }
+}
+impl<V: Hash + Eq> HashTable<V> {
+    fn inc_count(&self, i: usize) {
+        self.counts[i].fetch_add(1, Relaxed);
+    }
+
+    fn dec_count(&self, i: usize) {
+        self.counts[i].fetch_sub(1, Relaxed);
+    }
 }
 
 const REGION_SIZE: usize = 512;
@@ -125,9 +167,11 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         HashTable {
             hashes: zeroed_atomic(size),
             databits,
+            counts: zeroed_atomic(size),
             regionbits: zeroed_atomic_bool(n_region_bits),
             data: noned_unsafe_cell(size),
             current_region,
+            included: Arc::new(Mutex::new(HashSet::default())),
         }
     }
 
@@ -165,7 +209,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     fn set_region_id(&self, x: u64) {
         let d = rayon::current_thread_index().unwrap_or(0);
         let r = &self.current_region[d];
-        r.store(x, Relaxed)
+        r.store(x, Relaxed);
     }
 
     fn region_id(&self) -> usize {

@@ -1,5 +1,5 @@
 //! Zuddy is a crate for handling ZDDs
-use std::{collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::RwLock};
+use std::{collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use ahash::RandomState;
 use dashmap::DashMap;
