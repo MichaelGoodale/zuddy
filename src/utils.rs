@@ -7,7 +7,7 @@ use std::{
 use crate::SetFamily;
 use crate::manager::{ZddHolder, ZddIndex};
 
-impl<'a, V: Display + Eq + Hash + Clone> SetFamily<'a, V> {
+impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
     ///
     ///# Panics
@@ -114,7 +114,7 @@ impl<V: Eq + Hash + Clone> ZddIndex<V> {
     }
 }
 
-impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Creates a singleton set from a value.
     ///```
     ///use zuddy::{ZddHolder, SetFamily};

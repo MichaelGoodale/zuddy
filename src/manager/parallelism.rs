@@ -1,6 +1,7 @@
 //! Tools for working with ZDD algorithms in parallel.
 use std::{hash::Hash, marker::PhantomData};
 
+use crate::manager::hashtable::InsertionError;
 use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
 
@@ -79,7 +80,7 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
     }
 }
 
-impl<V: Eq + Hash + Clone> ZddHolder<V> {
+impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn get_node<'a>(
         &'a self,
@@ -91,13 +92,26 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             return lo;
         }
 
-        let zdd = RawZddData {
+        let mut zdd = RawZddData {
             value,
             lo: lo.as_raw(),
             hi: hi.as_raw(),
         };
 
-        let s = ZddIndex::from(self.uniq_table.find_or_insert(zdd).expect("Table is full!"));
-        SetFamily::from_set_family(s, self)
+        loop {
+            let res = self.uniq_table.find_or_insert(zdd);
+            match res {
+                Ok(s) => return SetFamily::from_set_family(ZddIndex::from(s), self),
+                Err(InsertionError::CapacityWarning(s)) => {
+                    let x = SetFamily::from_set_family(ZddIndex::from(s), self);
+                    self.gc();
+                    return x;
+                }
+                Err(InsertionError::DoingGC(old_zdd)) => {
+                    zdd = old_zdd;
+                }
+                Err(InsertionError::FullTable) => panic!("Table is full!"),
+            }
+        }
     }
 }

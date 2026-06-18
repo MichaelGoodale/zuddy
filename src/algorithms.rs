@@ -159,7 +159,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     }
 }
 
-impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     /// Returns a [`SetFamily`] consisting only of sets with the smallest possible summed weight.
     /// The weight is calculated by the provided closure.
     ///
