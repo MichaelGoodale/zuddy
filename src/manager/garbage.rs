@@ -9,7 +9,7 @@ use std::hash::Hash;
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
     pub fn gc(&self) {
-        if let Some(x) = self.uniq_table.start_gc() {
+        if self.uniq_table.start_gc() {
             self.cache.clear();
             self.sum_cache.clear();
 
@@ -17,7 +17,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.used_variables().for_each(|g| mark(g, &marked, self));
             let marked = marked.into_iter().map(usize::from).collect::<Vec<_>>();
             self.uniq_table.clear(marked);
-            self.uniq_table.end_gc(x);
+            self.uniq_table.end_gc();
         }
     }
 }

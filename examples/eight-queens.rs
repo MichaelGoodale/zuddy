@@ -85,6 +85,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
             new_state = new_state.union(x);
         }
         state = new_state;
+        holder.gc();
     }
 
     let n_sol = state.size().unwrap();

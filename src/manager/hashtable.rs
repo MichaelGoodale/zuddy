@@ -4,10 +4,10 @@ use std::{
     hash::{Hash, Hasher},
     ops::Range,
     sync::{
-        Condvar, Mutex, RwLock, RwLockWriteGuard,
+        Arc, Condvar, Mutex, RwLock, RwLockWriteGuard,
         atomic::{
             AtomicBool, AtomicU64,
-            Ordering::{self, Relaxed},
+            Ordering::{self, Acquire, Relaxed, Release},
         },
     },
 };
@@ -100,9 +100,9 @@ pub(super) struct HashTable<V> {
     current_region: Vec<AtomicU64>,
     counts: Vec<AtomicU64>,
     count: AtomicU64,
-    reading: RwLock<()>,
+    reading: AtomicU64,
     pause: AtomicBool,
-    pause_mutex: Mutex<bool>,
+    pause_mutex: Arc<Mutex<bool>>,
     pause_cond_var: Condvar,
 }
 
@@ -165,14 +165,8 @@ impl<V: Hash + Eq> HashTable<V> {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum InsertionError<V> {
-    #[error("The table is full!")]
-    FullTable,
-    #[error("Can't modify the hashtable during garbage collection!")]
-    DoingGC(V),
-    #[error("Table is nearly full!")]
-    CapacityWarning(usize),
-}
+#[error("The table is full!")]
+pub(crate) struct FullTable;
 
 const REGION_SIZE: usize = 512;
 
@@ -186,8 +180,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let n_region_bits = size * n_pools;
         let size = size * REGION_SIZE * n_pools;
         let databits = zeroed_atomic_bool(size);
-        databits[0].store(true, Ordering::SeqCst);
-        databits[1].store(true, Ordering::SeqCst);
+        databits[0].store(true, Ordering::Relaxed);
+        databits[1].store(true, Ordering::Relaxed);
         let gap = n_region_bits / n_pools;
         let regionbits = zeroed_atomic_bool(n_region_bits);
         let current_region = (0..n_pools)
@@ -208,33 +202,35 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             current_region,
             count: AtomicU64::from(2),
             pause: AtomicBool::from(false),
-            reading: RwLock::new(()),
+            reading: AtomicU64::from(0),
             pause_cond_var: Condvar::new(),
-            pause_mutex: Mutex::new(true),
+            pause_mutex: Arc::new(Mutex::new(true)),
         }
     }
 
-    pub(super) fn start_gc(&self) -> Option<RwLockWriteGuard<'_, ()>> {
+    pub(super) fn start_gc(&self) -> bool {
         if self
             .pause
-            .compare_exchange(false, true, Relaxed, Relaxed)
+            .compare_exchange(false, true, Acquire, Relaxed)
             .is_ok()
         {
+            while self.reading.load(Acquire) != 0 {
+                std::hint::spin_loop();
+            }
             *self.pause_mutex.lock().unwrap() = false;
-            Some(self.reading.write().unwrap())
+            true
         } else {
-            None
+            false
         }
     }
 
-    pub fn end_gc(&self, g: RwLockWriteGuard<()>) {
-        drop(g);
-        self.pause.store(false, Relaxed);
+    pub fn end_gc(&self) {
+        self.pause.store(false, Release);
         *self.pause_mutex.lock().unwrap() = true;
         self.pause_cond_var.notify_all();
     }
 
-    fn capacity(&self) -> u64 {
+    pub(crate) fn capacity(&self) -> u64 {
         u64::try_from(self.data.len()).unwrap()
     }
 
@@ -260,13 +256,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { (&*self.data[i].get()).as_ref() == Some(data) }
     }
 
-    unsafe fn write_at_index(&self, i: usize, data: V) {
-        unsafe {
-            let h = &mut *self.data[i].get();
-            *h = Some(data);
-        }
-    }
-
     fn set_region_id(&self, x: u64) {
         let r = &self.current_region[self.thread_id()];
         r.store(x, Relaxed);
@@ -285,11 +274,11 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
     fn region(&self) -> Range<usize> {
         let region = self.region_id();
-        (REGION_SIZE * region)..(REGION_SIZE * region + REGION_SIZE - 1)
+        (REGION_SIZE * region)..(REGION_SIZE * (region + 1))
     }
 
     ///Tries to claim a new region for the current thread id and returns whether it could.
-    fn claim_region(&self) -> Result<(), InsertionError<V>> {
+    fn claim_region(&self) -> Result<(), FullTable> {
         let old_region = self.region_id();
         let mut new_region = (old_region + 1) % (self.data.len() / REGION_SIZE);
 
@@ -303,13 +292,16 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             }
             new_region = (new_region + 1) % (self.data.len() / REGION_SIZE);
         }
-        Err(InsertionError::FullTable)
+        Err(FullTable)
     }
 
-    fn reserve_data_bucket(&self) -> Result<usize, InsertionError<V>> {
+    fn reserve_data_bucket(&self) -> Result<usize, FullTable> {
         loop {
-            if let Some(index) = self.region().find(|i| !self.databits[*i].load(Relaxed)) {
-                self.databits[index].store(true, Relaxed);
+            if let Some(index) = self.region().find(|i| {
+                self.databits[*i]
+                    .compare_exchange(false, true, Acquire, Relaxed)
+                    .is_ok()
+            }) {
                 return Ok(index);
             }
 
@@ -321,31 +313,20 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     pub(crate) fn get(&self, i: usize) -> Option<V> {
-        if self.pause.load(Relaxed) {
-            let mut not_paused = self.pause_mutex.lock().unwrap();
-            while !*not_paused {
-                not_paused = self.pause_cond_var.wait(not_paused).unwrap();
-            }
-        }
-        let Ok(r) = self.reading.try_read() else {
-            return self.get(i);
-        };
+        let reading = self.read_table();
         let x = unsafe { (&*self.data[i].get()).clone() };
-        drop(r);
+        drop(reading);
         x
     }
 
-    pub(crate) fn find_or_insert(&self, data: V) -> Result<usize, InsertionError<V>> {
-        if self.pause.load(Relaxed) {
-            let mut not_paused = self.pause_mutex.lock().unwrap();
-            while !*not_paused {
-                not_paused = self.pause_cond_var.wait(not_paused).unwrap();
-            }
-        }
+    #[expect(clippy::cast_precision_loss)]
+    pub(crate) fn usage(&self) -> f64 {
+        let count = self.count.load(Relaxed);
+        (count) as f64 / self.data.len() as f64
+    }
 
-        let Ok(r) = self.reading.try_read() else {
-            return self.find_or_insert(data);
-        };
+    pub(crate) fn find_or_insert(&self, data: V) -> Result<(usize, bool), FullTable> {
+        let read = self.read_table();
 
         let h = self.hash(&data);
         let mut index = 0;
@@ -355,7 +336,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     //will only happen once so maybe there's a way to avoid the clone here
                     index = self.reserve_data_bucket()?;
                     unsafe {
-                        self.write_at_index(index, data.clone());
+                        let h = &mut *self.data[index].get();
+                        *h = Some(data.clone());
                     }
                 }
                 match self.hashes[s].compare_exchange(
@@ -365,15 +347,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        if self.pause.load(Relaxed) {
-                            return Err(InsertionError::DoingGC(data));
-                        }
-                        let x = self.count.fetch_add(1, Relaxed);
-                        let used_capacity = ((x + 1) as f64) / (self.data.len() as f64);
-                        if used_capacity > 0.80 {
-                            return Err(InsertionError::CapacityWarning(index));
-                        }
-                        return Ok(index);
+                        self.count.fetch_add(1, Relaxed);
+                        return Ok((index, true));
                     }
                     Err(new_v) => v = HashEntry::from_u64(new_v),
                 }
@@ -381,16 +356,13 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
             if v.hash() == h && self.equal_at_index(v.index(), &data) {
                 if index != 0 {
-                    self.databits[index].store(false, Relaxed);
+                    self.databits[index].store(false, Release);
                 }
-                if self.pause.load(Relaxed) {
-                    return Err(InsertionError::DoingGC(data));
-                }
-                return Ok(v.index());
+                return Ok((v.index(), false));
             }
         }
-        drop(r);
-        Err(InsertionError::FullTable)
+        drop(read);
+        Err(FullTable)
     }
 
     ///Empties the hashtable except for keys in `except`
@@ -465,6 +437,26 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         }
         panic!("Full table!")
     }
+
+    fn read_table(&self) -> ReadingTheTable<'_> {
+        if self.pause.load(Acquire) {
+            let mut not_paused = self.pause_mutex.lock().unwrap();
+            while !*not_paused {
+                not_paused = self.pause_cond_var.wait(not_paused).unwrap();
+            }
+        }
+
+        self.reading.fetch_add(1, Release);
+        ReadingTheTable(&self.reading)
+    }
+}
+
+struct ReadingTheTable<'a>(&'a AtomicU64);
+
+impl Drop for ReadingTheTable<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Release);
+    }
 }
 
 #[cfg(test)]
@@ -475,32 +467,34 @@ mod test {
     use rayon::ThreadPoolBuilder;
 
     #[test]
-    fn hash_table_with_other_pool() -> Result<(), InsertionError<char>> {
-        let hash_table = HashTable::<char>::new(100, 8);
-        let used_chars = MOBY.chars().collect::<HashSet<_>>();
+    fn hash_table_with_other_pool() -> Result<(), FullTable> {
+        for _ in 0..20 {
+            let hash_table = HashTable::<char>::new(100, 8);
+            let used_chars = MOBY.chars().collect::<HashSet<_>>();
 
-        let vals = MOBY
-            .par_chars()
-            .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut map = HashMap::new();
-        for (k, v) in vals {
-            let old_v = *map.entry(k).or_insert(v);
-            assert!(old_v == v, "{k} cannot be at {old_v} and {v}");
+            let vals = MOBY
+                .par_chars()
+                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut map = HashMap::new();
+            for (k, v) in vals {
+                let old_v = *map.entry(k).or_insert(v);
+                assert!(old_v == v, "{k} cannot be at {old_v} and {v}");
+            }
+            assert_eq!(map.len(), used_chars.len());
         }
-        assert_eq!(map.len(), used_chars.len());
         Ok(())
     }
 
     #[test]
-    fn hash_table() -> Result<(), InsertionError<char>> {
+    fn hash_table() -> Result<(), FullTable> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
         let pools = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
         let hash_table = HashTable::<char>::new(100, 8);
         let vals = pools.install(|| {
             "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
                 .par_chars()
-                .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
+                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
                 .collect::<Result<Vec<_>, _>>()
         })?;
         println!("{vals:?}");
@@ -515,7 +509,7 @@ mod test {
 
         let vals = pools.install(|| {
             MOBY.par_chars()
-                .map(|k| hash_table.find_or_insert(k).map(|v| (k, v)))
+                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
                 .collect::<Result<Vec<_>, _>>()
         })?;
         let mut map = HashMap::new();

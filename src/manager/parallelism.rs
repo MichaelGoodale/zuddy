@@ -1,9 +1,7 @@
 //! Tools for working with ZDD algorithms in parallel.
-use std::{hash::Hash, marker::PhantomData};
-
-use crate::manager::hashtable::InsertionError;
 use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
+use std::{hash::Hash, marker::PhantomData};
 
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     #[expect(dead_code)]
@@ -92,26 +90,17 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             return lo;
         }
 
-        let mut zdd = RawZddData {
+        let zdd = RawZddData {
             value,
             lo: lo.as_raw(),
             hi: hi.as_raw(),
         };
 
-        loop {
-            let res = self.uniq_table.find_or_insert(zdd);
-            match res {
-                Ok(s) => return SetFamily::from_set_family(ZddIndex::from(s), self),
-                Err(InsertionError::CapacityWarning(s)) => {
-                    let x = SetFamily::from_set_family(ZddIndex::from(s), self);
-                    self.gc();
-                    return x;
-                }
-                Err(InsertionError::DoingGC(old_zdd)) => {
-                    zdd = old_zdd;
-                }
-                Err(InsertionError::FullTable) => panic!("Table is full!"),
-            }
+        let (s, novel_insert) = self.uniq_table.find_or_insert(zdd).expect("Table is full");
+        let s = SetFamily::from_set_family(ZddIndex::from(s), self);
+        if novel_insert && self.uniq_table.usage() > 0.75 {
+            self.gc();
         }
+        s
     }
 }
