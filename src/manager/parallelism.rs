@@ -98,8 +98,8 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
 
         let (s, novel_insert) = self.uniq_table.find_or_insert(zdd).expect("Table is full");
         let s = SetFamily::from_set_family(ZddIndex::from(s), self);
-        if novel_insert && self.uniq_table.usage() > 0.75 {
-            self.gc();
+        if novel_insert && self.uniq_table.usage() > 0.8 {
+            //self.gc();
         }
         s
     }

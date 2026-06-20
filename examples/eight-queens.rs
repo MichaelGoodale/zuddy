@@ -103,7 +103,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
 
 fn main() {
     let mut rng = ThreadRng::default();
-    let holder = ZddHolder::<QueenPosition>::new();
+    let holder = ZddHolder::<QueenPosition>::with_capacity_and_pools(20_000, 8);
     //no solution for n=2,3
     for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         .into_iter()

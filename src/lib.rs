@@ -57,10 +57,8 @@ impl<V: Eq + Hash> SetFamily<'_, V> {
     }
 }
 
-#[cfg(test)]
 use std::collections::BTreeSet;
 
-#[cfg(test)]
 ///Panics if the ZDD is corrupted
 impl<V: Eq + Hash + Ord + Clone> SetFamily<'_, V> {
     fn check_valid_zdd(&self) {

@@ -2,12 +2,11 @@ use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use std::{
     cell::UnsafeCell,
     hash::{Hash, Hasher},
-    ops::Range,
     sync::{
-        Arc, Condvar, Mutex, RwLock, RwLockWriteGuard,
+        Arc, Condvar, Mutex,
         atomic::{
             AtomicBool, AtomicU64,
-            Ordering::{self, Acquire, Relaxed, Release},
+            Ordering::{self, AcqRel, Acquire, Relaxed, Release},
         },
     },
 };
@@ -92,12 +91,12 @@ impl HashEntry {
 
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
+    n_pools: usize,
     pools: ThreadPool,
-    hashes: Vec<AtomicU64>,
-    databits: Vec<AtomicBool>,
-    regionbits: Vec<AtomicBool>,
+    hashes: UnsafeCell<Vec<AtomicU64>>,
+    next_free: UnsafeCell<Vec<AtomicU64>>,
+    current_position: UnsafeCell<Vec<AtomicU64>>,
     data: Vec<UnsafeCell<Option<V>>>,
-    current_region: Vec<AtomicU64>,
     counts: Vec<AtomicU64>,
     count: AtomicU64,
     reading: AtomicU64,
@@ -108,12 +107,33 @@ pub(super) struct HashTable<V> {
 
 unsafe impl<V> Sync for HashTable<V> {}
 
-fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
-    vec![0u64; n].into_iter().map(AtomicU64::new).collect()
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum UsageFlag {
+    Used,
+    NextStored(usize),
 }
 
-fn zeroed_atomic_bool(n: usize) -> Vec<AtomicBool> {
-    vec![false; n].into_iter().map(AtomicBool::new).collect()
+impl From<u64> for UsageFlag {
+    fn from(value: u64) -> Self {
+        if value == u64::MAX {
+            UsageFlag::Used
+        } else {
+            UsageFlag::NextStored(usize::try_from(value).unwrap())
+        }
+    }
+}
+
+impl From<UsageFlag> for u64 {
+    fn from(value: UsageFlag) -> Self {
+        match value {
+            UsageFlag::Used => u64::MAX,
+            UsageFlag::NextStored(x) => u64::try_from(x).unwrap(),
+        }
+    }
+}
+
+fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
+    vec![0u64; n].into_iter().map(AtomicU64::new).collect()
 }
 
 fn noned_unsafe_cell<V: Clone>(n: usize) -> Vec<UnsafeCell<Option<V>>> {
@@ -165,10 +185,38 @@ impl<V: Hash + Eq> HashTable<V> {
 }
 
 #[derive(Debug, Error)]
-#[error("The table is full!")]
-pub(crate) struct FullTable;
+#[error("The table is full, with {n_used}/{size} filled !")]
+pub(crate) struct FullTable {
+    size: usize,
+    n_used: usize,
+}
 
-const REGION_SIZE: usize = 512;
+fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
+    const EXTRA_SPACE: usize = 4;
+    let gap = size / (n_pools + EXTRA_SPACE);
+    (0..n_pools).map(move |x| {
+        if x == 0 {
+            //skip the first two
+            2
+        } else {
+            //We give the first pos a lot of extra space since the main thread is used more.
+            (x + EXTRA_SPACE) * gap
+        }
+    })
+}
+
+fn generate_next_free(size: usize) -> impl Iterator<Item = UsageFlag> {
+    (1..=size).map(move |i| {
+        if i <= 2 {
+            //Mark 0 and 1 as used.
+            UsageFlag::Used
+        } else if i == size {
+            UsageFlag::NextStored(2)
+        } else {
+            UsageFlag::NextStored(i)
+        }
+    })
+}
 
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
@@ -177,29 +225,27 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             .build()
             .unwrap();
 
-        let n_region_bits = size * n_pools;
-        let size = size * REGION_SIZE * n_pools;
-        let databits = zeroed_atomic_bool(size);
-        databits[0].store(true, Ordering::Relaxed);
-        databits[1].store(true, Ordering::Relaxed);
-        let gap = n_region_bits / n_pools;
-        let regionbits = zeroed_atomic_bool(n_region_bits);
-        let current_region = (0..n_pools)
-            .map(|x| {
-                let i = x * gap;
-                regionbits[i].store(true, Relaxed);
-                AtomicU64::from(u64::try_from(i).unwrap())
-            })
-            .collect();
+        let size = size * n_pools;
+
+        let next_free = UnsafeCell::new(
+            generate_next_free(size)
+                .map(|x| AtomicU64::from(u64::from(x)))
+                .collect(),
+        );
+        let current_position = UnsafeCell::new(
+            generate_current_position(size, n_pools)
+                .map(|x| AtomicU64::from(u64::try_from(x).unwrap()))
+                .collect(),
+        );
 
         HashTable {
+            n_pools,
             pools,
-            hashes: zeroed_atomic(size),
-            databits,
+            hashes: UnsafeCell::new(zeroed_atomic(size)),
+            next_free,
             counts: zeroed_atomic(size),
-            regionbits: zeroed_atomic_bool(n_region_bits),
             data: noned_unsafe_cell(size),
-            current_region,
+            current_position,
             count: AtomicU64::from(2),
             pause: AtomicBool::from(false),
             reading: AtomicU64::from(0),
@@ -242,13 +288,25 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         h as u32
     }
 
+    fn hashes(&self) -> &Vec<AtomicU64> {
+        unsafe { &*self.hashes.get() }
+    }
+
+    fn current_position(&self) -> &Vec<AtomicU64> {
+        unsafe { &*self.current_position.get() }
+    }
+
+    fn next_free(&self) -> &Vec<AtomicU64> {
+        unsafe { &*self.next_free.get() }
+    }
+
     fn probe(&self, h: u32) -> impl Iterator<Item = (usize, HashEntry)> {
         let start = usize::try_from(h).unwrap();
-        self.hashes
+        self.hashes()
             .iter()
             .enumerate()
             .skip(start)
-            .chain(self.hashes.iter().enumerate().take(start).skip(2))
+            .chain(self.hashes().iter().enumerate().take(start).skip(2))
             .map(|(i, h)| (i, HashEntry::from_atomic_u64(h)))
     }
 
@@ -256,58 +314,67 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { (&*self.data[i].get()).as_ref() == Some(data) }
     }
 
-    fn set_region_id(&self, x: u64) {
-        let r = &self.current_region[self.thread_id()];
-        r.store(x, Relaxed);
-    }
-
     fn thread_id(&self) -> usize {
-        self.pools.current_thread_index().unwrap_or_else(|| {
-            rayon::current_thread_index().unwrap_or(0) % self.current_region.len()
-        })
-    }
-
-    fn region_id(&self) -> usize {
-        let r = &self.current_region[self.thread_id()];
-        usize::try_from(r.load(Relaxed)).unwrap()
-    }
-
-    fn region(&self) -> Range<usize> {
-        let region = self.region_id();
-        (REGION_SIZE * region)..(REGION_SIZE * (region + 1))
-    }
-
-    ///Tries to claim a new region for the current thread id and returns whether it could.
-    fn claim_region(&self) -> Result<(), FullTable> {
-        let old_region = self.region_id();
-        let mut new_region = (old_region + 1) % (self.data.len() / REGION_SIZE);
-
-        while old_region != new_region {
-            if !self.regionbits[new_region].load(Relaxed)
-                && let Ok(_) =
-                    self.regionbits[new_region].compare_exchange(false, true, Relaxed, Relaxed)
-            {
-                self.set_region_id(u64::try_from(new_region).unwrap());
-                return Ok(());
-            }
-            new_region = (new_region + 1) % (self.data.len() / REGION_SIZE);
-        }
-        Err(FullTable)
+        self.pools
+            .current_thread_index()
+            .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
     }
 
     fn reserve_data_bucket(&self) -> Result<usize, FullTable> {
+        let thread_id = self.thread_id();
         loop {
-            if let Some(index) = self.region().find(|i| {
-                self.databits[*i]
-                    .compare_exchange(false, true, Acquire, Relaxed)
-                    .is_ok()
-            }) {
-                return Ok(index);
-            }
+            let UsageFlag::NextStored(id) = self.current_position()[thread_id].load(Acquire).into()
+            else {
+                return Err(FullTable {
+                    size: self.data.len(),
+                    n_used: self.n_used(),
+                });
+            };
 
-            self.claim_region()?;
+            let next = UsageFlag::from(self.next_free()[id].load(Ordering::Relaxed));
+
+            if self.current_position()[thread_id]
+                .compare_exchange(
+                    UsageFlag::NextStored(id).into(),
+                    next.into(),
+                    AcqRel,
+                    Acquire,
+                )
+                .is_ok()
+            {
+                if self.next_free()[id]
+                    .compare_exchange(next.into(), UsageFlag::Used.into(), Acquire, Relaxed)
+                    .is_ok()
+                {
+                    return Ok(id);
+                }
+                panic!(
+                    "Mismatch between free list and usage! 
+                    thread_id: {thread_id}, id: {id}, next: {next:?}"
+                );
+            }
         }
     }
+
+    fn free_data_bucket(&self, i: usize) {
+        let thread_id = self.thread_id();
+        loop {
+            let current_pos = self.current_position()[thread_id].load(Acquire);
+            self.next_free()[i].store(current_pos, Ordering::Release);
+            if self.current_position()[thread_id]
+                .compare_exchange(
+                    current_pos,
+                    u64::try_from(i).unwrap(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
     pub(super) unsafe fn get_unchecked(&self, i: usize) -> Option<V> {
         unsafe { (&*self.data[i].get()).clone() }
     }
@@ -327,7 +394,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
     pub(crate) fn find_or_insert(&self, data: V) -> Result<(usize, bool), FullTable> {
         let read = self.read_table();
-
         let h = self.hash(&data);
         let mut index = 0;
         for (s, mut v) in self.probe(h) {
@@ -340,7 +406,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         *h = Some(data.clone());
                     }
                 }
-                match self.hashes[s].compare_exchange(
+                match self.hashes()[s].compare_exchange(
                     0,
                     HashEntry::new(index, h).to_u64(),
                     Relaxed,
@@ -356,72 +422,85 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
             if v.hash() == h && self.equal_at_index(v.index(), &data) {
                 if index != 0 {
-                    self.databits[index].store(false, Release);
+                    self.free_data_bucket(index);
                 }
                 return Ok((v.index(), false));
             }
         }
+        let r = Err(FullTable {
+            size: self.data.len(),
+            n_used: self.n_used(),
+        });
         drop(read);
-        Err(FullTable)
+        r
     }
 
     ///Empties the hashtable except for keys in `except`
     pub(super) fn clear(&self, except: Vec<usize>) {
-        let n = self.hashes.len();
-        unsafe {
-            let vec_ptr = (&raw const self.hashes).cast_mut();
-            std::ptr::write(vec_ptr, zeroed_atomic(n));
-        }
+        let size = self.data.len();
 
         unsafe {
-            let vec_ptr = (&raw const self.databits).cast_mut();
-            std::ptr::write(vec_ptr, zeroed_atomic_bool(n));
+            *self.hashes.get() = zeroed_atomic(size);
         }
 
-        let n_region_bits = self.regionbits.len();
-        unsafe {
-            let vec_ptr = (&raw const self.regionbits).cast_mut();
-            std::ptr::write(vec_ptr, zeroed_atomic_bool(n_region_bits));
+        let _old_count = self.count.swap(2, Relaxed);
+
+        let mut next_free = generate_next_free(size).collect::<Vec<_>>();
+        for index in except {
+            self.insert_known_data(index, &mut next_free);
         }
 
-        let gap = self.regionbits.len() / self.current_region.len();
-        let new_current_regions = (0..self.current_region.len())
-            .map(|x| {
-                let i = x * gap;
-                self.regionbits[i].store(true, Relaxed);
-                AtomicU64::from(u64::try_from(i).unwrap())
+        let free_slots = next_free
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| {
+                if matches!(x, UsageFlag::NextStored(_)) {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>();
 
+        let n_free = free_slots.len();
+        let positions = generate_current_position(n_free, self.n_pools)
+            .map(|i| AtomicU64::from(u64::try_from(free_slots[i]).unwrap()))
+            .collect::<Vec<_>>();
+
+        let next_free = next_free
+            .into_iter()
+            .map(|x| AtomicU64::from(u64::from(x)))
+            .collect::<Vec<_>>();
+
         unsafe {
-            let vec_ptr = (&raw const self.current_region).cast_mut();
-            std::ptr::write(vec_ptr, new_current_regions);
-        }
-
-        self.databits[0].store(true, Relaxed);
-        self.databits[1].store(true, Relaxed);
-        let _old_count = self.count.swap(2, Relaxed);
-
-        for index in except {
-            self.insert_known_data(index);
+            *self.next_free.get() = next_free;
+            *self.current_position.get() = positions;
         }
     }
 
     ///Re-inserts the hash of the data at an index.
     ///Returns false if the data is already in the hash.
-    fn insert_known_data(&self, index: usize) -> bool {
+    fn insert_known_data(&self, index: usize, next_free: &mut [UsageFlag]) -> bool {
         if index == 0 || index == 1 {
             return false;
         }
-        self.databits[index].store(true, Relaxed);
 
         let data = unsafe { (&*self.data[index].get()).as_ref() }.expect("A marked value is None!");
         let h = self.hash(data);
         let hash_entry = HashEntry::new(index, h);
 
         for (s, _) in self.probe(h) {
-            match self.hashes[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
+            match self.hashes()[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
                 Ok(_) => {
+                    let old = std::mem::replace(&mut next_free[index], UsageFlag::Used);
+                    if let Some(prev) = next_free[..index]
+                        .iter_mut()
+                        .rev()
+                        .find(|x| matches!(x, UsageFlag::NextStored(_)))
+                    {
+                        *prev = old;
+                    }
+
                     self.count.fetch_add(1, Relaxed);
                     return true;
                 }
@@ -504,7 +583,7 @@ mod test {
         }
         assert_eq!(map.len(), 27);
 
-        let hash_table = HashTable::<char>::new(8, 8);
+        let hash_table = HashTable::<char>::new(100, 8);
         let used_chars = MOBY.chars().collect::<HashSet<_>>();
 
         let vals = pools.install(|| {

@@ -30,12 +30,28 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn new() -> ZddHolder<V> {
-        let n_pools = rayon::current_num_threads();
+        Self::with_capacity_and_pools(1000, rayon::current_num_threads())
+    }
+
+    ///Create a new [`ZddHolder`] to hold various ZDDs.
+    #[must_use]
+    pub fn with_capacity(n: usize) -> ZddHolder<V> {
+        Self::with_capacity_and_pools(n, rayon::current_num_threads())
+    }
+    ///Create a new [`ZddHolder`] to hold various ZDDs.
+    #[must_use]
+    pub fn with_capacity_and_pools(n: usize, n_pools: usize) -> ZddHolder<V> {
         Self {
-            uniq_table: HashTable::new(1000, n_pools),
+            uniq_table: HashTable::new(n, n_pools),
             sum_cache: DashMap::default(),
             cache: DashMap::default(),
         }
+    }
+}
+
+impl<V: Eq + Hash + Clone> Default for ZddHolder<V> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

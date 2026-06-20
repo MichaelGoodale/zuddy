@@ -71,6 +71,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
+        self.check_valid_zdd();
+
         if self.is_zero() || self.is_one() {
             return self.clone();
         }
