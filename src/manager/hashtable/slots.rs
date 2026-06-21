@@ -6,20 +6,15 @@ use std::{
     },
 };
 
+use rand::seq::index;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
-    const EXTRA_SPACE: usize = 4;
-    let gap = size / (n_pools + EXTRA_SPACE);
-    (0..n_pools).map(move |x| {
-        if x == 0 {
-            //skip the first two
-            2
-        } else {
-            //We give the first pos a lot of extra space since the main thread is used more.
-            (x + EXTRA_SPACE) * gap
-        }
-    })
+    let mut gap = size / n_pools;
+    if gap == 0 {
+        gap = 1;
+    }
+    (0..n_pools).map(move |x| x * gap)
 }
 
 pub const REGION_SIZE: usize = 512;
@@ -49,7 +44,9 @@ pub fn find_zero_bit(v: u64) -> Option<usize> {
 impl DataTakenRecord {
     fn new(size: usize) -> Self {
         let n = u64::try_from(size / 64).unwrap();
-        let v = (0_u64..n).map(AtomicU64::from).collect::<Vec<_>>();
+        let v = std::iter::repeat_n(0_u64, usize::try_from(n).unwrap())
+            .map(AtomicU64::from)
+            .collect::<Vec<_>>();
         v[0].store(0b11, Relaxed);
         DataTakenRecord(UnsafeCell::new(v))
     }
@@ -59,9 +56,25 @@ impl DataTakenRecord {
     }
 
     fn free_slot(&self, index: usize) {
-        let i = index / 64;
-        let j = index % 64;
-        unsafe { (&*self.0.get())[i].fetch_and(!(1 << j), Release) };
+        let i = index / 64_usize;
+        let j = u64::try_from(index).unwrap() % 64_u64;
+        unsafe { (&*self.0.get())[i].fetch_and(!(1_u64 << j), Relaxed) };
+    }
+
+    fn clear_and_mark_slots(&self, to_mark: &[usize]) {
+        unsafe {
+            let this = &mut *self.0.get();
+            let v = std::iter::repeat_n(0_u64, usize::try_from(this.len()).unwrap())
+                .map(AtomicU64::from)
+                .collect::<Vec<_>>();
+            v[0].store(0b11, Relaxed);
+            *this = v;
+        }
+        for index in to_mark {
+            let i = index / 64_usize;
+            let j = u64::try_from(*index).unwrap() % 64_u64;
+            unsafe { (&*self.0.get())[i].fetch_or(1_u64 << j, Relaxed) };
+        }
     }
 
     fn reserve_slot(&self, region: usize) -> Option<usize> {
@@ -69,14 +82,16 @@ impl DataTakenRecord {
         for i in 0..8 {
             let mut region_usage = d[region * 8 + i].load(Relaxed);
             while let Some(j) = find_zero_bit(region_usage) {
-                let set_with_mark = region_usage | 1 << j;
+                let set_with_mark = region_usage | (1 << j);
                 match d[region * 8 + i].compare_exchange(
                     region_usage,
                     set_with_mark,
                     Acquire,
                     Relaxed,
                 ) {
-                    Ok(_) => return Some((region * 8 + i) * 64 + j),
+                    Ok(_) => {
+                        return Some((region * 8 + i) * 64 + j);
+                    }
                     Err(actual) => region_usage = actual,
                 }
             }
@@ -87,11 +102,12 @@ impl DataTakenRecord {
 
 impl SharedLinkedList {
     pub(super) fn new(size: usize, n_pools: usize) -> Self {
-        let current_region = generate_current_position(size / REGION_SIZE, n_pools)
+        let current_region = generate_current_position(size.div_ceil(REGION_SIZE), n_pools)
             .map(AtomicUsize::from)
             .collect::<Vec<_>>();
+        println!("{current_region:?}");
 
-        let claimed_regions = (0..size.div_ceil(n_pools))
+        let claimed_regions = (0..size.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
             .collect::<Vec<_>>();
 
@@ -122,7 +138,8 @@ impl SharedLinkedList {
 
     fn claim_region(&self, thread_id: usize) -> bool {
         let current_region: usize = self.current_region()[thread_id].load(Relaxed);
-        let mut new_region = (current_region + 1) % (self.used_data.len() / REGION_SIZE);
+        let n_regions = unsafe { (&*self.claimed_regions.get()).len() };
+        let mut new_region = (current_region + 1) % n_regions;
         let claimed_regions = unsafe { &*self.claimed_regions.get() };
 
         while new_region != current_region {
@@ -130,9 +147,11 @@ impl SharedLinkedList {
                 .compare_exchange(false, true, Relaxed, Relaxed)
                 .is_ok()
             {
+                //TODO: Maybe some checks to see if the region was already switched?;
+                self.current_region()[thread_id].store(new_region, Relaxed);
                 return true;
             }
-            new_region = (new_region + 1) % (self.used_data.len() / REGION_SIZE);
+            new_region = (new_region + 1) % n_regions;
         }
         false
     }
@@ -140,7 +159,7 @@ impl SharedLinkedList {
     pub(super) fn reserve_bucket(&self) -> Option<usize> {
         let thread_id = self.thread_id();
         loop {
-            let current_region: usize = self.current_region()[thread_id].load(Relaxed);
+            let current_region: usize = self.current_region()[thread_id].load(Acquire);
             if let Some(x) = self.used_data.reserve_slot(current_region) {
                 return Some(x);
             }
@@ -149,64 +168,35 @@ impl SharedLinkedList {
             }
         }
     }
+    pub(super) fn n_used(&self) -> usize {
+        unsafe { (&*self.used_data.0.get()) }
+            .iter()
+            .map(|x| usize::try_from(x.load(Relaxed).count_ones()).unwrap())
+            .sum()
+    }
 
     pub(super) fn clear(&self, marked: &[usize]) {
-        /*
-        let size = unsafe { (&*self.next_free.get()).len() };
-        let mut next_free = generate_next_free(size).collect::<Vec<_>>();
-
-        for index in marked {
-            //check if index happened already.
-            if !matches!(next_free[*index], UsageFlag::Used) {
-                let old = std::mem::replace(&mut next_free[*index], UsageFlag::Used);
-                if let Some(prev) = next_free[..*index]
-                    .iter_mut()
-                    .rev()
-                    .find(|x| matches!(x, UsageFlag::NextStored(_)))
-                {
-                    *prev = old;
-                }
-            }
-        }
-
-        let free_slots = next_free
-            .iter()
-            .enumerate()
-            .filter_map(|(i, x)| {
-                if matches!(x, UsageFlag::NextStored(_)) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
+        let size = self.used_data.len() * 64;
+        let current_region = generate_current_position(size.div_ceil(REGION_SIZE), self.n_pools)
+            .map(AtomicUsize::from)
             .collect::<Vec<_>>();
 
-        let n_free = free_slots.len();
-        let positions = generate_current_position(n_free, self.n_pools)
-            .map(|i| AtomicU64::from(u64::try_from(free_slots[i]).unwrap()))
-            .collect::<Vec<_>>();
-
-        println!("{next_free:?}");
-
-        let next_free = next_free
-            .into_iter()
-            .map(|x| AtomicU64::from(u64::from(x)))
-            .collect::<Vec<_>>();
-
-        let claimed_regions = (0..size.div_ceil(self.n_pools))
+        let claimed_regions = (0..size.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
             .collect::<Vec<_>>();
 
-        for x in &positions {
-            let i = usize::try_from(x.load(Relaxed)).unwrap();
-            claimed_regions[i / REGION_SIZE].store(true, Relaxed);
+        for x in &current_region {
+            let i = x.load(Relaxed);
+            claimed_regions[i].store(true, Relaxed);
         }
+        let new_data = DataTakenRecord::new(size);
+
+        new_data.clear_and_mark_slots(marked);
 
         unsafe {
-            *self.next_free.get() = next_free;
-            *self.current_region.get() = positions;
+            *self.current_region.get() = current_region;
             *self.claimed_regions.get() = claimed_regions;
-        }*/
+        }
     }
 
     pub(super) fn free_bucket(&self, index: usize) {

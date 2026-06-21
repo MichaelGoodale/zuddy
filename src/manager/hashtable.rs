@@ -160,7 +160,8 @@ impl<V: Hash + Eq> HashTable<V> {
     }
 
     pub(super) fn n_used(&self) -> usize {
-        usize::try_from(self.count.load(Relaxed)).unwrap()
+        self.slots.n_used()
+        //usize::try_from(self.count.load(Relaxed)).unwrap()
     }
 }
 
@@ -172,8 +173,7 @@ pub(crate) struct FullTable {
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
-        let size = size * n_pools * REGION_SIZE;
-
+        let size = std::cmp::max(size, n_pools * REGION_SIZE);
         let slots = SharedLinkedList::new(size, n_pools);
 
         HashTable {
@@ -268,7 +268,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     //will only happen once so maybe there's a way to avoid the clone here
                     index = self.slots.reserve_bucket().ok_or_else(|| FullTable {
                         size: self.data.len(),
-                        n_used: self.n_used(),
+                        n_used: self.slots.n_used(),
                     })?;
                     unsafe {
                         let h = &mut *self.data[index].get();
