@@ -92,11 +92,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
         }
 
         let value_clone = value.clone();
-        let (lo, hi) = self
-            .manager
-            .pools()
-            .join(|| self_lo.offset(value), || self_hi.offset(value_clone));
-
+        let lo = self_lo.offset(value);
+        let hi = self_hi.offset(value_clone);
         let r = holder.get_node(self_val, lo, hi);
         holder.put_into_cache(op, r)
     }

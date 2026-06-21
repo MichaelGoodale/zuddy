@@ -74,6 +74,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
     let mut state = queens_at_row(0, board_size).fold(holder.zero(), |acc, x| {
         acc.union(SetFamily::singleton(x, holder))
     });
+
     for i in 1..board_size {
         let mut new_state = holder.zero();
         for queen in queens_at_row(i, board_size) {
@@ -103,7 +104,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
 
 fn main() {
     let mut rng = ThreadRng::default();
-    let holder = ZddHolder::<QueenPosition>::with_capacity_and_pools(20_000, 8);
+    let holder = ZddHolder::<QueenPosition>::with_capacity(4_000);
     //no solution for n=2,3
     for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         .into_iter()
