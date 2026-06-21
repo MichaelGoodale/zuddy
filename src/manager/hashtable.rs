@@ -1,4 +1,4 @@
-use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
+use rayon::{ThreadPool, prelude::*};
 use std::{
     cell::UnsafeCell,
     hash::{Hash, Hasher},
@@ -6,7 +6,7 @@ use std::{
         Arc, Condvar, Mutex,
         atomic::{
             AtomicBool, AtomicU64,
-            Ordering::{self, AcqRel, Acquire, Relaxed, Release},
+            Ordering::{Acquire, Relaxed, Release},
         },
     },
 };
@@ -15,7 +15,12 @@ use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
 
-use crate::{ZddHolder, manager::ZddIndex};
+use crate::{
+    ZddHolder,
+    manager::{ZddIndex, hashtable::slots::SharedLinkedList},
+};
+
+mod slots;
 
 const N_BYTES_PER_HASH: usize = 3;
 const N_BYTES_PER_INDEX: usize = 5;
@@ -91,11 +96,8 @@ impl HashEntry {
 
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
-    n_pools: usize,
-    pools: ThreadPool,
+    slots: SharedLinkedList,
     hashes: UnsafeCell<Vec<AtomicU64>>,
-    next_free: UnsafeCell<Vec<AtomicU64>>,
-    current_position: UnsafeCell<Vec<AtomicU64>>,
     data: Vec<UnsafeCell<Option<V>>>,
     counts: Vec<AtomicU64>,
     count: AtomicU64,
@@ -150,7 +152,7 @@ impl<V: Hash + Eq> ZddHolder<V> {
     }
 
     pub(crate) fn pools(&self) -> &ThreadPool {
-        &self.uniq_table.pools
+        &self.uniq_table.slots.pools
     }
 }
 
@@ -190,62 +192,17 @@ pub(crate) struct FullTable {
     size: usize,
     n_used: usize,
 }
-
-fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
-    const EXTRA_SPACE: usize = 4;
-    let gap = size / (n_pools + EXTRA_SPACE);
-    (0..n_pools).map(move |x| {
-        if x == 0 {
-            //skip the first two
-            2
-        } else {
-            //We give the first pos a lot of extra space since the main thread is used more.
-            (x + EXTRA_SPACE) * gap
-        }
-    })
-}
-
-fn generate_next_free(size: usize) -> impl Iterator<Item = UsageFlag> {
-    (1..=size).map(move |i| {
-        if i <= 2 {
-            //Mark 0 and 1 as used.
-            UsageFlag::Used
-        } else if i == size {
-            UsageFlag::NextStored(2)
-        } else {
-            UsageFlag::NextStored(i)
-        }
-    })
-}
-
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
-        let pools = ThreadPoolBuilder::new()
-            .num_threads(n_pools)
-            .build()
-            .unwrap();
-
         let size = size * n_pools;
 
-        let next_free = UnsafeCell::new(
-            generate_next_free(size)
-                .map(|x| AtomicU64::from(u64::from(x)))
-                .collect(),
-        );
-        let current_position = UnsafeCell::new(
-            generate_current_position(size, n_pools)
-                .map(|x| AtomicU64::from(u64::try_from(x).unwrap()))
-                .collect(),
-        );
+        let slots = SharedLinkedList::new(size, n_pools);
 
         HashTable {
-            n_pools,
-            pools,
+            slots,
             hashes: UnsafeCell::new(zeroed_atomic(size)),
-            next_free,
             counts: zeroed_atomic(size),
             data: noned_unsafe_cell(size),
-            current_position,
             count: AtomicU64::from(2),
             pause: AtomicBool::from(false),
             reading: AtomicU64::from(0),
@@ -292,14 +249,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { &*self.hashes.get() }
     }
 
-    fn current_position(&self) -> &Vec<AtomicU64> {
-        unsafe { &*self.current_position.get() }
-    }
-
-    fn next_free(&self) -> &Vec<AtomicU64> {
-        unsafe { &*self.next_free.get() }
-    }
-
     fn probe(&self, h: u32) -> impl Iterator<Item = (usize, HashEntry)> {
         let start = usize::try_from(h).unwrap();
         self.hashes()
@@ -312,67 +261,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
     fn equal_at_index(&self, i: usize, data: &V) -> bool {
         unsafe { (&*self.data[i].get()).as_ref() == Some(data) }
-    }
-
-    fn thread_id(&self) -> usize {
-        self.pools
-            .current_thread_index()
-            .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
-    }
-
-    fn reserve_data_bucket(&self) -> Result<usize, FullTable> {
-        let thread_id = self.thread_id();
-        loop {
-            let UsageFlag::NextStored(id) = self.current_position()[thread_id].load(Acquire).into()
-            else {
-                return Err(FullTable {
-                    size: self.data.len(),
-                    n_used: self.n_used(),
-                });
-            };
-
-            let next = UsageFlag::from(self.next_free()[id].load(Ordering::Relaxed));
-
-            if self.current_position()[thread_id]
-                .compare_exchange(
-                    UsageFlag::NextStored(id).into(),
-                    next.into(),
-                    AcqRel,
-                    Acquire,
-                )
-                .is_ok()
-            {
-                if self.next_free()[id]
-                    .compare_exchange(next.into(), UsageFlag::Used.into(), Acquire, Relaxed)
-                    .is_ok()
-                {
-                    return Ok(id);
-                }
-                panic!(
-                    "Mismatch between free list and usage! 
-                    thread_id: {thread_id}, id: {id}, next: {next:?}"
-                );
-            }
-        }
-    }
-
-    fn free_data_bucket(&self, i: usize) {
-        let thread_id = self.thread_id();
-        loop {
-            let current_pos = self.current_position()[thread_id].load(Acquire);
-            self.next_free()[i].store(current_pos, Ordering::Release);
-            if self.current_position()[thread_id]
-                .compare_exchange(
-                    current_pos,
-                    u64::try_from(i).unwrap(),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                break;
-            }
-        }
     }
 
     pub(super) unsafe fn get_unchecked(&self, i: usize) -> Option<V> {
@@ -400,7 +288,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
-                    index = self.reserve_data_bucket()?;
+                    index = self.slots.reserve_bucket().ok_or_else(|| FullTable {
+                        size: self.data.len(),
+                        n_used: self.n_used(),
+                    })?;
                     unsafe {
                         let h = &mut *self.data[index].get();
                         *h = Some(data.clone());
@@ -422,7 +313,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
             if v.hash() == h && self.equal_at_index(v.index(), &data) {
                 if index != 0 {
-                    self.free_data_bucket(index);
+                    self.slots.free_bucket(index);
                 }
                 return Ok((v.index(), false));
             }
@@ -436,7 +327,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     ///Empties the hashtable except for keys in `except`
-    pub(super) fn clear(&self, except: Vec<usize>) {
+    pub(super) fn clear(&self, except: &[usize]) {
         let size = self.data.len();
 
         unsafe {
@@ -445,42 +336,16 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
         let _old_count = self.count.swap(2, Relaxed);
 
-        let mut next_free = generate_next_free(size).collect::<Vec<_>>();
         for index in except {
-            self.insert_known_data(index, &mut next_free);
+            self.insert_known_data(*index);
         }
 
-        let free_slots = next_free
-            .iter()
-            .enumerate()
-            .filter_map(|(i, x)| {
-                if matches!(x, UsageFlag::NextStored(_)) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let n_free = free_slots.len();
-        let positions = generate_current_position(n_free, self.n_pools)
-            .map(|i| AtomicU64::from(u64::try_from(free_slots[i]).unwrap()))
-            .collect::<Vec<_>>();
-
-        let next_free = next_free
-            .into_iter()
-            .map(|x| AtomicU64::from(u64::from(x)))
-            .collect::<Vec<_>>();
-
-        unsafe {
-            *self.next_free.get() = next_free;
-            *self.current_position.get() = positions;
-        }
+        self.slots.clear(except);
     }
 
     ///Re-inserts the hash of the data at an index.
     ///Returns false if the data is already in the hash.
-    fn insert_known_data(&self, index: usize, next_free: &mut [UsageFlag]) -> bool {
+    fn insert_known_data(&self, index: usize) -> bool {
         if index == 0 || index == 1 {
             return false;
         }
@@ -492,15 +357,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         for (s, _) in self.probe(h) {
             match self.hashes()[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
                 Ok(_) => {
-                    let old = std::mem::replace(&mut next_free[index], UsageFlag::Used);
-                    if let Some(prev) = next_free[..index]
-                        .iter_mut()
-                        .rev()
-                        .find(|x| matches!(x, UsageFlag::NextStored(_)))
-                    {
-                        *prev = old;
-                    }
-
                     self.count.fetch_add(1, Relaxed);
                     return true;
                 }

@@ -16,7 +16,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             let marked = DashSet::new();
             self.used_variables().for_each(|g| mark(g, &marked, self));
             let marked = marked.into_iter().map(usize::from).collect::<Vec<_>>();
-            self.uniq_table.clear(marked);
+            self.uniq_table.clear(&marked);
             self.uniq_table.end_gc();
         }
     }
