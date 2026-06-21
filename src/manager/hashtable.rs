@@ -17,7 +17,10 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmut
 
 use crate::{
     ZddHolder,
-    manager::{ZddIndex, hashtable::slots::SharedLinkedList},
+    manager::{
+        ZddIndex,
+        hashtable::slots::{REGION_SIZE, SharedLinkedList},
+    },
 };
 
 mod slots;
@@ -109,31 +112,6 @@ pub(super) struct HashTable<V> {
 
 unsafe impl<V> Sync for HashTable<V> {}
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum UsageFlag {
-    Used,
-    NextStored(usize),
-}
-
-impl From<u64> for UsageFlag {
-    fn from(value: u64) -> Self {
-        if value == u64::MAX {
-            UsageFlag::Used
-        } else {
-            UsageFlag::NextStored(usize::try_from(value).unwrap())
-        }
-    }
-}
-
-impl From<UsageFlag> for u64 {
-    fn from(value: UsageFlag) -> Self {
-        match value {
-            UsageFlag::Used => u64::MAX,
-            UsageFlag::NextStored(x) => u64::try_from(x).unwrap(),
-        }
-    }
-}
-
 fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
     vec![0u64; n].into_iter().map(AtomicU64::new).collect()
 }
@@ -194,7 +172,7 @@ pub(crate) struct FullTable {
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
-        let size = size * n_pools;
+        let size = size * n_pools * REGION_SIZE;
 
         let slots = SharedLinkedList::new(size, n_pools);
 
