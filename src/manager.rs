@@ -30,7 +30,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn new() -> ZddHolder<V> {
-        Self::with_capacity_and_pools(1000, rayon::current_num_threads())
+        Self::with_capacity_and_pools(10, rayon::current_num_threads())
     }
 
     ///Create a new [`ZddHolder`] to hold various ZDDs.
