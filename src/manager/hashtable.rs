@@ -101,10 +101,9 @@ impl HashEntry {
 pub(super) struct HashTable<V> {
     slots: SharedLinkedList,
     hashes: UnsafeCell<Vec<AtomicU64>>,
-    data: Vec<UnsafeCell<Option<V>>>,
-    counts: Vec<AtomicU64>,
-    count: AtomicU64,
-    reading: AtomicU64,
+    data: UnsafeCell<Vec<Option<V>>>,
+    counts: UnsafeCell<Vec<AtomicU64>>,
+    reading: Vec<AtomicU64>,
     pause: AtomicBool,
     pause_mutex: Arc<Mutex<bool>>,
     pause_cond_var: Condvar,
@@ -114,10 +113,6 @@ unsafe impl<V> Sync for HashTable<V> {}
 
 fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
     vec![0u64; n].into_iter().map(AtomicU64::new).collect()
-}
-
-fn noned_unsafe_cell<V: Clone>(n: usize) -> Vec<UnsafeCell<Option<V>>> {
-    vec![None; n].into_iter().map(UnsafeCell::new).collect()
 }
 
 impl<V: Hash + Eq> ZddHolder<V> {
@@ -136,8 +131,7 @@ impl<V: Hash + Eq> ZddHolder<V> {
 
 impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
     pub(super) fn used_variables(&self) -> impl ParallelIterator<Item = ZddIndex<V>> {
-        self.uniq_table
-            .counts
+        unsafe { &*self.uniq_table.counts.get() }
             .par_iter()
             .enumerate()
             .filter_map(|(i, x)| {
@@ -152,11 +146,11 @@ impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
 }
 impl<V: Hash + Eq> HashTable<V> {
     fn inc_count(&self, i: usize) {
-        self.counts[i].fetch_add(1, Relaxed);
+        unsafe { &(&*self.counts.get())[i] }.fetch_add(1, Relaxed);
     }
 
     fn dec_count(&self, i: usize) {
-        self.counts[i].fetch_sub(1, Relaxed);
+        unsafe { &(&*self.counts.get())[i] }.fetch_sub(1, Relaxed);
     }
 
     pub(super) fn n_used(&self) -> usize {
@@ -166,9 +160,10 @@ impl<V: Hash + Eq> HashTable<V> {
 
 #[derive(Debug, Error)]
 #[error("The table is full, with {n_used}/{size} filled !")]
-pub(crate) struct FullTable {
-    size: usize,
-    n_used: usize,
+pub(crate) struct FullTable<V> {
+    pub(crate) size: usize,
+    pub(crate) n_used: usize,
+    pub(crate) value: V,
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
@@ -178,11 +173,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         HashTable {
             slots,
             hashes: UnsafeCell::new(zeroed_atomic(size)),
-            counts: zeroed_atomic(size),
-            data: noned_unsafe_cell(size),
-            count: AtomicU64::from(2),
+            counts: UnsafeCell::new(zeroed_atomic(size)),
+            data: UnsafeCell::new(vec![None; size]),
             pause: AtomicBool::from(false),
-            reading: AtomicU64::from(0),
+            reading: zeroed_atomic(n_pools),
             pause_cond_var: Condvar::new(),
             pause_mutex: Arc::new(Mutex::new(true)),
         }
@@ -194,7 +188,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             .compare_exchange(false, true, Acquire, Relaxed)
             .is_ok()
         {
-            while self.reading.load(Acquire) != 0 {
+            while self.reading.iter().any(|x| x.load(Acquire) != 0) {
                 std::hint::spin_loop();
             }
             *self.pause_mutex.lock().unwrap() = false;
@@ -210,15 +204,16 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         self.pause_cond_var.notify_all();
     }
 
-    pub(crate) fn capacity(&self) -> u64 {
-        u64::try_from(self.data.len()).unwrap()
+    pub(crate) fn capacity(&self) -> usize {
+        unsafe { &*self.data.get() }.len()
     }
 
     fn hash(&self, data: &V) -> u32 {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
         let hash = h.finish().saturating_add(2);
-        let h = (hash % (1_u64 << (N_BYTES_PER_HASH * 8))) % self.capacity();
+        let h =
+            (hash % (1_u64 << (N_BYTES_PER_HASH * 8))) % u64::try_from(self.capacity()).unwrap();
         h as u32
     }
 
@@ -237,40 +232,42 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     fn equal_at_index(&self, i: usize, data: &V) -> bool {
-        unsafe { (&*self.data[i].get()).as_ref() == Some(data) }
+        unsafe { (&*self.data.get())[i].as_ref() == Some(data) }
     }
 
     pub(super) unsafe fn get_unchecked(&self, i: usize) -> Option<V> {
-        unsafe { (&*self.data[i].get()).clone() }
+        unsafe { (&*self.data.get())[i].clone() }
     }
 
     pub(crate) fn get(&self, i: usize) -> Option<V> {
         let reading = self.read_table();
-        let x = unsafe { (&*self.data[i].get()).clone() };
+        let x = unsafe { (&*self.data.get())[i].clone() };
         drop(reading);
         x
     }
 
     #[expect(clippy::cast_precision_loss)]
     pub(crate) fn usage(&self) -> f64 {
-        let count = self.count.load(Relaxed);
-        (count) as f64 / self.data.len() as f64
+        let count = self.n_used();
+        (count) as f64 / unsafe { &*self.data.get() }.len() as f64
     }
 
-    pub(crate) fn find_or_insert(&self, data: V) -> Result<(usize, bool), FullTable> {
+    pub(crate) fn find_or_insert(&self, data: V) -> Result<(usize, Option<usize>), FullTable<V>> {
         let read = self.read_table();
         let h = self.hash(&data);
         let mut index = 0;
-        for (s, mut v) in self.probe(h) {
+
+        for (probe_length, (s, mut v)) in self.probe(h).enumerate() {
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
                     index = self.slots.reserve_bucket().ok_or_else(|| FullTable {
-                        size: self.data.len(),
+                        size: self.capacity(),
                         n_used: self.slots.n_used(),
+                        value: data.clone(),
                     })?;
                     unsafe {
-                        let h = &mut *self.data[index].get();
+                        let h = &mut (&mut *self.data.get())[index];
                         *h = Some(data.clone());
                     }
                 }
@@ -281,8 +278,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        self.count.fetch_add(1, Relaxed);
-                        return Ok((index, true));
+                        return Ok((index, Some(probe_length)));
                     }
                     Err(new_v) => v = HashEntry::from_u64(new_v),
                 }
@@ -292,32 +288,38 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 if index != 0 {
                     self.slots.free_bucket(index);
                 }
-                return Ok((v.index(), false));
+                return Ok((v.index(), None));
             }
         }
         let r = Err(FullTable {
-            size: self.data.len(),
+            size: self.capacity(),
             n_used: self.n_used(),
+            value: data,
         });
         drop(read);
         r
     }
 
     ///Empties the hashtable except for keys in `except`
-    pub(super) fn clear(&self, except: &[usize]) {
-        let size = self.data.len();
+    pub(super) fn clear(&self, except: &[usize], resize_to: Option<usize>) {
+        let size = resize_to.unwrap_or(self.capacity());
 
         unsafe {
             *self.hashes.get() = zeroed_atomic(size);
         }
 
-        let _old_count = self.count.swap(2, Relaxed);
-
         for index in except {
             self.insert_known_data(*index);
         }
 
-        self.slots.clear(except);
+        if let Some(size) = resize_to {
+            unsafe {
+                (&mut *self.data.get()).resize(size, None);
+                (&mut *self.counts.get()).resize_with(size, || AtomicU64::from(0));
+            }
+        }
+
+        self.slots.clear(except, resize_to);
     }
 
     ///Re-inserts the hash of the data at an index.
@@ -327,14 +329,19 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             return false;
         }
 
-        let data = unsafe { (&*self.data[index].get()).as_ref() }.expect("A marked value is None!");
+        let data = unsafe {
+            (&*self.data.get())
+                .get(index)
+                .expect("You have resized a table to be smaller than it was before!")
+                .as_ref()
+        }
+        .expect("A marked value is None!");
         let h = self.hash(data);
         let hash_entry = HashEntry::new(index, h);
 
         for (s, _) in self.probe(h) {
             match self.hashes()[s].compare_exchange(0, hash_entry.to_u64(), Relaxed, Relaxed) {
                 Ok(_) => {
-                    self.count.fetch_add(1, Relaxed);
                     return true;
                 }
                 Err(new_v) => {
@@ -350,16 +357,22 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         panic!("Full table!")
     }
 
+    pub(crate) fn wait_until_unpaused(&self) {
+        let mut not_paused = self.pause_mutex.lock().unwrap();
+        while !*not_paused {
+            not_paused = self.pause_cond_var.wait(not_paused).unwrap();
+        }
+    }
+
     fn read_table(&self) -> ReadingTheTable<'_> {
         if self.pause.load(Acquire) {
-            let mut not_paused = self.pause_mutex.lock().unwrap();
-            while !*not_paused {
-                not_paused = self.pause_cond_var.wait(not_paused).unwrap();
-            }
+            self.wait_until_unpaused();
         }
+        let thread_id = self.slots.thread_id();
 
-        self.reading.fetch_add(1, Release);
-        ReadingTheTable(&self.reading)
+        let reading_num = &self.reading[thread_id];
+        reading_num.fetch_add(1, Release);
+        ReadingTheTable(reading_num)
     }
 }
 
@@ -379,7 +392,7 @@ mod test {
     use rayon::ThreadPoolBuilder;
 
     #[test]
-    fn hash_table_with_other_pool() -> Result<(), FullTable> {
+    fn hash_table_with_other_pool() -> Result<(), FullTable<char>> {
         for _ in 0..20 {
             let hash_table = HashTable::<char>::new(100, 8);
             let used_chars = MOBY.chars().collect::<HashSet<_>>();
@@ -399,7 +412,7 @@ mod test {
     }
 
     #[test]
-    fn hash_table() -> Result<(), FullTable> {
+    fn hash_table() -> Result<(), FullTable<char>> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
         let pools = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
         let hash_table = HashTable::<char>::new(100, 8);

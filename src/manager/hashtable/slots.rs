@@ -1,5 +1,6 @@
 use std::{
     cell::UnsafeCell,
+    os::raw,
     sync::atomic::{
         AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{Acquire, Relaxed},
@@ -42,8 +43,7 @@ pub fn find_zero_bit(v: u64) -> Option<usize> {
 
 impl DataTakenRecord {
     fn new(size: usize) -> Self {
-        let n = u64::try_from(size / 64).unwrap();
-        let v = std::iter::repeat_n(0_u64, usize::try_from(n).unwrap())
+        let v = std::iter::repeat_n(0_u64, size / 64)
             .map(AtomicU64::from)
             .collect::<Vec<_>>();
         v[0].store(0b11, Relaxed);
@@ -63,10 +63,11 @@ impl DataTakenRecord {
         };
     }
 
-    fn clear_and_mark_slots(&self, to_mark: &[usize]) {
+    fn clear_and_mark_slots(&self, to_mark: &[usize], resize_to: Option<usize>) {
         unsafe {
             let this = &mut *self.0.get();
-            let v = std::iter::repeat_n(0_u64, this.len())
+            let n_bit_arrays = resize_to.map(|x| x / 64).unwrap_or(this.len());
+            let v = std::iter::repeat_n(0_u64, n_bit_arrays)
                 .map(AtomicU64::from)
                 .collect::<Vec<_>>();
             *this = v;
@@ -107,7 +108,6 @@ impl SharedLinkedList {
         let current_region = generate_current_position(size.div_ceil(REGION_SIZE), n_pools)
             .map(AtomicUsize::from)
             .collect::<Vec<_>>();
-        println!("{current_region:?}");
 
         let claimed_regions = (0..size.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
@@ -132,7 +132,7 @@ impl SharedLinkedList {
         }
     }
 
-    fn thread_id(&self) -> usize {
+    pub(super) fn thread_id(&self) -> usize {
         self.pools
             .current_thread_index()
             .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
@@ -177,13 +177,14 @@ impl SharedLinkedList {
             .sum()
     }
 
-    pub(super) fn clear(&self, marked: &[usize]) {
-        let size = self.used_data.len() * 64;
-        let current_region = generate_current_position(size.div_ceil(REGION_SIZE), self.n_pools)
-            .map(AtomicUsize::from)
-            .collect::<Vec<_>>();
+    pub(super) fn clear(&self, marked: &[usize], resize_to: Option<usize>) {
+        let n_elements = resize_to.unwrap_or(self.used_data.len() * 64);
+        let current_region =
+            generate_current_position(n_elements.div_ceil(REGION_SIZE), self.n_pools)
+                .map(AtomicUsize::from)
+                .collect::<Vec<_>>();
 
-        let claimed_regions = (0..size.div_ceil(REGION_SIZE))
+        let claimed_regions = (0..n_elements.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
             .collect::<Vec<_>>();
 
@@ -192,7 +193,7 @@ impl SharedLinkedList {
             claimed_regions[i].store(true, Relaxed);
         }
 
-        self.used_data.clear_and_mark_slots(marked);
+        self.used_data.clear_and_mark_slots(marked, resize_to);
 
         unsafe {
             *self.current_region.get() = current_region;

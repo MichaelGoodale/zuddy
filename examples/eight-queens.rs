@@ -86,7 +86,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
             new_state = new_state.union(x);
         }
         state = new_state;
-        holder.gc();
+        holder.gc(false);
     }
 
     let n_sol = state.size().unwrap();
@@ -104,7 +104,7 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
 
 fn main() {
     let mut rng = ThreadRng::default();
-    let holder = ZddHolder::<QueenPosition>::with_capacity(10_000_000);
+    let holder = ZddHolder::<QueenPosition>::new();
     //no solution for n=2,3
     for (n, n_sol) in [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         .into_iter()

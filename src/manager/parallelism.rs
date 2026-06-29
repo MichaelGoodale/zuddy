@@ -1,4 +1,5 @@
 //! Tools for working with ZDD algorithms in parallel.
+use crate::manager::hashtable::FullTable;
 use crate::manager::{RawZddData, ZddIndex};
 use crate::{SetFamily, ZddHolder};
 use std::{hash::Hash, marker::PhantomData};
@@ -79,7 +80,6 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
-    #[expect(clippy::needless_pass_by_value)]
     pub(crate) fn get_node<'a>(
         &'a self,
         value: V,
@@ -96,11 +96,20 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             hi: hi.as_raw(),
         };
 
-        let (s, novel_insert) = self.uniq_table.find_or_insert(zdd).expect("Table is full");
-        let s = SetFamily::from_set_family(ZddIndex::from(s), self);
-        if novel_insert && self.uniq_table.usage() > 0.8 {
-            //self.gc();
+        match self.uniq_table.find_or_insert(zdd) {
+            Ok((s, probe_length)) => {
+                let s = SetFamily::from_set_family(ZddIndex::from(s), self);
+                if let Some(probe_length) = probe_length
+                    && probe_length > 32
+                {
+                    self.gc(false);
+                }
+                s
+            }
+            Err(FullTable { value, .. }) => {
+                self.gc(true);
+                self.get_node(value.value, lo, hi)
+            }
         }
-        s
     }
 }
