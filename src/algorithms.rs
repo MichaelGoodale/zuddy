@@ -8,6 +8,7 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display},
     hash::Hash,
+    ops::Add,
 };
 
 use crate::{SetFamily, manager::ZddIndex};
@@ -17,9 +18,12 @@ enum OptimizationFrame<V> {
     Climb(ZddIndex<V>),
 }
 
+///Represents a usize, or positive infinity
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
-enum UsizeOrPositiveInfinity {
+pub enum UsizeOrPositiveInfinity {
+    ///A usize
     Size(usize),
+    ///Positive Infinity
     PositiveInfinity,
 }
 
@@ -32,11 +36,46 @@ impl From<UsizeOrPositiveInfinity> for Option<usize> {
     }
 }
 
+impl Add for UsizeOrPositiveInfinity {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (UsizeOrPositiveInfinity::Size(x), UsizeOrPositiveInfinity::Size(y)) => x
+                .checked_add(y)
+                .map_or(UsizeOrPositiveInfinity::PositiveInfinity, |z| {
+                    UsizeOrPositiveInfinity::Size(z)
+                }),
+            _ => UsizeOrPositiveInfinity::PositiveInfinity,
+        }
+    }
+}
+
 impl UsizeOrPositiveInfinity {
-    fn add(self, x: usize) -> Self {
+    ///Adds a value to a [`UsizeOrPositiveInfinity`], turning to [`UsizeOrPositiveInfinity::PositiveInfinity`] if there is an
+    ///overflow.
+    #[must_use]
+    pub fn add_usize(self, x: usize) -> Self {
         match self {
-            UsizeOrPositiveInfinity::Size(s) => UsizeOrPositiveInfinity::Size(x + s),
+            UsizeOrPositiveInfinity::Size(s) => s
+                .checked_add(x)
+                .map_or(UsizeOrPositiveInfinity::PositiveInfinity, |z| {
+                    UsizeOrPositiveInfinity::Size(z)
+                }),
             UsizeOrPositiveInfinity::PositiveInfinity => UsizeOrPositiveInfinity::PositiveInfinity,
+        }
+    }
+
+    ///Take a [`UsizeOrPositiveInfinity`] and unwrap it, assuming it is
+    ///[`UsizeOrPositiveInfinity::Size`]
+    ///
+    ///# Panics
+    ///Will panic if this is [`UsizeOrPositiveInfinity::PositiveInfinity`]
+    #[must_use]
+    pub fn unwrap(self) -> usize {
+        match self {
+            UsizeOrPositiveInfinity::Size(x) => x,
+            UsizeOrPositiveInfinity::PositiveInfinity => panic!("Size is infinite!"),
         }
     }
 }
@@ -98,7 +137,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
                         .get(&hi)
                         .unwrap()
                         .min_set_weight
-                        .add(element_weight);
+                        .add_usize(element_weight);
 
                     let min_set_weight = hi_w.min(lo_w);
 
@@ -193,8 +232,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         let hi_w = min_cost_lookup.get(&hi.as_raw()).unwrap().min_set_weight;
 
         match (
-            lo_w.add(current_cost) <= overall_min,
-            hi_w.add(current_cost) <= overall_min,
+            lo_w.add_usize(current_cost) <= overall_min,
+            hi_w.add_usize(current_cost) <= overall_min,
         ) {
             (true, true) => self.manager.get_node(
                 v.clone(),
@@ -269,8 +308,8 @@ impl<V: Clone + Debug + Eq + Hash> Iterator for MinimalSetIterator<'_, V> {
             let hi_w = self.minimum_cost_lookup.get(&hi).unwrap().min_set_weight;
 
             match (
-                lo_w.add(current_cost) <= self.min_cost,
-                hi_w.add(current_cost) <= self.min_cost,
+                lo_w.add_usize(current_cost) <= self.min_cost,
+                hi_w.add_usize(current_cost) <= self.min_cost,
             ) {
                 (true, true) => {
                     self.stack.push((lo, (path.clone(), current_cost)));
@@ -366,6 +405,7 @@ mod test {
         assert_eq!(restricted_lorem, mins);
     }
 
+    /*
     #[derive(Eq, Clone, Copy, PartialOrd, Ord, PartialEq, Debug, Hash, Serialize, Deserialize)]
     struct WeightedId {
         id: usize,
@@ -378,7 +418,6 @@ mod test {
         }
     }
 
-    /*
     #[test]
     fn complicated_minimization() {
         const MIN_GRAMMAR_SIZE: usize = 25;

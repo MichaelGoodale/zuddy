@@ -220,8 +220,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
     /// let a = SetFamily::singleton('a', & holder);
     /// let b = SetFamily::singleton('b', & holder);
     /// let c = SetFamily::singleton('c', & holder);
-    /// assert_eq!(a.clone().union(b.clone()).size(), Some(2));
-    /// assert_eq!(a.union(b).union(c).size(), Some(3));
+    /// assert_eq!(a.clone().union(b.clone()).size().unwrap(), 2);
+    /// assert_eq!(a.union(b).union(c).size().unwrap(), 3);
     ///```
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
@@ -430,9 +430,9 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
 
     let a = SetFamily::from_sets(a_sets, holder);
     let b = SetFamily::from_sets(b_sets, holder);
-    assert_eq!(a.size(), Some(a_set_len));
+    assert_eq!(a.size().unwrap(), a_set_len);
     a.check_valid_zdd();
-    assert_eq!(b.size(), Some(b_set_len));
+    assert_eq!(b.size().unwrap(), b_set_len);
     b.check_valid_zdd();
 
     let result = op(a, b);
@@ -467,7 +467,7 @@ fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char
     let start_len = start.len();
     let a = SetFamily::from_sets(start, holder);
     a.check_valid_zdd();
-    assert_eq!(a.size(), Some(start_len));
+    assert_eq!(a.size().unwrap(), start_len);
 
     let mut result = a.clone();
     for action in actions {

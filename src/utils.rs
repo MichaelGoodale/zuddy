@@ -4,8 +4,8 @@ use std::{
     hash::{BuildHasher, Hash},
 };
 
-use crate::SetFamily;
 use crate::manager::{ZddHolder, ZddIndex};
+use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
 
 impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -82,33 +82,31 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///Count the number of possible comibinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
-    ///too many combinations. In this case, the function will return [`None`]
+    ///too many combinations. In this case, the function will return [`UsizeOrPositiveInfinity::PositiveInfinity`]
     ///
     ///# Panics
     ///Will panic if `self` is not a valid ZDD in [`ZddHolder`]
     #[must_use]
-    pub fn size(&self) -> Option<usize> {
+    pub fn size(&self) -> UsizeOrPositiveInfinity {
         self.as_raw().size(self.manager)
     }
 }
 
 impl<V: Eq + Hash + Clone> ZddIndex<V> {
-    pub(crate) fn size(self, holder: &ZddHolder<V>) -> Option<usize> {
+    pub(crate) fn size(self, holder: &ZddHolder<V>) -> UsizeOrPositiveInfinity {
         if self.is_zero() {
-            return Some(0);
+            return UsizeOrPositiveInfinity::Size(0);
         }
         if self.is_one() {
-            return Some(1);
+            return UsizeOrPositiveInfinity::Size(1);
         }
 
-        if let Some(sum) = holder.sum_cache_get(&self) {
+        if let Some(sum) = holder.sum_cache_get(self) {
             return sum;
         }
         let (lo, hi) = self.children(holder).unwrap();
 
-        let sum = lo
-            .size(holder)
-            .and_then(|x| hi.size(holder).and_then(|y| x.checked_add(y)));
+        let sum = lo.size(holder) + hi.size(holder);
 
         holder.sum_cache_insert(self, sum)
     }

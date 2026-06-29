@@ -12,7 +12,6 @@ use std::{
 };
 use thiserror::Error;
 
-use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
 
 use crate::{

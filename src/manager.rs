@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use ahash::RandomState;
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
 mod garbage;
 mod hashtable;
 mod parallelism;
@@ -12,7 +11,7 @@ mod raw;
 use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
 
-use crate::manager::hashtable::HashTable;
+use crate::{algorithms::UsizeOrPositiveInfinity, manager::hashtable::HashTable};
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
@@ -23,7 +22,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     //#[serde(default, skip)]
     uniq_table: HashTable<RawZddData<V>>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
-    sum_cache: DashMap<ZddIndex<V>, Option<usize>, RandomState>,
+    sum_cache: DashMap<ZddIndex<V>, UsizeOrPositiveInfinity, RandomState>,
 }
 
 impl<V: Eq + Hash + Clone> ZddHolder<V> {
@@ -82,11 +81,15 @@ impl<V: Eq + Hash> ZddHolder<V> {
             .map(|s| SetFamily::from_set_family(*s, self))
     }
 
-    pub(crate) fn sum_cache_get(&self, key: &ZddIndex<V>) -> Option<Option<usize>> {
-        self.sum_cache.get(key).map(|x| *x.value())
+    pub(crate) fn sum_cache_get(&self, key: ZddIndex<V>) -> Option<UsizeOrPositiveInfinity> {
+        self.sum_cache.get(&key).map(|x| *x.value())
     }
 
-    pub(crate) fn sum_cache_insert(&self, key: ZddIndex<V>, value: Option<usize>) -> Option<usize> {
+    pub(crate) fn sum_cache_insert(
+        &self,
+        key: ZddIndex<V>,
+        value: UsizeOrPositiveInfinity,
+    ) -> UsizeOrPositiveInfinity {
         self.sum_cache.insert(key, value);
         value
     }

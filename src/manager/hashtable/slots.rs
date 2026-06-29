@@ -1,6 +1,5 @@
 use std::{
     cell::UnsafeCell,
-    os::raw,
     sync::atomic::{
         AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{Acquire, Relaxed},
@@ -66,7 +65,7 @@ impl DataTakenRecord {
     fn clear_and_mark_slots(&self, to_mark: &[usize], resize_to: Option<usize>) {
         unsafe {
             let this = &mut *self.0.get();
-            let n_bit_arrays = resize_to.map(|x| x / 64).unwrap_or(this.len());
+            let n_bit_arrays = resize_to.map_or(this.len(), |x| x / 64);
             let v = std::iter::repeat_n(0_u64, n_bit_arrays)
                 .map(AtomicU64::from)
                 .collect::<Vec<_>>();
