@@ -142,11 +142,13 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let r = holder.get_node(
-            self_val.clone(),
-            self_lo.onset(value.clone()),
-            self_hi.onset(value),
-        );
+        let value_cloned = value.clone();
+        let (lo, hi) = self
+            .manager
+            .pools()
+            .join(|| self_lo.onset(value), || self_hi.onset(value_cloned));
+
+        let r = holder.get_node(self_val.clone(), lo, hi);
         holder.put_into_cache(op, r)
     }
 
@@ -203,8 +205,10 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
             std::cmp::Ordering::Less => self_lo.intersect(other),
             std::cmp::Ordering::Greater => self.intersect(other_lo),
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.intersect(other_lo);
-                let hi = self_hi.intersect(other_hi);
+                let (lo, hi) = self.manager.pools().join(
+                    || self_lo.intersect(other_lo),
+                    || self_hi.intersect(other_hi),
+                );
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -333,8 +337,10 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
             }
             std::cmp::Ordering::Greater => self.difference(other_lo),
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.difference(other_lo);
-                let hi = self_hi.difference(other_hi);
+                let (lo, hi) = self.manager.pools().join(
+                    || self_lo.difference(other_lo),
+                    || self_hi.difference(other_hi),
+                );
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -385,8 +391,11 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
         }
 
         let this_val = this_val.clone();
-        let new_lo = lo.change(value.clone());
-        let new_hi = hi.change(value);
+        let value_cloned = value.clone();
+        let (new_lo, new_hi) = self
+            .manager
+            .pools()
+            .join(|| lo.change(value), || hi.change(value_cloned));
 
         let r = holder.get_node(this_val, new_lo, new_hi);
         holder.put_into_cache(op, r)
