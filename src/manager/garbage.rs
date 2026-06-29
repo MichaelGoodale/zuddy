@@ -46,10 +46,35 @@ fn mark<V: Send + Sync + Eq + Hash + Clone>(
     marked: &DashSet<ZddIndex<V>>,
     holder: &ZddHolder<V>,
 ) {
+    mark_inner(to_mark, marked, holder, 0);
+}
+const PAR_DEPTH_LIMIT: usize = 12;
+
+fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
+    to_mark: ZddIndex<V>,
+    marked: &DashSet<ZddIndex<V>>,
+    holder: &ZddHolder<V>,
+    depth: usize,
+) {
     if !marked.contains(&to_mark) {
         marked.insert(to_mark);
-        if let Some((lo, hi)) = to_mark.raw_children(holder) {
-            rayon::join(|| mark(lo, marked, holder), || mark(hi, marked, holder));
+        if let Some((hi, lo)) = to_mark.raw_children(holder) {
+            if depth < PAR_DEPTH_LIMIT {
+                rayon::join(
+                    || mark_inner(hi, marked, holder, depth + 1),
+                    || mark_inner(lo, marked, holder, depth + 1),
+                );
+            } else {
+                let mut stack = vec![hi, lo];
+                while let Some(x) = stack.pop() {
+                    if !marked.contains(&x) {
+                        marked.insert(x);
+                        if let Some((lo, hi)) = x.raw_children(holder) {
+                            stack.extend([lo, hi]);
+                        }
+                    }
+                }
+            }
         }
     }
 }
