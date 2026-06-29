@@ -2,11 +2,10 @@ use std::{
     cell::UnsafeCell,
     sync::atomic::{
         AtomicBool, AtomicU64, AtomicUsize,
-        Ordering::{AcqRel, Acquire, Relaxed, Release},
+        Ordering::{Acquire, Relaxed},
     },
 };
 
-use rand::seq::index;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
@@ -58,22 +57,25 @@ impl DataTakenRecord {
     fn free_slot(&self, index: usize) {
         let i = index / 64_usize;
         let j = u64::try_from(index).unwrap() % 64_u64;
-        unsafe { (&*self.0.get())[i].fetch_and(!(1_u64 << j), Relaxed) };
+        unsafe {
+            let data_vec = &*self.0.get();
+            data_vec[i].fetch_and(!(1_u64 << j), Relaxed);
+        };
     }
 
     fn clear_and_mark_slots(&self, to_mark: &[usize]) {
         unsafe {
             let this = &mut *self.0.get();
-            let v = std::iter::repeat_n(0_u64, usize::try_from(this.len()).unwrap())
+            let v = std::iter::repeat_n(0_u64, this.len())
                 .map(AtomicU64::from)
                 .collect::<Vec<_>>();
-            v[0].store(0b11, Relaxed);
             *this = v;
-        }
-        for index in to_mark {
-            let i = index / 64_usize;
-            let j = u64::try_from(*index).unwrap() % 64_u64;
-            unsafe { (&*self.0.get())[i].fetch_or(1_u64 << j, Relaxed) };
+            this[0].store(0b11, Relaxed);
+            for index in to_mark {
+                let i = index / 64_usize;
+                let j = u64::try_from(*index).unwrap() % 64_u64;
+                this[i].fetch_or(1_u64 << j, Relaxed);
+            }
         }
     }
 
@@ -169,7 +171,7 @@ impl SharedLinkedList {
         }
     }
     pub(super) fn n_used(&self) -> usize {
-        unsafe { (&*self.used_data.0.get()) }
+        unsafe { &*self.used_data.0.get() }
             .iter()
             .map(|x| usize::try_from(x.load(Relaxed).count_ones()).unwrap())
             .sum()
@@ -189,9 +191,8 @@ impl SharedLinkedList {
             let i = x.load(Relaxed);
             claimed_regions[i].store(true, Relaxed);
         }
-        let new_data = DataTakenRecord::new(size);
 
-        new_data.clear_and_mark_slots(marked);
+        self.used_data.clear_and_mark_slots(marked);
 
         unsafe {
             *self.current_region.get() = current_region;

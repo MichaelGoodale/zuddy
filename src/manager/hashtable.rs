@@ -161,7 +161,6 @@ impl<V: Hash + Eq> HashTable<V> {
 
     pub(super) fn n_used(&self) -> usize {
         self.slots.n_used()
-        //usize::try_from(self.count.load(Relaxed)).unwrap()
     }
 }
 
