@@ -5,8 +5,9 @@ use crate::{SetFamily, ZddHolder};
 use std::{hash::Hash, marker::PhantomData};
 
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
-    #[expect(dead_code)]
-    pub(crate) fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
+    ///Gets the lo and hi children of the node, if they exist.
+    #[must_use]
+    pub fn children(&self) -> Option<(SetFamily<'a, V>, SetFamily<'a, V>)> {
         self.manager.uniq_table.get(self.id).map(|x| {
             (
                 SetFamily::from_set_family(x.lo, self.manager),
@@ -15,15 +16,18 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
         })
     }
 
-    pub(crate) fn lo(self) -> Option<SetFamily<'a, V>> {
+    ///Gets the lo child if it exists
+    #[must_use]
+    pub fn lo(self) -> Option<SetFamily<'a, V>> {
         self.manager
             .uniq_table
             .get(self.id)
             .map(|x| SetFamily::from_set_family(x.lo, self.manager))
     }
 
-    #[expect(dead_code)]
-    pub(crate) fn hi(self) -> Option<SetFamily<'a, V>> {
+    ///Gets the hi child if it exists
+    #[must_use]
+    pub fn hi(self) -> Option<SetFamily<'a, V>> {
         self.manager
             .uniq_table
             .get(self.id)
@@ -47,7 +51,11 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     }
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
-    pub(crate) fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
+    ///Returns the value of this node along with its lo and hi children.
+    ///
+    ///Returns None if the element is terminal or doesn't exist.
+    #[must_use]
+    pub fn get(&self) -> Option<(V, SetFamily<'a, V>, SetFamily<'a, V>)> {
         self.manager.uniq_table.get(self.id).map(|x| {
             (
                 x.value,
