@@ -49,10 +49,12 @@ const ZERO_IDX: usize = 0;
 const ONE_IDX: usize = 1;
 
 impl<V: Eq + Hash> SetFamily<'_, V> {
-    fn is_zero(&self) -> bool {
+    ///Checks if the ZDD is the empty set.
+    pub fn is_zero(&self) -> bool {
         self.id == ZERO_IDX
     }
-    fn is_one(&self) -> bool {
+    ///Checks if the ZDD has the empty set as its only element.
+    pub fn is_one(&self) -> bool {
         self.id == ONE_IDX
     }
 }
