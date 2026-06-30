@@ -10,6 +10,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
+            println!("doing gc!");
             let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
                 Some(self.uniq_table.capacity() * 2)
             } else {
@@ -23,6 +24,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             let marked = marked.into_iter().map(usize::from).collect::<Vec<_>>();
             self.uniq_table.clear(&marked, resize_to);
             self.uniq_table.end_gc();
+            println!("done gc!");
         } else {
             //Someone else is doing GC so let's wait til that's done.
             self.uniq_table.wait_until_unpaused();
