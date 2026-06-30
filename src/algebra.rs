@@ -495,8 +495,12 @@ fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char
 mod test {
     #![expect(clippy::redundant_closure_for_method_calls)]
 
+    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
     use super::*;
     use std::collections::BTreeSet;
+
+    const PARALLEL_REPS: usize = 20;
 
     #[test]
     fn singleton() {
@@ -552,7 +556,7 @@ mod test {
     #[test]
     fn test_offset() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+        let ops = [
             ("ab a b c", vec!['a'], "b c"),
             ("a ab", vec!['a'], ""),
             ("b c d", vec!['a'], "b c d"),
@@ -565,15 +569,24 @@ mod test {
             ("", vec!['a'], ""),
             ("ef g h l", vec!['g'], "ef h l"),
             ("ab a b c df e g h l", "abceghl".chars().collect(), "df"),
-        ] {
+        ];
+
+        for (a, b, res) in ops.iter().cloned() {
             test_single_op(a, b, res, |x, y| x.offset(y), "offset", &holder);
         }
+
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().cloned())
+            .for_each(|(a, b, res)| {
+                test_single_op(a, b, res, |x, y| x.offset(y), "offset", &holder);
+            });
     }
 
     #[test]
     fn test_onset() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+
+        let ops = [
             ("ab a b c", vec!['a'], "b  "),
             ("b c", vec!['a'], ""),
             ("a ab abc", vec!['a'], " b bc"),
@@ -583,15 +596,21 @@ mod test {
             (" ", vec!['a'], ""),
             ("", vec!['a'], ""),
             ("ab b ac c", vec!['a'], "b c"),
-        ] {
+        ];
+        for (a, b, res) in ops.iter().cloned() {
             test_single_op(a, b, res, |x, y| x.onset(y), "onset", &holder);
         }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().cloned())
+            .for_each(|(a, b, res)| {
+                test_single_op(a, b, res, |x, y| x.onset(y), "onset", &holder);
+            });
     }
 
     #[test]
     fn test_change() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+        let ops = [
             ("ab a b c", vec!['a'], "b ab ac "),
             ("b c", vec!['a'], "ab ac"),
             ("a", vec!['a'], " "),
@@ -602,15 +621,21 @@ mod test {
             ("ab a b c", vec!['a', 'a', 'a', 'a'], "ab a b c"),
             ("ab a b c", vec!['a', 'b'], " a b abc"),
             ("abc bc", vec!['a'], "bc abc"),
-        ] {
+        ];
+        for (a, b, res) in ops.iter().cloned() {
             test_single_op(a, b, res, |x, v| x.change(v), "change", &holder);
         }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().cloned())
+            .for_each(|(a, b, res)| {
+                test_single_op(a, b, res, |x, y| x.change(y), "change", &holder);
+            });
     }
 
     #[test]
     fn test_intersect() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+        let ops = [
             ("ab a b", "ab a c", "ab a"),
             ("a", "b", ""),
             ("ab cd c e f df", "cd e f z", "cd e f"),
@@ -621,15 +646,21 @@ mod test {
             (" a", "a b", "a"),
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
-        ] {
+        ];
+        for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
         }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().copied())
+            .for_each(|(a, b, res)| {
+                test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
+            });
     }
 
     #[test]
     fn test_difference() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+        let ops = [
             ("ab a b c", "ab a", "b c"),
             ("a", "b", "a"),
             ("a b", "a b", ""),
@@ -640,15 +671,23 @@ mod test {
             (" a", "a", " "),
             ("ab bc cd", "bc", "ab cd"),
             ("", "a b", ""),
-        ] {
+        ];
+
+        for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.difference(y), "-", &holder);
         }
+
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().copied())
+            .for_each(|(a, b, res)| {
+                test_op(a, b, res, |x, y| x.difference(y), "-", &holder);
+            });
     }
 
     #[test]
     fn test_union() {
         let holder = ZddHolder::new();
-        for (a, b, res) in [
+        let ops = [
             ("ab ", "a", "ab a "),
             ("", "", ""),
             ("", "a", "a"),
@@ -659,8 +698,14 @@ mod test {
             (" a", "b", " a b"),
             (" a", " b", " a b"),
             ("ab c", "a bc", "ab c a bc"),
-        ] {
+        ];
+        for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.union(y), "∪", &holder);
         }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().copied())
+            .for_each(|(a, b, res)| {
+                test_op(a, b, res, |x, y| x.union(y), "∪", &holder);
+            });
     }
 }

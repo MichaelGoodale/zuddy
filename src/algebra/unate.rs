@@ -128,10 +128,15 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
 
         let self_hi_clone = self_hi.clone();
         let other_lo_clone = other_lo.clone();
-        let c = self_lo.clone().join(other_hi.clone());
-        let (a, b) = self.manager.pools().join(
+        let other_hi_clone = other_hi.clone();
+        let (a, (b, c)) = self.manager.pools().join(
             || self_hi_clone.join(other_hi),
-            || self_hi.join(other_lo_clone),
+            || {
+                self.manager.pools().join(
+                    || self_hi.join(other_lo_clone),
+                    || self_lo.clone().join(other_hi_clone),
+                )
+            },
         );
 
         let product = a.union(b).union(c);
