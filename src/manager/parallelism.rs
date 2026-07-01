@@ -99,14 +99,18 @@ impl<V: Eq + Hash + Clone + Ord + Send + Sync> ZddHolder<V> {
         hi: SetFamily<'a, V>,
     ) -> SetFamily<'a, V> {
         if let Some((v, _, _)) = lo.get()
-            && v > value
+            && v <= value
         {
-            panic!("A child has a smaller value than its parent, violating the ZDD definition!");
+            panic!(
+                "A child has a smaller or equal value than its parent, violating the ZDD definition!"
+            );
         }
         if let Some((v, _, _)) = hi.get()
-            && v > value
+            && v <= value
         {
-            panic!("A child has a smaller value than its parent, violating the ZDD definition!");
+            panic!(
+                "A child has a smaller or equal value than its parent, violating the ZDD definition!"
+            );
         }
 
         self.get_node(value, lo, hi)
