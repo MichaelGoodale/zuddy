@@ -86,8 +86,47 @@ impl<V: Eq + Hash> Drop for SetFamily<'_, V> {
         }
     }
 }
+impl<V: Eq + Hash + Clone + Ord + Send + Sync> ZddHolder<V> {
+    ///Creates a new ZDD without checking while ensuring that children have values greater than the
+    ///root.
+    ///
+    ///# Panics
+    ///Will panic if the node's value is greater than its children.
+    pub fn zdd_node<'a>(
+        &'a self,
+        value: V,
+        lo: SetFamily<'a, V>,
+        hi: SetFamily<'a, V>,
+    ) -> SetFamily<'a, V> {
+        if let Some((v, _, _)) = lo.get()
+            && v > value
+        {
+            panic!("A child has a smaller value than its parent, violating the ZDD definition!");
+        }
+        if let Some((v, _, _)) = hi.get()
+            && v > value
+        {
+            panic!("A child has a smaller value than its parent, violating the ZDD definition!");
+        }
 
+        self.get_node(value, lo, hi)
+    }
+}
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
+    ///Creates a new ZDD without checking that it is valid.
+    ///
+    ///# Safety
+    ///The value of `lo` and `hi` must be higher than the value of `value`. Otherwise, you run the
+    ///risk of infinite loops or other nastiness.
+    pub unsafe fn zdd_node_unchecked<'a>(
+        &'a self,
+        value: V,
+        lo: SetFamily<'a, V>,
+        hi: SetFamily<'a, V>,
+    ) -> SetFamily<'a, V> {
+        self.get_node(value, lo, hi)
+    }
+
     pub(crate) fn get_node<'a>(
         &'a self,
         value: V,
