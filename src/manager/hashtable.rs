@@ -123,7 +123,8 @@ impl<V: Hash + Eq> ZddHolder<V> {
         self.uniq_table.dec_count(i);
     }
 
-    pub(crate) fn pools(&self) -> &ThreadPool {
+    ///Get a reference to the Rayon [`ThreadPool`] used by the manager.
+    pub fn pools(&self) -> &ThreadPool {
         &self.uniq_table.slots.pools
     }
 }
