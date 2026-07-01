@@ -48,12 +48,20 @@ impl<V: Eq + Hash> Eq for SetFamily<'_, V> {}
 const ZERO_IDX: usize = 0;
 const ONE_IDX: usize = 1;
 
-impl<V: Eq + Hash> SetFamily<'_, V> {
+impl<'a, V: Eq + Hash> SetFamily<'a, V> {
+    ///Get a reference to the manager of this [`SetFamily`].
+    #[must_use]
+    pub fn manager(&self) -> &'a ZddHolder<V> {
+        self.manager
+    }
+
     ///Checks if the ZDD is the empty set.
+    #[must_use]
     pub fn is_zero(&self) -> bool {
         self.id == ZERO_IDX
     }
     ///Checks if the ZDD has the empty set as its only element.
+    #[must_use]
     pub fn is_one(&self) -> bool {
         self.id == ONE_IDX
     }
