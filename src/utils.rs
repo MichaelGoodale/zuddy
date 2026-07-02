@@ -1,8 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     fmt::{Display, Write},
     hash::{BuildHasher, Hash},
 };
+
+use ahash::HashSetExt;
 
 use crate::manager::{ZddHolder, ZddIndex};
 use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
@@ -89,6 +91,34 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     #[must_use]
     pub fn size(&self) -> UsizeOrPositiveInfinity {
         self.as_raw().size(self.manager)
+    }
+
+    ///Returns the universe of elements in this ZDD (e.g. any node that is in any set).
+    ///
+    ///```
+    ///# use zuddy::{ZddHolder, SetFamily};
+    ///# use std::collections::{HashSet, BTreeSet};
+    ///let holder = ZddHolder::<char>::new();
+    ///let sets = ["a", "bc", "cdefa", "bde"].into_iter().map(|x| x.chars().collect::<BTreeSet<_>>()).collect::<BTreeSet<_>>();
+    ///let zdd = SetFamily::from_sets(sets, &holder);
+    ///assert_eq!(zdd.universe(), "abcdef".chars().collect::<HashSet<_>>());
+    ///
+    ///```
+    pub fn universe<S: BuildHasher + Default>(&self) -> HashSet<V, S> {
+        let mut stack = vec![self.as_raw()];
+        let mut seen = HashSet::<ZddIndex<V>, ahash::RandomState>::default();
+        let mut nodes = HashSet::<V, S>::new();
+
+        while let Some(x) = stack.pop() {
+            if !seen.contains(&x)
+                && let Some((v, lo, hi)) = x.get(self.manager())
+            {
+                seen.insert(x);
+                nodes.insert(v);
+                stack.extend([lo, hi].into_iter().filter(|x| !seen.contains(x)));
+            }
+        }
+        nodes
     }
 }
 
