@@ -40,6 +40,8 @@ pub(super) enum Operations<V> {
     Difference(ZddIndex<V>, ZddIndex<V>),
     Join(ZddIndex<V>, ZddIndex<V>),
     Division(ZddIndex<V>, ZddIndex<V>),
+    NonSup(ZddIndex<V>, ZddIndex<V>),
+    Minimal(ZddIndex<V>),
 }
 
 mod unate;
@@ -445,6 +447,33 @@ fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<
     b.check_valid_zdd();
 
     let result = op(a, b);
+    result.check_valid_zdd();
+
+    let result_recon: BTreeSet<BTreeSet<char>> =
+        result.members().map(|x| x.into_iter().collect()).collect();
+    assert_eq!(result_recon, a_op_b);
+}
+
+#[cfg(test)]
+///Allows for easy testing of operations, taking family of sets of chars as strings seperated
+///by spaces, with `res` being the intended result with the operand supplied by `op`
+fn test_solo_op<F: for<'a> Fn(SetFamily<'a, char>) -> SetFamily<'a, char>>(
+    a: &str,
+    res: &str,
+    op: F,
+    op_name: &'static str,
+    holder: &ZddHolder<char>,
+) {
+    let a_sets = str_to_sets(a);
+    let a_op_b = str_to_sets(res);
+    println!("{a_sets:?} {op_name} = {a_op_b:?}");
+    let a_set_len = a_sets.len();
+
+    let a = SetFamily::from_sets(a_sets, holder);
+    assert_eq!(a.size().unwrap(), a_set_len);
+    a.check_valid_zdd();
+
+    let result = op(a);
     result.check_valid_zdd();
 
     let result_recon: BTreeSet<BTreeSet<char>> =

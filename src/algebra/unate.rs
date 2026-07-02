@@ -160,12 +160,99 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
         self.clone()
             .difference(other.clone().join(self.divide(other)))
     }
+
+    /// The minimal of elements of `self`, e.g.
+    ///
+    /// `f.minimal()` = {x ∈ f | y ∈ f and x ⊇ y implies x=y }
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    #[must_use]
+    pub fn minimal_elements(self) -> Self {
+        if self.is_zero() || self.is_one() {
+            return self;
+        }
+
+        let op = Operations::Minimal(self.as_raw());
+        if let Some(r) = self.manager().get_from_cache(&op) {
+            return r;
+        }
+
+        let (v, lo, hi) = self.get().unwrap();
+        let r_l = lo.minimal_elements();
+        let r = hi.minimal_elements();
+        let r_h = r.nonsup(r_l.clone());
+
+        let r = self.manager().get_node(v, r_l, r_h);
+
+        self.manager().put_into_cache(op, r)
+    }
+
+    ///The non-superset of `self` and `other`.
+    ///
+    /// f.nonsup(g) = {x ∈ f | y ∈ g implies x ⊉ y }
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    #[must_use]
+    pub fn nonsup(self, other: Self) -> Self {
+        if other.is_zero() {
+            return self;
+        }
+
+        if self.is_zero() || other.is_one() || self == other {
+            return self.manager.zero();
+        }
+
+        let op = Operations::NonSup(self.as_raw(), other.as_raw());
+        if let Some(r) = self.manager().get_from_cache(&op) {
+            return r;
+        }
+
+        let (o_val, o_lo, o_hi) = other.get().unwrap();
+
+        if self.is_one() {
+            //If self is one, then the lhs must not contain the empty set.
+            let mut o_lo = o_lo;
+            while let Some((_, new_lo, _)) = o_lo.get() {
+                o_lo = new_lo;
+            }
+            return if o_lo.is_zero() {
+                self
+            } else {
+                self.manager.zero()
+            };
+        }
+
+        let (s_val, s_lo, s_hi) = self.get().unwrap();
+
+        if s_val > o_val {
+            return self.nonsup(o_lo);
+        }
+        let v = s_val;
+        let r = if v < o_val {
+            let r_l = s_lo.nonsup(other.clone());
+            let r_h = s_hi.nonsup(other);
+            self.manager().get_node(v, r_l, r_h)
+        } else {
+            let r_l = s_hi.clone().nonsup(o_hi);
+            let r = s_hi.nonsup(o_lo.clone());
+            let r_h = r.intersect(r_l);
+            let r_l = s_lo.nonsup(o_lo);
+
+            self.manager().get_node(v, r_l, r_h)
+        };
+        self.manager().put_into_cache(op, r.clone())
+    }
 }
 
 #[cfg(test)]
 mod test {
     #![expect(clippy::redundant_closure_for_method_calls)]
-    use crate::{ZddHolder, algebra::test_op};
+    use crate::{
+        ZddHolder,
+        algebra::{test_op, test_solo_op},
+    };
 
     #[test]
     fn test_join() {
@@ -186,6 +273,34 @@ mod test {
             ("a b", "  ", "a b"),
         ] {
             test_op(a, b, res, |x, y| x.join(y), "*", &holder);
+        }
+    }
+    #[test]
+    fn test_nonsup() {
+        let holder = ZddHolder::new();
+        for (a, b, res) in [
+            (" ", " a", ""),
+            (" ", "a", " "),
+            ("a b c", "d", "a b c"),
+            ("a b", "c", "a b"),
+            ("a b cd", "d", "a b"),
+            ("a b cdwe ", "c", "a b "),
+        ] {
+            test_op(a, b, res, |x, y| x.nonsup(y), "↘", &holder);
+        }
+    }
+
+    #[test]
+    fn test_minimal() {
+        let holder = ZddHolder::new();
+        for (a, res) in [
+            ("", ""),
+            ("a", "a"),
+            ("a ", " "),
+            ("a b c", "a b c"),
+            ("ab b bc ca", "b ca"),
+        ] {
+            test_solo_op(a, res, |x| x.minimal_elements(), "↓", &holder);
         }
     }
 
