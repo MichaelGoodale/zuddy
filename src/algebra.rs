@@ -22,7 +22,6 @@
 //!
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
-use serde::{Deserialize, Serialize};
 
 use crate::{SetFamily, manager::ZddIndex};
 
@@ -30,7 +29,7 @@ use std::{fmt::Debug, hash::Hash};
 
 //TODO: Make this have a constructor that orders fields so that commmutative operations don't get
 //doubled.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub(super) enum Operations<V> {
     Change(ZddIndex<V>, V),
     Offset(ZddIndex<V>, V),
@@ -411,7 +410,7 @@ use std::collections::BTreeSet;
 use crate::ZddHolder;
 
 #[cfg(test)]
-fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
+pub(crate) fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
     if s.is_empty() {
         return BTreeSet::default();
     }

@@ -102,8 +102,8 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///let sets = ["a", "bc", "cdefa", "bde"].into_iter().map(|x| x.chars().collect::<BTreeSet<_>>()).collect::<BTreeSet<_>>();
     ///let zdd = SetFamily::from_sets(sets, &holder);
     ///assert_eq!(zdd.universe(), "abcdef".chars().collect::<HashSet<_>>());
-    ///
     ///```
+    #[must_use]
     pub fn universe<S: BuildHasher + Default>(&self) -> HashSet<V, S> {
         let mut stack = vec![self.as_raw()];
         let mut seen = HashSet::<ZddIndex<V>, ahash::RandomState>::default();

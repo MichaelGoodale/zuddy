@@ -13,6 +13,8 @@ mod utils;
 mod sampling;
 use algebra::Operations;
 
+pub mod serialize;
+
 pub use crate::manager::ZddHolder;
 
 ///A representation of a family of sets (or otherwise a set of sets).

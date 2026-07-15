@@ -1,10 +1,9 @@
 use crate::{ONE_IDX, SetFamily, ZERO_IDX, manager::ZddHolder};
 use ahash::RandomState;
-use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 ///A raw ZDD index without memory management for GC.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub(crate) struct ZddIndex<V>(usize, PhantomData<V>);
 
 impl<V> From<usize> for ZddIndex<V> {
@@ -61,7 +60,7 @@ impl<V> ZddIndex<V> {
     pub const ONE: Self = ZddIndex(ONE_IDX, PhantomData);
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(super) struct RawZddData<V> {
     pub(super) value: V,
     pub(super) lo: ZddIndex<V>,
@@ -95,7 +94,7 @@ impl<V: Eq + Hash + Clone> ZddIndex<V> {
     }
 }
 
-impl<V: Eq + Hash> ZddIndex<V> {
+impl<V> ZddIndex<V> {
     pub fn is_zero(self) -> bool {
         self == ZddIndex::ZERO
     }

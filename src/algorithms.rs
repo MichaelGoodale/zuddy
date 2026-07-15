@@ -332,8 +332,6 @@ impl<V: Clone + Debug + Eq + Hash> Iterator for MinimalSetIterator<'_, V> {
 mod test {
     use std::collections::BTreeSet;
 
-    use serde::{Deserialize, Serialize};
-
     use crate::ZddHolder;
 
     use super::*;
