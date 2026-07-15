@@ -5,7 +5,7 @@ use std::{
     hash::{BuildHasher, Hash},
 };
 
-use ahash::HashMapExt;
+use ahash::{HashMapExt, HashSetExt};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use thiserror::Error;
 
@@ -20,13 +20,14 @@ struct OwnedZddNode<T> {
 
 ///The index of a [`OwnedZDD`] in a [`MultipleOwnedZDD`]. Useful if you need to get specific members
 ///of a [`MultipleOwnedZDD`] or store them in a collection somehow.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct OwnedZddIndex(usize);
 
 ///A ZDD which owns its own data. This is not useful for running algorithms over ZDDs, but can be
 ///helpful when saving or loading ZDDs.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
 #[serde(try_from = "UnverifiedOwnedZdd<T>")]
+#[serde(bound(deserialize = "T: Ord + Deserialize<'de>"))]
 pub struct OwnedZdd<T> {
     nodes: Vec<OwnedZddNode<T>>,
     root: usize,
@@ -36,6 +37,7 @@ pub struct OwnedZdd<T> {
 ///By serializing a _set_ of ZDDs, we save a lot on serialization space.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
 #[serde(try_from = "UnverifiedOwnedZdd<T>")]
+#[serde(bound(deserialize = "T: Ord + Deserialize<'de>"))]
 pub struct MultipleOwnedZDD<T> {
     nodes: Vec<OwnedZddNode<T>>,
     roots: BTreeSet<usize>,
@@ -90,6 +92,22 @@ where
 {
     let (x, _) = to_owned_zdds_with_mapping::<_, _, _, ahash::RandomState>(zdds);
     x
+}
+impl<V: Eq + Hash + Clone> From<SetFamily<'_, V>> for OwnedZdd<V> {
+    fn from(value: SetFamily<V>) -> Self {
+        value.to_owned_zdd()
+    }
+}
+
+impl<'a, V, S, C> From<C> for MultipleOwnedZDD<V>
+where
+    V: Eq + Hash + Clone + 'a,
+    S: AsRef<SetFamily<'a, V>>,
+    C: IntoIterator<Item = S>,
+{
+    fn from(value: C) -> Self {
+        to_owned_zdds(value)
+    }
 }
 
 ///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZDD`] while returning
@@ -237,6 +255,34 @@ impl<V: Eq + Hash + Clone + Send + Sync> OwnedZdd<V> {
     }
 }
 
+impl<V: Eq + Hash + Clone + Send + Sync> MultipleOwnedZDD<V> {
+    ///Converts an [`MultipleOwnedZDD`] into a [`SetFamily`] associated with `holder`.
+    pub fn to_set_families(
+        self,
+        holder: &ZddHolder<V>,
+    ) -> HashMap<OwnedZddIndex, SetFamily<'_, V>> {
+        let mut mapping = ahash::HashMap::new();
+        mapping.insert(0, holder.zero());
+        mapping.insert(1, holder.one());
+        for (i, OwnedZddNode { value, hi, lo }) in self.nodes.into_iter().enumerate() {
+            #[expect(clippy::missing_panics_doc)] //fine bc we serialize w/ children first.
+            let (lo, hi) = (
+                mapping.get(&lo).unwrap().clone(),
+                mapping.get(&hi).unwrap().clone(),
+            );
+            let n = holder.get_node(value, lo, hi);
+            mapping.insert(i + 2, n); //+2 to account for ONE and ZERO
+        }
+
+        //fine bc we've added the root when going over all members
+        #[expect(clippy::missing_panics_doc)]
+        self.roots
+            .iter()
+            .map(|x| (OwnedZddIndex(*x), mapping.get(x).unwrap().clone()))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 struct UnverifiedOwnedZdd<T> {
     nodes: Vec<OwnedZddNode<T>>,
@@ -256,39 +302,136 @@ impl<T: Serialize> Serialize for OwnedZdd<T> {
 }
 
 #[derive(Debug, Copy, Clone, Error)]
-#[error("This ZDD is not valid!")]
-struct InvalidZdd;
+enum InvalidZdd {
+    #[error("This contains multiple ZDDs not just one!")]
+    NotSingle,
+    #[error("This has values that are lower than its children!")]
+    BadValueOrder,
+    #[error("This has children come after parents!")]
+    BadSerialOrder,
+    #[error("There are nodes that are dangling!")]
+    UnvisitedNodes,
+}
 
-impl<T> TryFrom<UnverifiedOwnedZdd<T>> for OwnedZdd<T> {
+fn check_validity<T: Ord>(
+    nodes: &[OwnedZddNode<T>],
+    roots: impl Iterator<Item = usize>,
+) -> Result<(), InvalidZdd> {
+    let mut visited = ahash::HashSet::new();
+    visited.extend([0, 1]);
+    visited.extend(roots);
+    let mut stack = visited
+        .iter()
+        .copied()
+        .filter(|x| *x >= 2)
+        .collect::<Vec<_>>();
+
+    while let Some(idx) = stack.pop() {
+        let OwnedZddNode { ref value, hi, lo } = nodes[idx - 2];
+
+        if idx < lo || idx < hi {
+            return Err(InvalidZdd::BadSerialOrder);
+        }
+        if lo >= 2 {
+            let lo_v = &nodes[lo - 2].value;
+            if lo_v <= value {
+                return Err(InvalidZdd::BadValueOrder);
+            }
+            if !visited.contains(&lo) {
+                stack.push(lo);
+            }
+        }
+
+        if hi >= 2 {
+            let hi_v = &nodes[hi - 2].value;
+            if hi_v <= value {
+                return Err(InvalidZdd::BadValueOrder);
+            }
+            if !visited.contains(&hi) {
+                stack.push(hi);
+            }
+        }
+        visited.insert(idx);
+    }
+    if visited.len() - 2 != nodes.len() {
+        return Err(InvalidZdd::UnvisitedNodes);
+    }
+    Ok(())
+}
+
+impl<T: Ord> TryFrom<UnverifiedOwnedZdd<T>> for OwnedZdd<T> {
     type Error = InvalidZdd;
 
     fn try_from(value: UnverifiedOwnedZdd<T>) -> Result<Self, Self::Error> {
-        todo!("Write some verification code!")
+        let UnverifiedOwnedZdd { nodes, mut roots } = value;
+        if roots.len() != 1 {
+            return Err(InvalidZdd::NotSingle);
+        }
+        let root = roots.pop_first().unwrap();
+        check_validity(&nodes, std::iter::once(root))?;
+
+        Ok(OwnedZdd { nodes, root })
     }
 }
 
-impl<T> TryFrom<UnverifiedOwnedZdd<T>> for MultipleOwnedZDD<T> {
+impl<T: Ord> TryFrom<UnverifiedOwnedZdd<T>> for MultipleOwnedZDD<T> {
     type Error = InvalidZdd;
 
     fn try_from(value: UnverifiedOwnedZdd<T>) -> Result<Self, Self::Error> {
-        todo!("Write some verification code!")
+        let UnverifiedOwnedZdd { nodes, roots } = value;
+        check_validity(&nodes, roots.iter().copied())?;
+        Ok(MultipleOwnedZDD { nodes, roots })
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{SetFamily, ZddHolder, algebra::str_to_sets, serialize::OwnedZdd};
+    use crate::{
+        SetFamily, ZddHolder,
+        algebra::str_to_sets,
+        serialize::{MultipleOwnedZDD, OwnedZdd, to_owned_zdds},
+    };
 
     #[test]
     fn serialization_tests() -> anyhow::Result<()> {
-        let sets = str_to_sets("ab a b c df e ghl");
+        let sets = ["abdcd", " ", "ab ad ac af ghl", "a", "ab ad ef "];
+        for s in sets {
+            let sets = str_to_sets(s);
+            let holder = ZddHolder::new();
+            let sets = SetFamily::from_sets(sets, &holder);
+            let owned = sets.to_owned_zdd();
+            let owned_2: OwnedZdd<char> = sets.clone().into();
+            assert_eq!(owned, owned_2);
+            let serialized = ron::to_string(&owned)?;
+            let deserialize: OwnedZdd<char> = ron::from_str(&serialized)?;
+            let new_sets = deserialize.clone().to_set_family(&holder);
+            assert_eq!(new_sets, sets);
+
+            let new_holder = ZddHolder::new();
+            let new_sets = deserialize.to_set_family(&new_holder);
+            assert_eq!(sets.size(), new_sets.size());
+        }
+
         let holder = ZddHolder::new();
-        let sets = SetFamily::from_sets(sets, &holder);
-        let owned = sets.to_owned_zdd();
-        let serialized = ron::to_string(&owned)?;
-        let deserialize: OwnedZdd<char> = ron::from_str(&serialized)?;
-        let new_sets = deserialize.to_set_family(&holder);
-        assert_eq!(new_sets, sets);
+        let mut all_sets = sets
+            .iter()
+            .map(|s| SetFamily::from_sets(str_to_sets(s), &holder))
+            .collect::<Vec<_>>();
+
+        let multiples = to_owned_zdds(&all_sets);
+        let multiples_2: MultipleOwnedZDD<char> = all_sets.clone().into();
+        assert_eq!(multiples, multiples_2);
+
+        let serialized = ron::to_string(&multiples)?;
+        assert!(ron::from_str::<OwnedZdd<char>>(&serialized).is_err());
+        let deserialize: MultipleOwnedZDD<char> = ron::from_str(&serialized)?;
+        let mut new_sets = deserialize
+            .to_set_families(&holder)
+            .into_values()
+            .collect::<Vec<_>>();
+        new_sets.sort();
+        all_sets.sort();
+        assert_eq!(new_sets, all_sets);
 
         Ok(())
     }
