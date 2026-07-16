@@ -1,5 +1,9 @@
 //! Zuddy is a crate for handling ZDDs
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use std::{
+    fmt::{Debug, Display},
+    hash::Hash,
+    marker::PhantomData,
+};
 
 ///Defines algebraic manipulations of [`SetFamily`]s.
 pub mod algebra;
@@ -58,6 +62,29 @@ impl<V: Eq + Hash> Ord for SetFamily<'_, V> {
         self.id
             .cmp(&other.id)
             .then(self.manager.id().cmp(&other.manager.id()))
+    }
+}
+
+impl<V: Eq + Hash + Display + Clone + Ord> Display for SetFamily<'_, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut members = self
+            .members()
+            .map(|mut x| {
+                x.sort();
+                x.into_iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .collect::<Vec<_>>();
+        members.sort();
+
+        let s = members
+            .into_iter()
+            .map(|s| format!("{{{s}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{{{s}}}")
     }
 }
 
@@ -123,6 +150,8 @@ impl<V: Eq + Hash + Ord + Clone> SetFamily<'_, V> {
 
 #[cfg(test)]
 mod tests {
+    use crate::algebra::str_to_sets;
+
     use super::*;
 
     fn int_to_bools(value: usize, num_bits: usize) -> impl Iterator<Item = bool> {
@@ -154,6 +183,20 @@ mod tests {
             set_zdd.check_valid_zdd();
             let reconstructed_set = set_zdd.members().map(|x| x.into_iter().collect()).collect();
             assert_eq!(x, reconstructed_set);
+        }
+    }
+
+    #[test]
+    fn write_zdd() {
+        let holder = ZddHolder::new();
+        for (x, y) in [
+            ("a ab cd ef", "{{a}, {a, b}, {c, d}, {e, f}}"),
+            ("", "{}"),
+            (" ", "{{}}"),
+            ("a ", "{{}, {a}}"),
+        ] {
+            let sets = SetFamily::from_sets(str_to_sets(x), &holder);
+            assert_eq!(sets.to_string(), y);
         }
     }
 }

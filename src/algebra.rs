@@ -23,6 +23,8 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
+use uuid::Uuid;
+
 use crate::{SetFamily, manager::ZddIndex};
 
 use std::{fmt::Debug, hash::Hash};
@@ -41,6 +43,8 @@ pub(super) enum Operations<V> {
     Division(ZddIndex<V>, ZddIndex<V>),
     NonSup(ZddIndex<V>, ZddIndex<V>),
     Minimal(ZddIndex<V>),
+    MaxWeight(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
+    MaxWeightJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
 }
 
 mod unate;

@@ -5,7 +5,10 @@ use std::{
     hash::Hash,
 };
 
-fn cmp_tops<V: Ord + Hash + Eq + Clone>(a: &SetFamily<V>, b: &SetFamily<V>) -> std::cmp::Ordering {
+pub(crate) fn cmp_tops<V: Ord + Hash + Eq + Clone>(
+    a: &SetFamily<V>,
+    b: &SetFamily<V>,
+) -> std::cmp::Ordering {
     match (a.id, b.id) {
         (a, b) if a == b => Equal,
         (1 | 0, 0 | 1) => Equal,
@@ -108,6 +111,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
         if other.is_zero() {
             return other;
         }
+
         if other.is_one() {
             return self;
         }
@@ -271,6 +275,10 @@ mod test {
             ("a b", "c", "ac bc"),
             ("a b c", "d", "ad bd cd"),
             ("a b", "  ", "a b"),
+            ("", "", ""),
+            (" ", "", ""),
+            ("", " ", ""),
+            (" ", " ", " "),
         ] {
             test_op(a, b, res, |x, y| x.join(y), "*", &holder);
         }
