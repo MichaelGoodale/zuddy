@@ -18,6 +18,7 @@ zerocopy = { version = "0.8.52", features = ["std", "derive", "alloc"] }
 ron = "0.12.1"
 divan = "0.1.21"
 anyhow = "1.0.103"
+indicatif = "0.18.6"
 
 [[bench]]
 name = "queens"

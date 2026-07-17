@@ -1,5 +1,6 @@
 use std::{
-    fmt::{Debug, Display},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
     hash::Hash,
 };
 
@@ -7,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     Operations::{self},
-    SetFamily,
+    SetFamily, ZddHolder,
 };
 
 impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
@@ -56,7 +57,86 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     }
 }
 
-impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord + Debug + Display> SetFamily<'a, V> {
+fn budget_set_inner<V, F>(
+    mut universe: BTreeSet<V>,
+    holder: &ZddHolder<V>,
+    budget: usize,
+    f: F,
+) -> BTreeMap<usize, SetFamily<'_, V>>
+where
+    V: Eq + Hash + Clone + Send + Sync + Ord,
+    F: Fn(&V) -> usize + Send + Sync,
+{
+    let mut budgets = BTreeMap::from([(Reverse(budget), holder.one())]);
+    while let Some(value) = universe.pop_last() {
+        let w = f(&value);
+
+        let mut new_budget = budgets.clone();
+
+        for (Reverse(b), child) in budgets {
+            if let Some(budget_with_x) = b.checked_sub(w) {
+                let add_x = holder.get_node(value.clone(), holder.zero(), child);
+                let entry = new_budget
+                    .entry(Reverse(budget_with_x))
+                    .or_insert_with(|| holder.zero());
+                let old = std::mem::replace(entry, holder.zero());
+                *entry = old.union(add_x);
+            } else {
+                break;
+            }
+        }
+        budgets = new_budget;
+    }
+
+    for i in 0..=budget {
+        budgets.entry(Reverse(i)).or_insert_with(|| holder.zero());
+    }
+
+    budgets
+        .into_iter()
+        .map(|(Reverse(k), v)| (budget - k, v))
+        .collect()
+}
+
+impl<V: Eq + Hash + Send + Sync + Ord + Clone> ZddHolder<V> {
+    /// Get all sets that can be made out of the universe such that their total weight is exactly
+    /// equal to `budget` where the weight is provided by `f`.
+    pub fn sets_with_exact_weight<F>(
+        &self,
+        universe: BTreeSet<V>,
+        budget: usize,
+        f: F,
+    ) -> SetFamily<'_, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        #[expect(clippy::missing_panics_doc)] // won't panic since budget_set_inner is guaranteed to
+        // return something for all keys 0..budget
+        budget_set_inner(universe, self, budget, f)
+            .remove(&budget)
+            .unwrap()
+    }
+
+    /// Get all sets that can be made out of the universe such that their total weight is less than
+    /// or equal to `budget` where the weight is provided by `f`.
+    pub fn sets_with_weight_or_less<F>(
+        &self,
+        universe: BTreeSet<V>,
+        budget: usize,
+        f: F,
+    ) -> SetFamily<'_, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        let mut final_set = self.zero();
+        for set in budget_set_inner(universe, self, budget, f).into_values() {
+            final_set = final_set.union(set);
+        }
+        final_set
+    }
+}
+
+impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     ///Combines [`SetFamily::join`] with [`SetFamily::max_weight`] in one step.
     #[must_use]
     pub fn max_weight_product<F>(
@@ -156,11 +236,14 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord + Debug + Display> SetFamily<'
 
 #[cfg(test)]
 mod test {
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};
 
-    use crate::{SetFamily, ZddHolder, algebra::str_to_sets};
+    use crate::{
+        SetFamily, ZddHolder, algebra::str_to_sets, algorithms::minimum_cutoff::budget_set_inner,
+        tests::all_subsets,
+    };
 
     fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
         universe
@@ -188,6 +271,43 @@ mod test {
                 .collect::<Vec<_>>();
             members.sort();
             members.join(" ")
+        }
+    }
+
+    #[test]
+    fn exact_weight() {
+        let universe = "abcdef".chars().collect::<Vec<_>>();
+        let mut rng = rngs::SmallRng::seed_from_u64(37);
+        for _ in 0..100 {
+            let holder = ZddHolder::new();
+            let weights = random_weights(&universe, &mut rng);
+            let universe = universe.iter().copied().collect();
+            let f = |v: &char| *weights.get(v).unwrap();
+            let max_budget = weights.values().sum::<usize>();
+
+            let mut budget_to_set: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+            for x in all_subsets(&universe) {
+                let s: usize = x.iter().map(f).sum();
+                budget_to_set.entry(s).or_default().insert(x);
+            }
+
+            for i in 0..=max_budget {
+                budget_to_set.entry(i).or_default();
+            }
+
+            for budget in 0..max_budget {
+                let found_budgets = budget_set_inner(universe.clone(), &holder, budget, f);
+                println!("{found_budgets:?}");
+                assert_eq!(*found_budgets.last_key_value().unwrap().0, budget);
+                for (b, v) in found_budgets {
+                    let v = v
+                        .members()
+                        .map(|x| x.into_iter().collect())
+                        .collect::<BTreeSet<_>>();
+
+                    assert_eq!(&v, budget_to_set.get(&b).unwrap());
+                }
+            }
         }
     }
     #[test]

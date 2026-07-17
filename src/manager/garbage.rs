@@ -4,12 +4,13 @@ use crate::{
 };
 use dashmap::DashSet;
 use rayon::prelude::*;
-use std::hash::Hash;
+use std::{hash::Hash, sync::atomic::Ordering};
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
+            self.generation.fetch_add(1, Ordering::Relaxed);
             let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
                 Some(self.uniq_table.capacity() * 2)
             } else {

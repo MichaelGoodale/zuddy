@@ -1,4 +1,4 @@
-use std::ops::Add;
+use std::{fmt::Display, ops::Add};
 
 ///Represents a usize, or positive infinity
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
@@ -7,6 +7,14 @@ pub enum UsizeOrPositiveInfinity {
     Size(usize),
     ///Positive Infinity
     PositiveInfinity,
+}
+impl Display for UsizeOrPositiveInfinity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UsizeOrPositiveInfinity::Size(x) => write!(f, "{x}"),
+            UsizeOrPositiveInfinity::PositiveInfinity => write!(f, "∞"),
+        }
+    }
 }
 
 impl From<UsizeOrPositiveInfinity> for Option<usize> {

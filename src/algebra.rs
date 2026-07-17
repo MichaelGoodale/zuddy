@@ -49,7 +49,7 @@ pub(super) enum Operations<V> {
 
 mod unate;
 
-impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
     ///It is defined as `f.offset(x)` = { α | α ∉ f}

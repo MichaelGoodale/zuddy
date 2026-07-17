@@ -158,7 +158,7 @@ mod tests {
         (0..num_bits).map(move |i| ((value >> i) & 1) == 1)
     }
 
-    fn all_subsets<T: Clone + Ord>(universe: &BTreeSet<T>) -> BTreeSet<BTreeSet<T>> {
+    pub(crate) fn all_subsets<T: Clone + Ord>(universe: &BTreeSet<T>) -> BTreeSet<BTreeSet<T>> {
         let mut all_sets = BTreeSet::new();
         for i in 0..2_usize.pow(u32::try_from(universe.len()).unwrap()) {
             let set = universe

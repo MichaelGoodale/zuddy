@@ -1,7 +1,6 @@
 use crate::{Operations, SetFamily};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
-    fmt::Debug,
     hash::Hash,
 };
 
@@ -22,7 +21,7 @@ pub(crate) fn cmp_tops<V: Ord + Hash + Eq + Clone>(
     }
 }
 
-impl<'a, V: Hash + Ord + Eq + Clone + Debug + Send + Sync> SetFamily<'a, V> {
+impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
     ///
