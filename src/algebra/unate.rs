@@ -1,10 +1,8 @@
 use ahash::RandomState;
-use indicatif::ProgressIterator;
 
 use crate::{Operations, SetFamily};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
-    fmt::Debug,
     hash::Hash,
 };
 
@@ -84,11 +82,16 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn alt_has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
         let s_u = self.universe::<RandomState>();
         let o_u = other.universe::<RandomState>();
-        let new_items = s_u.difference(&o_u).cloned().collect::<Vec<_>>();
-        let super_set = other.superset();
-        super_set.extend_as_superset(new_items);
-        //super_set.intersect(self)
-        todo!();
+        let mut new_items = s_u.difference(&o_u).cloned().collect::<Vec<_>>();
+        new_items.sort();
+        new_items.reverse();
+        let mut super_set = other.superset();
+        //for x in new_items.chunks(200) {
+        super_set = super_set.extend_as_superset(new_items);
+        //}
+        println!("done, now intersecting!");
+        println!("{} node and {} nodes", super_set.n_nodes(), self.n_nodes());
+        super_set.intersect(self)
     }
 
     ///Takes all the sets in self that have a subset in other.

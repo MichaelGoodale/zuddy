@@ -35,7 +35,6 @@ pub struct ZddHolder<V: Eq + Hash> {
     id: Uuid,
 }
 
-#[expect(dead_code)]
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K> {
     holder: &'a ZddHolder<V>,
@@ -43,7 +42,6 @@ pub(crate) struct TempCache<'a, V: Eq + Hash, K> {
     generation: AtomicU64,
 }
 
-#[expect(dead_code)]
 impl<'a, V, K> TempCache<'a, V, K>
 where
     V: Eq + Hash,
@@ -79,7 +77,6 @@ where
     }
 }
 
-#[expect(dead_code)]
 impl<V: Eq + Hash> ZddHolder<V> {
     fn current_generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)

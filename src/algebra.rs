@@ -23,8 +23,7 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
-use crate::ZddHolder;
-use indicatif::ProgressIterator;
+use crate::{ZddHolder, manager::TempCache};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -498,28 +497,123 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         if self.is_zero() {
             return self.clone();
         }
-
-        let mut less = BTreeSet::new();
-        let mut greater = BTreeSet::new();
-        if self.is_one() {
-            greater = values.into_iter().collect();
-        } else {
-            let (top, _, _) = self.get().unwrap();
-            for v in values {
-                if top > v {
-                    less.insert(v);
-                } else {
-                    greater.insert(v);
-                }
-            }
-        }
-        println!("{} {}", less.len(), greater.len());
-        let mut x = self.clone();
-        for g in greater.into_iter().progress() {
-            x = x.insert_as_superset(g);
-        }
-        add_all_subsets(self.manager(), less, x)
+        let values = self.manager().single_set(values.into_iter().collect());
+        let cache = self.manager().create_temporary_cache();
+        extend_as_superset_inner(self.clone(), values, &cache)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SingleSet<'a, V: Eq + Hash>(SetFamily<'a, V>);
+
+impl<V: Eq + Hash> SingleSet<'_, V> {
+    fn is_empty(&self) -> bool {
+        self.0.is_one()
+    }
+}
+
+impl<V: Eq + Hash + Clone + Send + Sync> SingleSet<'_, V> {
+    fn pop_last(&mut self) -> Option<V> {
+        let mut pos = self.0.clone();
+        let mut s = vec![];
+        while let Some((v, _, hi)) = pos.get() {
+            s.push(v);
+            pos = hi;
+        }
+        let last = s.pop();
+        let holder = pos.manager();
+        let mut set = holder.one();
+        for value in s {
+            set = holder.get_node(value, holder.zero(), set);
+        }
+
+        self.0 = set;
+
+        last
+    }
+
+    fn last(&self) -> Option<V> {
+        let mut pos = self.0.clone();
+        let mut last = None;
+        while let Some((v, _, hi)) = pos.get() {
+            last = Some(v);
+            pos = hi;
+        }
+        last
+    }
+}
+
+impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
+    fn single_set(&self, mut values: BTreeSet<V>) -> SingleSet<'_, V> {
+        let mut set = self.one();
+        while let Some(value) = values.pop_last() {
+            set = self.get_node(value, self.zero(), set);
+        }
+        SingleSet(set)
+    }
+}
+
+impl<V: Eq + Hash + Clone + Ord> From<SingleSet<'_, V>> for BTreeSet<V> {
+    fn from(value: SingleSet<V>) -> Self {
+        let mut set = BTreeSet::new();
+        let mut pos = value.0;
+        while let Some((v, _, hi)) = pos.get() {
+            set.insert(v);
+            pos = hi;
+        }
+
+        set
+    }
+}
+
+fn extend_as_superset_inner<'a, V>(
+    set: SetFamily<'a, V>,
+    mut values: SingleSet<'a, V>,
+    cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>)>,
+) -> SetFamily<'a, V>
+where
+    V: Eq + Hash + Ord + Send + Sync + Clone,
+{
+    if set.is_zero() || values.is_empty() {
+        return set.clone();
+    }
+    let holder = set.manager;
+    if set.is_one() {
+        return add_all_subsets(holder, values.into(), holder.one());
+    }
+
+    let op = (set.as_raw(), values.clone());
+    if let Some(r) = cache.get(&op) {
+        return r;
+    }
+
+    let (this_val, lo, hi) = set.get().expect("Invalid index");
+
+    //values to be added at the end!
+    let mut new_values = BTreeSet::new();
+    while values.last().is_some_and(|x| x < this_val) {
+        new_values.insert(values.pop_last().unwrap());
+    }
+
+    let set = if let Some(top) = values.last() {
+        if top > this_val {
+            let (lo, hi) = holder.pools().join(
+                || extend_as_superset_inner(lo, values.clone(), cache),
+                || extend_as_superset_inner(hi, values.clone(), cache),
+            );
+            holder.get_node(this_val, lo, hi)
+        } else {
+            // top must be equal since we've checked if it was smaller or bigger.
+            holder.get_node(this_val, lo.clone(), hi.union(lo))
+        }
+    } else {
+        //if there are no more values to add, we just return the set itself
+        set
+    };
+
+    //Add all possible subsets that are smaller to the set.
+    let r = add_all_subsets(holder, new_values, set);
+    cache.insert(op, r)
 }
 
 ///Takes a set and then performs the cartesian product of all possible subsets of values with start.
@@ -880,6 +974,7 @@ mod test {
             (" a", "a b", "a"),
             ("ab ac a", "a b", "a"),
             ("a b c", "a b", "a b"),
+            (" ", " ", " "),
         ];
         for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
