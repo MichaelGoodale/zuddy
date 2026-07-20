@@ -18,7 +18,7 @@ use crate::{
     ZddHolder,
     manager::{
         ZddIndex,
-        hashtable::slots::{REGION_SIZE, SharedLinkedList},
+        hashtable::slots::{REGION_SIZE, Slots},
     },
 };
 
@@ -98,7 +98,7 @@ impl HashEntry {
 
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
-    slots: SharedLinkedList,
+    slots: Slots,
     hashes: UnsafeCell<Vec<AtomicU64>>,
     data: UnsafeCell<Vec<Option<V>>>,
     counts: UnsafeCell<Vec<AtomicU64>>,
@@ -168,7 +168,7 @@ pub(crate) struct FullTable<V> {
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
         let size = std::cmp::max(size, n_pools * REGION_SIZE);
-        let slots = SharedLinkedList::new(size, n_pools);
+        let slots = Slots::new(size, n_pools);
 
         HashTable {
             slots,

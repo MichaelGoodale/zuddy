@@ -43,6 +43,7 @@ pub(super) enum Operations<V> {
     Division(ZddIndex<V>, ZddIndex<V>),
     NonSup(ZddIndex<V>, ZddIndex<V>),
     Minimal(ZddIndex<V>),
+    SubsetOf(ZddIndex<V>, ZddIndex<V>),
     MaxWeight(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
     MaxWeightJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
 }

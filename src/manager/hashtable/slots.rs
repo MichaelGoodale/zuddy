@@ -20,7 +20,7 @@ pub const REGION_SIZE: usize = 512;
 
 ///A struct for managing which slots are free in the concurrent data structure.
 #[derive(Debug)]
-pub(super) struct SharedLinkedList {
+pub(super) struct Slots {
     current_region: UnsafeCell<Vec<AtomicUsize>>,
     claimed_regions: UnsafeCell<Vec<AtomicBool>>,
     used_data: DataTakenRecord,
@@ -102,7 +102,7 @@ impl DataTakenRecord {
     }
 }
 
-impl SharedLinkedList {
+impl Slots {
     pub(super) fn new(size: usize, n_pools: usize) -> Self {
         let current_region = generate_current_position(size.div_ceil(REGION_SIZE), n_pools)
             .map(AtomicUsize::from)
@@ -122,7 +122,7 @@ impl SharedLinkedList {
             .build()
             .unwrap();
 
-        SharedLinkedList {
+        Slots {
             claimed_regions: UnsafeCell::new(claimed_regions),
             current_region: UnsafeCell::new(current_region),
             used_data: DataTakenRecord::new(size),
