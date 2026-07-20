@@ -1,6 +1,10 @@
+use ahash::RandomState;
+use indicatif::ProgressIterator;
+
 use crate::{Operations, SetFamily};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
+    fmt::Debug,
     hash::Hash,
 };
 
@@ -21,7 +25,7 @@ pub(crate) fn cmp_tops<V: Ord + Hash + Eq + Clone>(
     }
 }
 
-///Pivot SetFamily on pivot, assuming val, lo, and hi are already obtained.
+///Pivot [`SetFamily`] on pivot, assuming val, lo, and hi are already obtained.
 ///Returns the set w/o pivot and w/ pivot
 fn cofactor<'a, V: Eq + Hash + Ord>(
     pivot: &V,
@@ -69,6 +73,22 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             x = lo;
         }
         x.is_one()
+    }
+    ///Takes all the sets in self that have a subset in other.
+    ///
+    /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    #[must_use]
+    pub fn alt_has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        let s_u = self.universe::<RandomState>();
+        let o_u = other.universe::<RandomState>();
+        let new_items = s_u.difference(&o_u).cloned().collect::<Vec<_>>();
+        let super_set = other.superset();
+        super_set.extend_as_superset(new_items);
+        //super_set.intersect(self)
+        todo!();
     }
 
     ///Takes all the sets in self that have a subset in other.
@@ -317,6 +337,31 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         };
         self.manager().put_into_cache(op, r.clone())
     }
+
+    ///Gets all possible supersets of `self`.
+    ///
+    ///Will not include supersets involving elements that are not in any set of `self`.
+    ///
+    ///Toda, T., Takeuchi, S., Tsuda, K., Minato, Si. (2015). Superset Generation on Decision Diagrams. In: Rahman, M.S., Tomita, E. (eds) WALCOM: Algorithms and Computation. WALCOM 2015. Lecture Notes in Computer Science, vol 8973. Springer, Cham. <https://doi.org/10.1007/978-3-319-15612-5_28>
+    #[must_use]
+    pub fn superset(self) -> SetFamily<'a, V> {
+        if self.is_zero() || self.is_one() {
+            return self;
+        }
+
+        let holder = self.manager();
+        let op = Operations::Supersets(self.as_raw());
+        if let Some(r) = holder.get_from_cache(&op) {
+            return r;
+        }
+
+        #[expect(clippy::missing_panics_doc)] // fine since we check if terminal before
+        let (value, lo, hi) = self.get().unwrap();
+        let (lo, hi) = holder.pools().join(|| lo.superset(), || hi.superset());
+        let u = lo.clone().union(hi);
+        let r = holder.get_node(value, lo, u);
+        holder.put_into_cache(op, r)
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +427,19 @@ mod test {
     }
 
     #[test]
+    fn test_supersets() {
+        let holder = ZddHolder::new();
+        for (a, res) in [
+            ("", ""),
+            ("a", "a"),
+            ("a ", "a "),
+            ("a b c", "a b c ab bc ca abc"),
+        ] {
+            test_solo_op(a, res, |x| x.superset(), "sup", &holder);
+        }
+    }
+
+    #[test]
     fn test_divide() {
         let holder = ZddHolder::new();
         for (a, b, res) in [
@@ -422,6 +480,26 @@ mod test {
                 b,
                 res,
                 |x, y| x.has_subset_in(y),
+                "has subset in",
+                &holder,
+            );
+        }
+    }
+    #[test]
+    fn test_alt_has_subset() {
+        let holder = ZddHolder::new();
+        for (a, b, res) in [
+            ("a  ", "a", "a"),
+            ("abc bc ac", "bc", "abc bc"),
+            ("ab ac a", "a", "ab ac a"),
+            ("abd abe abg cd ce ch", "ab c", "abd abe abg cd ce ch"),
+            ("abc ad e f g gr ab c dbc ", "a b c", "abc ad ab c dbc"),
+        ] {
+            test_op(
+                a,
+                b,
+                res,
+                |x, y| x.alt_has_subset_in(y),
                 "has subset in",
                 &holder,
             );

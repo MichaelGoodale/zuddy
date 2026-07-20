@@ -23,6 +23,9 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
+use crate::ZddHolder;
+use indicatif::ProgressIterator;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::{SetFamily, manager::ZddIndex};
@@ -36,6 +39,8 @@ pub(super) enum Operations<V> {
     Change(ZddIndex<V>, V),
     Offset(ZddIndex<V>, V),
     Onset(ZddIndex<V>, V),
+    Insert(ZddIndex<V>, V),
+    InsertSuperset(ZddIndex<V>, V),
     Union(ZddIndex<V>, ZddIndex<V>),
     Intersect(ZddIndex<V>, ZddIndex<V>),
     Difference(ZddIndex<V>, ZddIndex<V>),
@@ -44,6 +49,7 @@ pub(super) enum Operations<V> {
     NonSup(ZddIndex<V>, ZddIndex<V>),
     Minimal(ZddIndex<V>),
     SubsetOf(ZddIndex<V>, ZddIndex<V>),
+    Supersets(ZddIndex<V>),
     MaxWeight(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
     MaxWeightJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
 }
@@ -53,7 +59,7 @@ mod unate;
 impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
-    ///It is defined as `f.offset(x)` = { α | α ∉ f}
+    ///It is defined as `f.offset(x)` = { α | α ∈ f ∧ x ∉ α }
     ///
     ///```
     ///# use std::collections::BTreeSet;
@@ -355,7 +361,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///Inverts whether a value is included or not included on each combination in the family.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∉ f} ∪ { α - {x} | α ∈ f}
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f ∧ x ∉ α} ∪ { α - {x} | α ∈ f}
     ///```
     ///use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
@@ -406,13 +412,139 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         let r = holder.get_node(this_val, new_lo, new_hi);
         holder.put_into_cache(op, r)
     }
+
+    ///Adds a value to all sets.
+    ///
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f}
+    ///# Panics
+    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    #[must_use]
+    pub fn insert(&self, value: V) -> Self {
+        if self.is_zero() {
+            return self.clone();
+        }
+        let holder = self.manager;
+        if self.is_one() {
+            return SetFamily::singleton(value, holder);
+        }
+
+        let op = Operations::Insert(self.as_raw(), value.clone());
+        if let Some(r) = holder.get_from_cache(&op) {
+            return r;
+        }
+
+        let (this_val, lo, hi) = self.get().expect("Invalid index");
+
+        let r = match this_val.cmp(&value) {
+            std::cmp::Ordering::Less => {
+                let (lo, hi) = holder
+                    .pools()
+                    .join(|| lo.insert(value.clone()), || hi.insert(value.clone()));
+
+                holder.get_node(this_val, lo, hi)
+            }
+            std::cmp::Ordering::Equal => holder.get_node(value, holder.zero(), hi.union(lo)),
+            std::cmp::Ordering::Greater => holder.get_node(value, holder.zero(), self.clone()),
+        };
+
+        holder.put_into_cache(op, r)
+    }
+
+    ///Adds a value to all sets, but keeps the original sets
+    ///
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f} ∪ f
+    ///# Panics
+    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    #[must_use]
+    pub fn insert_as_superset(&self, value: V) -> Self {
+        if self.is_zero() {
+            return self.clone();
+        }
+        let holder = self.manager;
+        if self.is_one() {
+            return holder.get_node(value, holder.one(), holder.one());
+        }
+
+        let op = Operations::InsertSuperset(self.as_raw(), value.clone());
+        if let Some(r) = holder.get_from_cache(&op) {
+            return r;
+        }
+
+        let (this_val, lo, hi) = self.get().expect("Invalid index");
+
+        let r = match this_val.cmp(&value) {
+            std::cmp::Ordering::Less => {
+                let (lo, hi) = holder.pools().join(
+                    || lo.insert_as_superset(value.clone()),
+                    || hi.insert_as_superset(value.clone()),
+                );
+
+                holder.get_node(this_val, lo, hi)
+            }
+            std::cmp::Ordering::Equal => holder.get_node(value, lo.clone(), hi.union(lo)),
+            std::cmp::Ordering::Greater => holder.get_node(value, self.clone(), self.clone()),
+        };
+
+        holder.put_into_cache(op, r)
+    }
+
+    ///Adds a value to all sets, but keeps the original sets
+    ///
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f} ∪ f
+    ///# Panics
+    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    #[must_use]
+    pub fn extend_as_superset(&self, values: impl IntoIterator<Item = V>) -> Self {
+        if self.is_zero() {
+            return self.clone();
+        }
+
+        let mut less = BTreeSet::new();
+        let mut greater = BTreeSet::new();
+        if self.is_one() {
+            greater = values.into_iter().collect();
+        } else {
+            let (top, _, _) = self.get().unwrap();
+            for v in values {
+                if top > v {
+                    less.insert(v);
+                } else {
+                    greater.insert(v);
+                }
+            }
+        }
+        println!("{} {}", less.len(), greater.len());
+        let mut x = self.clone();
+        for g in greater.into_iter().progress() {
+            x = x.insert_as_superset(g);
+        }
+        add_all_subsets(self.manager(), less, x)
+    }
 }
 
-#[cfg(test)]
-use std::collections::BTreeSet;
+///Takes a set and then performs the cartesian product of all possible subsets of values with start.
+///with the assumption that no value in start is less than any value in start.
+fn add_all_subsets<'a, V>(
+    holder: &'a ZddHolder<V>,
+    mut values: BTreeSet<V>,
+    start: SetFamily<'a, V>,
+) -> SetFamily<'a, V>
+where
+    V: Eq + Hash + Ord + Send + Sync + Clone,
+{
+    let mut set = start;
+    while let Some(value) = values.pop_last() {
+        set = holder.get_node(value, set.clone(), set);
+    }
+    set
+}
 
-#[cfg(test)]
-use crate::ZddHolder;
+impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
+    ///Get all possible subsets from an iterator of values.
+    pub fn all_subsets(&self, values: impl IntoIterator<Item = V>) -> SetFamily<'_, V> {
+        add_all_subsets(self, values.into_iter().collect(), self.one())
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
@@ -511,9 +643,12 @@ fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char
     a.check_valid_zdd();
     assert_eq!(a.size().unwrap(), start_len);
 
+    println!("{}", a.graphviz());
+
     let mut result = a.clone();
     for action in actions {
         result = op(result, action);
+        println!("{}", result.graphviz());
         result.check_valid_zdd();
     }
 
@@ -637,6 +772,72 @@ mod test {
             .flat_map(|x| x.par_iter().cloned())
             .for_each(|(a, b, res)| {
                 test_single_op(a, b, res, |x, y| x.onset(y), "onset", &holder);
+            });
+    }
+
+    #[test]
+    fn test_insert() {
+        let holder = ZddHolder::new();
+
+        let ops = [
+            ("ab a b c", vec!['a'], "ab a ac"),
+            ("b c", vec!['a'], "ab ac"),
+            ("a ab abc", vec!['a'], "a ab abc"),
+            ("a ab", vec!['a'], "a ab"),
+            ("a", vec!['a'], "a"),
+            ("b bc", vec!['a'], "ab abc"),
+            (" ", vec!['a'], "a"),
+            ("", vec!['a'], ""),
+            ("ab b ac c", vec!['a'], "ab ac"),
+            ("a", vec!['b', 'c'], "abc"),
+        ];
+        for (a, b, res) in ops.iter().cloned() {
+            test_single_op(a, b, res, |x, y| x.insert(y), "insert", &holder);
+        }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().cloned())
+            .for_each(|(a, b, res)| {
+                test_single_op(a, b, res, |x, y| x.insert(y), "insert", &holder);
+            });
+    }
+
+    #[test]
+    fn test_insert_as_superset() {
+        let holder = ZddHolder::new();
+
+        let ops = [
+            ("ab a b c", vec!['a'], "ab a ac b c"),
+            ("b c", vec!['a'], "ab ac b c"),
+            ("a ab abc", vec!['a'], "a ab abc"),
+            ("a ab", vec!['a'], "a ab"),
+            ("a", vec!['a'], "a"),
+            ("b bc", vec!['a'], "ab abc b bc"),
+            (" ", vec!['a'], "a "),
+            ("", vec!['a'], ""),
+            ("ab b ac c", vec!['a'], "ab ac b c"),
+            ("a", vec!['b', 'c'], "a ab ac abc"),
+        ];
+        for (a, b, res) in ops.iter().cloned() {
+            test_single_op(
+                a,
+                b,
+                res,
+                |x, y| x.insert_as_superset(y),
+                "insert as superset",
+                &holder,
+            );
+        }
+        rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
+            .flat_map(|x| x.par_iter().cloned())
+            .for_each(|(a, b, res)| {
+                test_single_op(
+                    a,
+                    b,
+                    res,
+                    |x, y| x.insert_as_superset(y),
+                    "insert as superset",
+                    &holder,
+                );
             });
     }
 
