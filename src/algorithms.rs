@@ -15,6 +15,8 @@ use crate::{SetFamily, manager::ZddIndex};
 mod utils;
 
 mod minimum_cutoff;
+mod subset_cover;
+pub use subset_cover::subset_cover;
 
 pub use utils::UsizeOrPositiveInfinity;
 

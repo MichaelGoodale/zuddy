@@ -23,7 +23,11 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
-use crate::{ZddHolder, manager::TempCache};
+use crate::{
+    ZddHolder,
+    manager::TempCache,
+    utils::{PivotedSets, SingleSet},
+};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -49,8 +53,8 @@ pub(super) enum Operations<V> {
     Minimal(ZddIndex<V>),
     SubsetOf(ZddIndex<V>, ZddIndex<V>),
     Supersets(ZddIndex<V>),
-    MaxWeight(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
-    MaxWeightJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
+    MaxWeightCutoff(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
+    MaxWeightCutoffJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
 }
 
 mod unate;
@@ -503,72 +507,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SingleSet<'a, V: Eq + Hash>(SetFamily<'a, V>);
-
-impl<V: Eq + Hash> SingleSet<'_, V> {
-    fn is_empty(&self) -> bool {
-        self.0.is_one()
-    }
-}
-
-impl<V: Eq + Hash + Clone + Send + Sync> SingleSet<'_, V> {
-    fn pop_last(&mut self) -> Option<V> {
-        let mut pos = self.0.clone();
-        let mut s = vec![];
-        while let Some((v, _, hi)) = pos.get() {
-            s.push(v);
-            pos = hi;
-        }
-        let last = s.pop();
-        let holder = pos.manager();
-        let mut set = holder.one();
-        for value in s {
-            set = holder.get_node(value, holder.zero(), set);
-        }
-
-        self.0 = set;
-
-        last
-    }
-
-    fn last(&self) -> Option<V> {
-        let mut pos = self.0.clone();
-        let mut last = None;
-        while let Some((v, _, hi)) = pos.get() {
-            last = Some(v);
-            pos = hi;
-        }
-        last
-    }
-}
-
-impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
-    fn single_set(&self, mut values: BTreeSet<V>) -> SingleSet<'_, V> {
-        let mut set = self.one();
-        while let Some(value) = values.pop_last() {
-            set = self.get_node(value, self.zero(), set);
-        }
-        SingleSet(set)
-    }
-}
-
-impl<V: Eq + Hash + Clone + Ord> From<SingleSet<'_, V>> for BTreeSet<V> {
-    fn from(value: SingleSet<V>) -> Self {
-        let mut set = BTreeSet::new();
-        let mut pos = value.0;
-        while let Some((v, _, hi)) = pos.get() {
-            set.insert(v);
-            pos = hi;
-        }
-
-        set
-    }
-}
-
 fn extend_as_superset_inner<'a, V>(
     set: SetFamily<'a, V>,
-    mut values: SingleSet<'a, V>,
+    values: SingleSet<'a, V>,
     cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>)>,
 ) -> SetFamily<'a, V>
 where
@@ -579,7 +520,7 @@ where
     }
     let holder = set.manager;
     if set.is_one() {
-        return add_all_subsets(holder, values.into(), holder.one());
+        return add_all_subsets(holder.one(), values);
     }
 
     let op = (set.as_raw(), values.clone());
@@ -589,21 +530,25 @@ where
 
     let (this_val, lo, hi) = set.get().expect("Invalid index");
 
-    //values to be added at the end!
-    let mut new_values = BTreeSet::new();
-    while values.last().is_some_and(|x| x < this_val) {
-        new_values.insert(values.pop_last().unwrap());
-    }
+    let PivotedSets {
+        lower,
+        mut higher_or_equal,
+    } = values.pivot(&this_val);
 
-    let set = if let Some(top) = values.last() {
+    let set = if let Some(top) = higher_or_equal.first() {
         if top > this_val {
             let (lo, hi) = holder.pools().join(
-                || extend_as_superset_inner(lo, values.clone(), cache),
-                || extend_as_superset_inner(hi, values.clone(), cache),
+                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache),
+                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache),
             );
             holder.get_node(this_val, lo, hi)
         } else {
+            higher_or_equal.pop_first();
             // top must be equal since we've checked if it was smaller or bigger.
+            let (lo, hi) = holder.pools().join(
+                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache),
+                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache),
+            );
             holder.get_node(this_val, lo.clone(), hi.union(lo))
         }
     } else {
@@ -612,22 +557,18 @@ where
     };
 
     //Add all possible subsets that are smaller to the set.
-    let r = add_all_subsets(holder, new_values, set);
+    let r = add_all_subsets(set, lower);
     cache.insert(op, r)
 }
 
-///Takes a set and then performs the cartesian product of all possible subsets of values with start.
-///with the assumption that no value in start is less than any value in start.
-fn add_all_subsets<'a, V>(
-    holder: &'a ZddHolder<V>,
-    mut values: BTreeSet<V>,
-    start: SetFamily<'a, V>,
-) -> SetFamily<'a, V>
+///Adds all subsets from `values` to `set`, assuming that all members of `values` are lower than all
+///members of `values`.
+fn add_all_subsets<'a, V>(mut set: SetFamily<'a, V>, values: SingleSet<'a, V>) -> SetFamily<'a, V>
 where
     V: Eq + Hash + Ord + Send + Sync + Clone,
 {
-    let mut set = start;
-    while let Some(value) = values.pop_last() {
+    let holder = set.manager();
+    for value in values.into_iter().rev() {
         set = holder.get_node(value, set.clone(), set);
     }
     set
@@ -636,7 +577,12 @@ where
 impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
     ///Get all possible subsets from an iterator of values.
     pub fn all_subsets(&self, values: impl IntoIterator<Item = V>) -> SetFamily<'_, V> {
-        add_all_subsets(self, values.into_iter().collect(), self.one())
+        let mut values = values.into_iter().collect::<BTreeSet<_>>();
+        let mut set = self.one();
+        while let Some(value) = values.pop_last() {
+            set = self.get_node(value, set.clone(), set);
+        }
+        set
     }
 }
 
@@ -1036,5 +982,49 @@ mod test {
             .for_each(|(a, b, res)| {
                 test_op(a, b, res, |x, y| x.union(y), "∪", &holder);
             });
+    }
+
+    #[test]
+    fn test_extend_as_superset() {
+        let holder = ZddHolder::new();
+        let ops = [("ab ", "abcd"), ("", "a"), (" ", "abc"), ("de ef", "abcef")];
+        for (s, ops) in ops {
+            let ops = ops.chars().collect::<BTreeSet<_>>();
+            let s = str_to_sets(s);
+            let mut res = s.clone();
+            for op in ops.iter().copied() {
+                res = res
+                    .into_iter()
+                    .flat_map(|x| {
+                        let mut y = x.clone();
+                        y.insert(op);
+                        [x, y]
+                    })
+                    .collect();
+            }
+
+            let s = SetFamily::from_sets(s, &holder);
+
+            let result = SetFamily::from_sets(res, &holder);
+
+            let mut iterative_s = s.clone();
+            for op in ops.iter().copied() {
+                iterative_s = iterative_s.insert_as_superset(op);
+            }
+            iterative_s.check_valid_zdd();
+            let batched_s = s.extend_as_superset(ops);
+            batched_s.check_valid_zdd();
+
+            println!("{}", batched_s.graphviz());
+
+            assert_eq!(
+                iterative_s, batched_s,
+                "Inserting and extending are not equivalent! {batched_s} != {iterative_s}",
+            );
+            assert_eq!(
+                batched_s, result,
+                "The set is not what was expected! {batched_s} != {result}"
+            );
+        }
     }
 }

@@ -5,9 +5,10 @@ use std::{
 };
 
 use ahash::HashSetExt;
-
+mod single_set;
 use crate::manager::{ZddHolder, ZddIndex};
 use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
+pub(crate) use single_set::{PivotedSets, SingleSet};
 
 impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -41,6 +42,10 @@ impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         let mut edges = vec![];
 
         while let Some(x) = q.pop_front() {
+            if seen.contains(&x) {
+                continue;
+            }
+
             if x.is_zero() {
                 nodes.insert(x, "⊥".to_string());
                 continue;
@@ -53,7 +58,7 @@ impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             nodes.insert(x, value.to_string());
             edges.extend([(x, lo, "dashed"), (x, hi, "solid")]);
             q.extend([lo, hi].into_iter().filter(|x| !seen.contains(x)));
-            seen.extend([lo, hi]);
+            seen.insert(x);
         }
 
         for (n, i) in nodes {

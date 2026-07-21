@@ -37,3 +37,9 @@ pedantic = { level = "warn", priority = -1 }
 
 [profile.release]
 debug = "line-tables-only"
+
+[profile.profiling]
+inherits = "release"
+debug = true         # or debug = "line-tables-only" for lighter symbol info
+strip = false
+lto = false          # optional: disable if you want cleaner inlining boundaries

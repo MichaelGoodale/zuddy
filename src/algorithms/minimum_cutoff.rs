@@ -26,7 +26,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     }
 
     #[must_use]
-    fn max_weight_inner<F>(self, budget: usize, f: &F, f_id: Uuid) -> SetFamily<'a, V>
+    pub(crate) fn max_weight_inner<F>(self, budget: usize, f: &F, f_id: Uuid) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
     {
@@ -34,7 +34,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             return self;
         }
 
-        let op = Operations::MaxWeight(self.as_raw(), budget, f_id);
+        let op = Operations::MaxWeightCutoff(self.as_raw(), budget, f_id);
         if let Some(r) = self.manager().get_from_cache(&op) {
             return r;
         }
@@ -44,9 +44,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         let w = f(&value);
 
         let r = if let Some(hi_budget) = budget.checked_sub(w) {
-            let (lo, hi) = self.manager().pools().join(
-                || lo.max_weight_inner(budget, f, f_id),
-                || hi.max_weight_inner(hi_budget, f, f_id),
+            let (lo, hi) = (
+                lo.max_weight_inner(budget, f, f_id),
+                hi.max_weight_inner(hi_budget, f, f_id),
             );
             self.manager().get_node(value, lo, hi)
         } else {
@@ -175,7 +175,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         }
 
         let holder = self.manager();
-        let op = Operations::MaxWeightJoin(self.as_raw(), other.as_raw(), budget, f_id);
+        let op = Operations::MaxWeightCutoffJoin(self.as_raw(), other.as_raw(), budget, f_id);
         if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
