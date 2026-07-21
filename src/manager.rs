@@ -16,6 +16,8 @@ mod garbage;
 mod hashtable;
 mod parallelism;
 mod raw;
+mod temp_cache;
+pub(crate) use temp_cache::TempCache;
 
 use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
@@ -33,65 +35,6 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     sum_cache: DashMap<ZddIndex<V>, UsizeOrPositiveInfinity, RandomState>,
     id: Uuid,
-}
-
-///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
-pub(crate) struct TempCache<'a, V: Eq + Hash, K> {
-    holder: &'a ZddHolder<V>,
-    cache: DashMap<K, ZddIndex<V>>,
-    generation: AtomicU64,
-}
-
-impl<'a, V, K> TempCache<'a, V, K>
-where
-    V: Eq + Hash,
-    K: Eq + Hash,
-{
-    fn clear_if_not_current(&self) {
-        let current = self.holder.current_generation();
-        let our_gen = self.generation.load(Ordering::Acquire);
-
-        if current != our_gen
-            && self
-                .generation
-                .compare_exchange(our_gen, current, Release, Relaxed)
-                .is_ok()
-        {
-            self.cache.clear();
-        }
-    }
-
-    ///Retrieve a value from the cache
-    pub fn get(&self, key: &K) -> Option<SetFamily<'a, V>> {
-        self.clear_if_not_current();
-        self.cache
-            .get(key)
-            .map(|s| SetFamily::from_set_family(*s, self.holder))
-    }
-
-    ///Insert a value to the cache.
-    pub fn insert(&self, key: K, set_family: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        self.clear_if_not_current();
-        self.cache.insert(key, set_family.as_raw());
-        set_family
-    }
-}
-
-impl<V: Eq + Hash> ZddHolder<V> {
-    fn current_generation(&self) -> u64 {
-        self.generation.load(Ordering::Relaxed)
-    }
-
-    ///Create a [`TempCache`] which allows for the construction of algorithms that require hashing
-    ///of partial results. Crucially, this hashmap will empty if garbage collection is triggered,
-    ///allowing for caching without requiring all partial values to be held indefinitely.
-    pub(crate) fn create_temporary_cache<K: Eq + Hash>(&self) -> TempCache<'_, V, K> {
-        TempCache {
-            holder: self,
-            cache: DashMap::new(),
-            generation: AtomicU64::from(self.current_generation()),
-        }
-    }
 }
 
 impl<V: Eq + Hash + Clone> ZddHolder<V> {
