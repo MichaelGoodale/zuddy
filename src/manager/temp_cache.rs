@@ -1,4 +1,11 @@
-use super::*;
+use std::{
+    hash::Hash,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use dashmap::DashMap;
+
+use crate::{SetFamily, ZddHolder, manager::ZddIndex};
 
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
@@ -24,6 +31,17 @@ impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for ZddIndex<V> {
     }
 }
 
+impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for usize {
+    type Output = usize;
+    fn to_gc(&self, _holder: &'a ZddHolder<V>) -> Self::Output {
+        *self
+    }
+
+    fn from_gc(x: &Self::Output) -> Self {
+        *x
+    }
+}
+
 impl<'a, V, K, T> TempCache<'a, V, K, T>
 where
     V: Eq + Hash,
@@ -37,7 +55,7 @@ where
         if current != our_gen
             && self
                 .generation
-                .compare_exchange(our_gen, current, Release, Relaxed)
+                .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
         {
             self.cache.clear();
@@ -66,7 +84,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Create a [`TempCache`] which allows for the construction of algorithms that require hashing
     ///of partial results. Crucially, this hashmap will empty if garbage collection is triggered,
     ///allowing for caching without requiring all partial values to be held indefinitely.
-    pub(crate) fn create_temporary_cache<K: Eq + Hash>(&self) -> TempCache<'_, V, K> {
+    pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(&self) -> TempCache<'_, V, K, T> {
         TempCache {
             holder: self,
             cache: DashMap::new(),

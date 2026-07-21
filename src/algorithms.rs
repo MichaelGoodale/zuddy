@@ -14,6 +14,7 @@ use crate::{SetFamily, manager::ZddIndex};
 
 mod utils;
 
+mod max_weight;
 mod minimum_cutoff;
 mod subset_cover;
 pub use subset_cover::subset_cover;

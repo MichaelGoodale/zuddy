@@ -1,13 +1,6 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::BTreeSet,
-    fmt::Debug,
-    hash::Hash,
-    marker::PhantomData,
-    sync::atomic::{
-        AtomicU64,
-        Ordering::{self, Relaxed, Release},
-    },
+    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::atomic::AtomicU64,
 };
 
 use ahash::RandomState;

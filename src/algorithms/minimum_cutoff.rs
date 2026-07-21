@@ -9,24 +9,32 @@ use uuid::Uuid;
 use crate::{
     Operations::{self},
     SetFamily, ZddHolder,
+    algorithms::max_weight::MaxWeightCache,
 };
 
 impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Assign each element a weight using the `f` function, and return the Zdd consisting of all
     ///sets that have a maximum summed weight of `weight` or less.
     #[must_use]
-    pub fn max_weight<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
+    pub fn max_weight_of<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
     {
         //We give the function a UUID so that the cache doesn't mix up if someone runs w/ two
         //different functions for weight.
         let f_id = Uuid::new_v4();
-        self.clone().max_weight_inner(budget, &f, f_id)
+        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
+        self.clone().max_weight_of_inner(budget, &f, f_id, &cache)
     }
 
     #[must_use]
-    pub(crate) fn max_weight_inner<F>(self, budget: usize, f: &F, f_id: Uuid) -> SetFamily<'a, V>
+    pub(crate) fn max_weight_of_inner<F>(
+        self,
+        budget: usize,
+        f: &F,
+        f_id: Uuid,
+        cache: &MaxWeightCache<'a, V>,
+    ) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
     {
@@ -39,18 +47,23 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
+        let max_weight = self.clone().max_weight_inner(f, cache);
+        if max_weight <= budget {
+            return self.manager().put_into_cache(op, self);
+        }
+
         let (value, lo, hi) = self.get().unwrap();
 
         let w = f(&value);
 
         let r = if let Some(hi_budget) = budget.checked_sub(w) {
             let (lo, hi) = (
-                lo.max_weight_inner(budget, f, f_id),
-                hi.max_weight_inner(hi_budget, f, f_id),
+                lo.max_weight_of_inner(budget, f, f_id, cache),
+                hi.max_weight_of_inner(hi_budget, f, f_id, cache),
             );
             self.manager().get_node(value, lo, hi)
         } else {
-            lo.max_weight_inner(budget, f, f_id)
+            lo.max_weight_of_inner(budget, f, f_id, cache)
         };
 
         self.manager().put_into_cache(op, r)
@@ -151,7 +164,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         //We give the function a UUID so that the cache doesn't mix up if someone runs w/ two
         //different functions for weight.
         let f_id = Uuid::new_v4();
-        self.max_weight_product_inner(other, budget, &f, f_id)
+        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
+        self.max_weight_product_inner(other, budget, &f, f_id, &cache)
     }
 
     fn max_weight_product_inner<F>(
@@ -160,6 +174,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         budget: usize,
         f: &F,
         f_id: Uuid,
+        cache: &MaxWeightCache<'a, V>,
     ) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
@@ -169,9 +184,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         }
 
         if other.is_one() {
-            return self.max_weight_inner(budget, f, f_id);
+            return self.max_weight_of_inner(budget, f, f_id, cache);
         } else if self.is_one() {
-            return other.max_weight_inner(budget, f, f_id);
+            return other.max_weight_of_inner(budget, f, f_id, cache);
         }
 
         let holder = self.manager();
@@ -205,16 +220,25 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
             // if other_v > value then other_hi is 0 so we don't add anything.
             // if other_v == value then we only subtract from budget the once so we use hi_budget
             let (a, (b, c)) = self.manager().pools().join(
-                || self_hi_clone.max_weight_product_inner(other_hi, hi_budget, f, f_id),
+                || self_hi_clone.max_weight_product_inner(other_hi, hi_budget, f, f_id, cache),
                 || {
                     self.manager().pools().join(
-                        || self_hi.max_weight_product_inner(other_lo_clone, hi_budget, f, f_id),
+                        || {
+                            self_hi.max_weight_product_inner(
+                                other_lo_clone,
+                                hi_budget,
+                                f,
+                                f_id,
+                                cache,
+                            )
+                        },
                         || {
                             self_lo.clone().max_weight_product_inner(
                                 other_hi_clone,
                                 hi_budget,
                                 f,
                                 f_id,
+                                cache,
                             )
                         },
                     )
@@ -223,11 +247,11 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
 
             let product = a.union(b).union(c);
             let v_product = holder.get_node(value, holder.zero(), product);
-            v_product.union(self_lo.max_weight_product_inner(other_lo, budget, f, f_id))
+            v_product.union(self_lo.max_weight_product_inner(other_lo, budget, f, f_id, cache))
         } else if other_v == value {
-            self_lo.max_weight_product_inner(other_lo, budget, f, f_id)
+            self_lo.max_weight_product_inner(other_lo, budget, f, f_id, cache)
         } else {
-            self_lo.max_weight_product_inner(other, budget, f, f_id)
+            self_lo.max_weight_product_inner(other, budget, f, f_id, cache)
         };
 
         self.manager().put_into_cache(op, r)
@@ -336,7 +360,7 @@ mod test {
 
             for budget in 0..10 {
                 println!("Budget = {budget}");
-                let indirect = product.max_weight(budget, f);
+                let indirect = product.max_weight_of(budget, f);
                 println!("Product then MaxWeight = \"{}\"", indirect.as_string());
                 let direct = family_a
                     .clone()
@@ -422,7 +446,7 @@ mod test {
             (7, "a ab ad ae b c efg"),
             (8, "a ab ad ae b c efg"),
         ] {
-            let set = set.max_weight(n, f);
+            let set = set.max_weight_of(n, f);
             println!("{n}");
             assert_eq!(res, set.as_string());
         }
