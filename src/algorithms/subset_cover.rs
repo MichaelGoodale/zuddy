@@ -7,11 +7,27 @@ use ahash::RandomState;
 use uuid::Uuid;
 
 use crate::{
-    SetFamily,
+    SetFamily, ZddHolder,
     algorithms::max_weight::MaxWeightCache,
     manager::{TempCache, ZddIndex},
     utils::{PivotedSets, SingleSet},
 };
+
+struct SubsetCoverCache<'a, V: Eq + Hash> {
+    id: Uuid,
+    max_weight_cache: MaxWeightCache<'a, V>,
+    cache: TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>, usize)>,
+}
+
+impl<V: Eq + Hash> SubsetCoverCache<'_, V> {
+    fn new(holder: &ZddHolder<V>) -> SubsetCoverCache<'_, V> {
+        SubsetCoverCache {
+            id: Uuid::new_v4(),
+            cache: holder.create_temporary_cache(),
+            max_weight_cache: holder.create_temporary_cache(),
+        }
+    }
+}
 
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
 /// such that where $b$ is the budget:
@@ -42,17 +58,15 @@ where
     let all_possibles = holder.sets_with_exact_weight(universe.clone(), budget, &f);
     println!("Preprocessing done!");
 
-    let f_id = Uuid::new_v4();
-    let cache: MaxWeightCache<_> = holder.create_temporary_cache();
+    let cache = SubsetCoverCache::new(holder);
 
     for set in sets.into_iter().take(2) {
         let elements = set_to_elements.get(&set).unwrap();
         let items_not_in_set = universe.difference(elements).cloned().collect::<Vec<_>>();
         let mut super_set = set.superset();
-        let m = all_possibles.clone().max_weight_inner(&f, &cache);
-        println!("Extenidng! m = {m}");
-        super_set =
-            super_set.extend_as_superset_with_budget(items_not_in_set, budget, &f, f_id, &cache);
+        super_set = super_set.max_weight_of_inner(budget, &f, cache.id, &cache.max_weight_cache);
+        println!("extending");
+        super_set = super_set.extend_as_superset_with_budget(items_not_in_set, budget, &f, &cache);
         println!("done, now intersecting!");
         println!(
             "{} node and {} nodes",
@@ -82,8 +96,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         values: impl IntoIterator<Item = V>,
         budget: usize,
         f: F,
-        f_id: Uuid,
-        max_weight_cache: &MaxWeightCache<'a, V>,
+        cache: &SubsetCoverCache<'a, V>,
     ) -> Self
     where
         F: Fn(&V) -> usize + Send + Sync,
@@ -92,8 +105,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return self.clone();
         }
         let values = self.manager().single_set(values.into_iter().collect());
-        let cache = self.manager().create_temporary_cache();
-        extend_as_superset_inner(self, values, budget, &f, f_id, &cache, max_weight_cache)
+        extend_as_superset_inner(self, values, budget, &f, cache)
     }
 }
 
@@ -102,9 +114,7 @@ fn extend_as_superset_inner<'a, V, F>(
     values: SingleSet<'a, V>,
     budget: usize,
     f: &F,
-    f_id: Uuid,
-    cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>, usize)>,
-    max_weight_cache: &MaxWeightCache<'a, V>,
+    cache: &SubsetCoverCache<'a, V>,
 ) -> SetFamily<'a, V>
 where
     F: Fn(&V) -> usize + Send + Sync,
@@ -113,15 +123,15 @@ where
     if set.is_zero() || values.is_empty() {
         return set
             .clone()
-            .max_weight_of_inner(budget, f, f_id, max_weight_cache);
+            .max_weight_of_inner(budget, f, cache.id, &cache.max_weight_cache);
     }
     let holder = set.manager;
     if set.is_one() {
-        return add_all_subsets_bounded(holder.one(), values, budget, f, f_id, max_weight_cache);
+        return add_all_subsets_bounded(holder.one(), values, budget, f, cache);
     }
 
     let op = (set.as_raw(), values.clone(), budget);
-    if let Some(r) = cache.get(&op) {
+    if let Some(r) = cache.cache.get(&op) {
         return r;
     }
 
@@ -137,40 +147,12 @@ where
         if top > this_val {
             if let Some(hi_budget) = budget.checked_sub(w) {
                 let (lo, hi) = holder.pools().join(
-                    || {
-                        extend_as_superset_inner(
-                            &lo,
-                            higher_or_equal.clone(),
-                            budget,
-                            f,
-                            f_id,
-                            cache,
-                            max_weight_cache,
-                        )
-                    },
-                    || {
-                        extend_as_superset_inner(
-                            &hi,
-                            higher_or_equal.clone(),
-                            hi_budget,
-                            f,
-                            f_id,
-                            cache,
-                            max_weight_cache,
-                        )
-                    },
+                    || extend_as_superset_inner(&lo, higher_or_equal.clone(), budget, f, cache),
+                    || extend_as_superset_inner(&hi, higher_or_equal.clone(), hi_budget, f, cache),
                 );
                 holder.get_node(this_val, lo, hi)
             } else {
-                let lo = extend_as_superset_inner(
-                    &lo,
-                    higher_or_equal.clone(),
-                    budget,
-                    f,
-                    f_id,
-                    cache,
-                    max_weight_cache,
-                );
+                let lo = extend_as_superset_inner(&lo, higher_or_equal.clone(), budget, f, cache);
                 holder.get_node(this_val, lo, holder.zero())
             }
         } else {
@@ -178,17 +160,7 @@ where
             if let Some(hi_budget) = budget.checked_sub(w) {
                 // top must be equal since we've checked if it was smaller or bigger.
                 let (lo, (cheap_lo, hi)) = holder.pools().join(
-                    || {
-                        extend_as_superset_inner(
-                            &lo,
-                            higher_or_equal.clone(),
-                            budget,
-                            f,
-                            f_id,
-                            cache,
-                            max_weight_cache,
-                        )
-                    },
+                    || extend_as_superset_inner(&lo, higher_or_equal.clone(), budget, f, cache),
                     || {
                         holder.pools().join(
                             || {
@@ -197,9 +169,7 @@ where
                                     higher_or_equal.clone(),
                                     hi_budget,
                                     f,
-                                    f_id,
                                     cache,
-                                    max_weight_cache,
                                 )
                             },
                             || {
@@ -208,9 +178,7 @@ where
                                     higher_or_equal.clone(),
                                     hi_budget,
                                     f,
-                                    f_id,
                                     cache,
-                                    max_weight_cache,
                                 )
                             },
                         )
@@ -218,27 +186,19 @@ where
                 );
                 holder.get_node(this_val, lo.clone(), hi.union(cheap_lo))
             } else {
-                let lo = extend_as_superset_inner(
-                    &lo,
-                    higher_or_equal.clone(),
-                    budget,
-                    f,
-                    f_id,
-                    cache,
-                    max_weight_cache,
-                );
+                let lo = extend_as_superset_inner(&lo, higher_or_equal.clone(), budget, f, cache);
                 holder.get_node(this_val, lo.clone(), holder.zero())
             }
         }
     } else {
         //if there are no more values to add, we just return the set itself
         set.clone()
-            .max_weight_of_inner(budget, f, f_id, max_weight_cache)
+            .max_weight_of_inner(budget, f, cache.id, &cache.max_weight_cache)
     };
 
     //Add all possible subsets that are smaller to the set.
-    let r = add_all_subsets_bounded(set, lower, budget, f, f_id, max_weight_cache);
-    cache.insert(op, r)
+    let r = add_all_subsets_bounded(set, lower, budget, f, cache);
+    cache.cache.insert(op, r)
 }
 
 ///Adds all subsets from `values` to `set`, assuming that all members of `values` are lower than all
@@ -248,26 +208,26 @@ fn add_all_subsets_bounded<'a, V, F>(
     mut values: SingleSet<'a, V>,
     budget: usize,
     f: &F,
-    f_id: Uuid,
-    cache: &MaxWeightCache<'a, V>,
+    cache: &SubsetCoverCache<'a, V>,
 ) -> SetFamily<'a, V>
 where
     F: Fn(&V) -> usize + Send + Sync,
     V: Eq + Hash + Ord + Send + Sync + Clone,
 {
+    //TODO: Add cache here!
     let holder = set.manager();
     if let Some(v) = values.pop_first() {
         let w = f(&v);
         if let Some(hi_budget) = budget.checked_sub(w) {
-            let lo = add_all_subsets_bounded(set.clone(), values.clone(), budget, f, f_id, cache);
-            let hi = add_all_subsets_bounded(set, values, hi_budget, f, f_id, cache);
+            let lo = add_all_subsets_bounded(set.clone(), values.clone(), budget, f, cache);
+            let hi = add_all_subsets_bounded(set, values, hi_budget, f, cache);
             holder.get_node(v, lo, hi)
         } else {
-            let lo = add_all_subsets_bounded(set, values, budget, f, f_id, cache);
+            let lo = add_all_subsets_bounded(set, values, budget, f, cache);
             holder.get_node(v, lo, holder.zero())
         }
     } else {
-        set.max_weight_of_inner(budget, f, f_id, cache)
+        set.max_weight_of_inner(budget, f, cache.id, &cache.max_weight_cache)
     }
 }
 
@@ -282,7 +242,7 @@ mod test {
         let holder = ZddHolder::new();
         let ops = [("c d ", "ab"), ("", "a"), (" ", "abc"), ("de ef", "abc")];
         let f = |c: &char| (*c as usize) - ('a' as usize) + 1;
-        let cache = holder.create_temporary_cache();
+        let cache = SubsetCoverCache::new(&holder);
 
         for (s, ops) in ops {
             for budget in 0..20 {
@@ -316,7 +276,6 @@ mod test {
                     holder.single_set(ops),
                     budget,
                     &f,
-                    Uuid::from_u128(0),
                     &cache,
                 );
                 batched_s.check_valid_zdd();
@@ -332,7 +291,7 @@ mod test {
         let holder = ZddHolder::new();
         let ops = [("ab ", "abcd"), ("", "a"), (" ", "abc"), ("de ef", "abcef")];
         let f = |c: &char| (*c as usize) - ('a' as usize) + 1;
-        let cache = holder.create_temporary_cache();
+        let cache = SubsetCoverCache::new(&holder);
 
         for (s, ops) in ops {
             for budget in 0..20 {
@@ -361,13 +320,7 @@ mod test {
                 }
                 iterative_s = iterative_s.max_weight_of(budget, f);
                 println!("Extending {s} with {ops:?} with budget = {budget} to make {result}");
-                let batched_s = s.extend_as_superset_with_budget(
-                    ops.clone(),
-                    budget,
-                    f,
-                    Uuid::from_u128(0),
-                    &cache,
-                );
+                let batched_s = s.extend_as_superset_with_budget(ops.clone(), budget, f, &cache);
                 batched_s.check_valid_zdd();
                 if result == batched_s {
                     println!("Success!");
