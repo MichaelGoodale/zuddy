@@ -5,7 +5,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::{SetFamily, ZddHolder, manager::ZddIndex};
+use crate::{SetFamily, ZddHolder, algorithms::UsizeOrPositiveInfinity, manager::ZddIndex};
 
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
@@ -33,6 +33,28 @@ impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for ZddIndex<V> {
 
 impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for usize {
     type Output = usize;
+    fn to_gc(&self, _holder: &'a ZddHolder<V>) -> Self::Output {
+        *self
+    }
+
+    fn from_gc(x: &Self::Output) -> Self {
+        *x
+    }
+}
+
+impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for UsizeOrPositiveInfinity {
+    type Output = UsizeOrPositiveInfinity;
+    fn to_gc(&self, _holder: &'a ZddHolder<V>) -> Self::Output {
+        *self
+    }
+
+    fn from_gc(x: &Self::Output) -> Self {
+        *x
+    }
+}
+
+impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for (UsizeOrPositiveInfinity, usize) {
+    type Output = (UsizeOrPositiveInfinity, usize);
     fn to_gc(&self, _holder: &'a ZddHolder<V>) -> Self::Output {
         *self
     }

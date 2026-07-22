@@ -4,27 +4,103 @@ use std::{
     hash::Hash,
 };
 
-use uuid::Uuid;
+use ahash::AHashMap;
 
 use crate::{
-    Operations::{self},
     SetFamily, ZddHolder,
-    algorithms::max_weight::MaxWeightCache,
+    algorithms::max_weight::{BoundsWeightCache, MaxWeightCache},
 };
 
-impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
+pub(crate) struct MaxWeightOfCache<'a, V: Eq + Hash>(
+    AHashMap<usize, AHashMap<SetFamily<'a, V>, SetFamily<'a, V>>>,
+);
+impl<'a, V: Eq + Hash> MaxWeightOfCache<'a, V> {
+    pub fn new() -> Self {
+        MaxWeightOfCache(AHashMap::default())
+    }
+
+    fn get(&self, key: &SetFamily<'a, V>, max_budget: usize) -> Option<SetFamily<'a, V>> {
+        self.0.get(&max_budget).and_then(|x| x.get(key)).cloned()
+    }
+
+    fn insert(
+        &mut self,
+        key: SetFamily<'a, V>,
+        max_budget: usize,
+        value: SetFamily<'a, V>,
+    ) -> SetFamily<'a, V> {
+        let v = value.clone();
+        self.0.entry(max_budget).or_default().insert(key, value);
+        v
+    }
+}
+
+fn exact_weight_of<'a, V, F>(
+    x: SetFamily<'a, V>,
+    budget: usize,
+    f: &F,
+    cache: &mut MaxWeightOfCache<'a, V>,
+    bounds_cache: &BoundsWeightCache<'a, V>,
+) -> SetFamily<'a, V>
+where
+    V: Eq + Hash + Clone + Send + Sync + Ord,
+    F: Fn(&V) -> usize + Send + Sync,
+{
+    if x.is_zero() || x.is_one() {
+        return if budget == 0 { x } else { x.manager().zero() };
+    }
+
+    let (min, max) = x.clone().bounds_inner(f, bounds_cache);
+    let min = min.unwrap();
+    if budget < min || budget > max {
+        return x.manager().zero();
+    }
+
+    if let Some(r) = cache.get(&x, budget) {
+        return r;
+    }
+
+    let (value, lo, hi) = x.get().unwrap();
+
+    let w = f(&value);
+
+    let r = if let Some(hi_budget) = budget.checked_sub(w) {
+        let (lo, hi) = (
+            exact_weight_of(lo, budget, f, cache, bounds_cache),
+            exact_weight_of(hi, hi_budget, f, cache, bounds_cache),
+        );
+        x.manager().get_node(value, lo, hi)
+    } else {
+        exact_weight_of(lo, budget, f, cache, bounds_cache)
+    };
+
+    cache.insert(x, budget, r)
+}
+
+impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     ///Assign each element a weight using the `f` function, and return the Zdd consisting of all
-    ///sets that have a maximum summed weight of `weight` or less.
+    ///sets that have a summed weight of exactly `budget`.
+    #[must_use]
+    pub fn exact_weight_of<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        let mut cache = MaxWeightOfCache::new();
+        let bounds_cache = self.manager().create_temporary_cache();
+        exact_weight_of(self.clone(), budget, &f, &mut cache, &bounds_cache)
+    }
+
+    ///Assign each element a weight using the `f` function, and return the Zdd consisting of all
+    ///sets that have a maximum summed weight of `budget` or less.
     #[must_use]
     pub fn max_weight_of<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
     {
-        //We give the function a UUID so that the cache doesn't mix up if someone runs w/ two
-        //different functions for weight.
-        let f_id = Uuid::new_v4();
         let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
-        self.clone().max_weight_of_inner(budget, &f, f_id, &cache)
+        let mut max_weight_of_cache = MaxWeightOfCache::new();
+        self.clone()
+            .max_weight_of_inner(budget, &f, &mut max_weight_of_cache, &cache)
     }
 
     #[must_use]
@@ -32,7 +108,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         self,
         budget: usize,
         f: &F,
-        f_id: Uuid,
+        map: &mut MaxWeightOfCache<'a, V>,
         cache: &MaxWeightCache<'a, V>,
     ) -> SetFamily<'a, V>
     where
@@ -42,15 +118,13 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             return self;
         }
 
-        let op = Operations::MaxWeightCutoff(self.as_raw(), budget, f_id);
-        if let Some(r) = self.manager().get_from_cache(&op) {
-            return r;
-        }
-
         let max_weight = self.clone().max_weight_inner(f, cache);
         if max_weight <= budget {
-            return self.manager().put_into_cache(op, self);
+            return self;
         }
+        //if let Some(r) = map.get(&self, budget) {
+        //    return r;
+        //}
 
         let (value, lo, hi) = self.get().unwrap();
 
@@ -58,15 +132,15 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = if let Some(hi_budget) = budget.checked_sub(w) {
             let (lo, hi) = (
-                lo.max_weight_of_inner(budget, f, f_id, cache),
-                hi.max_weight_of_inner(hi_budget, f, f_id, cache),
+                lo.max_weight_of_inner(budget, f, map, cache),
+                hi.max_weight_of_inner(hi_budget, f, map, cache),
             );
             self.manager().get_node(value, lo, hi)
         } else {
-            lo.max_weight_of_inner(budget, f, f_id, cache)
+            lo.max_weight_of_inner(budget, f, map, cache)
         };
 
-        self.manager().put_into_cache(op, r)
+        map.insert(self, budget, r)
     }
 }
 
@@ -149,115 +223,6 @@ impl<V: Eq + Hash + Send + Sync + Ord + Clone> ZddHolder<V> {
     }
 }
 
-impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
-    ///Combines [`SetFamily::join`] with [`SetFamily::max_weight`] in one step.
-    #[must_use]
-    pub fn max_weight_product<F>(
-        self,
-        other: SetFamily<'a, V>,
-        budget: usize,
-        f: F,
-    ) -> SetFamily<'a, V>
-    where
-        F: Fn(&V) -> usize + Send + Sync,
-    {
-        //We give the function a UUID so that the cache doesn't mix up if someone runs w/ two
-        //different functions for weight.
-        let f_id = Uuid::new_v4();
-        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
-        self.max_weight_product_inner(other, budget, &f, f_id, &cache)
-    }
-
-    fn max_weight_product_inner<F>(
-        mut self,
-        mut other: SetFamily<'a, V>,
-        budget: usize,
-        f: &F,
-        f_id: Uuid,
-        cache: &MaxWeightCache<'a, V>,
-    ) -> SetFamily<'a, V>
-    where
-        F: Fn(&V) -> usize + Send + Sync,
-    {
-        if other.is_zero() || self.is_zero() {
-            return self.manager().zero();
-        }
-
-        if other.is_one() {
-            return self.max_weight_of_inner(budget, f, f_id, cache);
-        } else if self.is_one() {
-            return other.max_weight_of_inner(budget, f, f_id, cache);
-        }
-
-        let holder = self.manager();
-        let op = Operations::MaxWeightCutoffJoin(self.as_raw(), other.as_raw(), budget, f_id);
-        if let Some(r) = holder.get_from_cache(&op) {
-            return r;
-        }
-
-        let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
-        let (mut other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
-
-        //Ensure that value is the value that we're switching over.
-        if value > other_v {
-            std::mem::swap(&mut other, &mut self);
-            std::mem::swap(&mut value, &mut other_v);
-            std::mem::swap(&mut self_lo, &mut other_lo);
-            std::mem::swap(&mut self_hi, &mut other_hi);
-        }
-
-        let weight = f(&value);
-        let r = if let Some(hi_budget) = budget.checked_sub(weight) {
-            if other_v > value {
-                other_lo = other;
-                other_hi = self.manager.zero();
-            }
-
-            let self_hi_clone = self_hi.clone();
-            let other_lo_clone = other_lo.clone();
-            let other_hi_clone = other_hi.clone();
-
-            // if other_v > value then other_hi is 0 so we don't add anything.
-            // if other_v == value then we only subtract from budget the once so we use hi_budget
-            let (a, (b, c)) = self.manager().pools().join(
-                || self_hi_clone.max_weight_product_inner(other_hi, hi_budget, f, f_id, cache),
-                || {
-                    self.manager().pools().join(
-                        || {
-                            self_hi.max_weight_product_inner(
-                                other_lo_clone,
-                                hi_budget,
-                                f,
-                                f_id,
-                                cache,
-                            )
-                        },
-                        || {
-                            self_lo.clone().max_weight_product_inner(
-                                other_hi_clone,
-                                hi_budget,
-                                f,
-                                f_id,
-                                cache,
-                            )
-                        },
-                    )
-                },
-            );
-
-            let product = a.union(b).union(c);
-            let v_product = holder.get_node(value, holder.zero(), product);
-            v_product.union(self_lo.max_weight_product_inner(other_lo, budget, f, f_id, cache))
-        } else if other_v == value {
-            self_lo.max_weight_product_inner(other_lo, budget, f, f_id, cache)
-        } else {
-            self_lo.max_weight_product_inner(other, budget, f, f_id, cache)
-        };
-
-        self.manager().put_into_cache(op, r)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -335,85 +300,44 @@ mod test {
         }
     }
     #[test]
-    fn minimum_weight_product() {
+    fn minimum_weight_random() {
+        let holder = ZddHolder::new();
         let universe = "abcdef".chars().collect::<Vec<_>>();
         let mut rng = rngs::SmallRng::seed_from_u64(37);
-        for _ in 0..100 {
-            let holder = ZddHolder::new();
-            let family_a = SetFamily::from_sets(random_family(&universe, &mut rng), &holder);
-            let family_b = SetFamily::from_sets(random_family(&universe, &mut rng), &holder);
 
-            let product = family_a.clone().join(family_b.clone());
+        for i in 0..1000 {
+            println!("{i}");
+            let family = random_family(&universe, &mut rng);
             let weights = random_weights(&universe, &mut rng);
             let f = |v: &char| *weights.get(v).unwrap();
+            let max_budget = weights.values().sum::<usize>();
 
-            println!(
-                "A = \"{}\"\nB=\"{}\"\nProduct=\"{}\"",
-                family_a.as_string(),
-                family_b.as_string(),
-                product.as_string()
-            );
+            let s = SetFamily::from_sets(family.clone(), &holder);
 
-            println!("{}", family_a.graphviz());
-            println!("{}", family_b.graphviz());
-            println!("Weights = {weights:?}");
+            for budget in 0..=max_budget {
+                let other = family
+                    .iter()
+                    .filter(|x| x.iter().map(f).sum::<usize>() <= budget)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let other = SetFamily::from_sets(other, &holder);
+                let max_weight = s.max_weight_of(budget, f);
+                max_weight.check_valid_zdd();
+                assert_eq!(max_weight, other, "{max_weight} != {other}");
 
-            for budget in 0..10 {
-                println!("Budget = {budget}");
-                let indirect = product.max_weight_of(budget, f);
-                println!("Product then MaxWeight = \"{}\"", indirect.as_string());
-                let direct = family_a
-                    .clone()
-                    .max_weight_product(family_b.clone(), budget, f);
-                println!("Direct MaxWeightProduct = \"{}\"", direct.as_string());
-
-                let raw_direct = product
-                    .members()
-                    .filter_map(|x| {
-                        if x.iter().map(f).sum::<usize>() <= budget {
-                            Some(x.into_iter().collect())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<BTreeSet<BTreeSet<char>>>();
-                let raw = SetFamily::from_sets(raw_direct, &holder);
-                println!("Raw Direct Product = \"{}\"", raw.as_string());
-
-                assert_eq!(raw, indirect, "Problem with max_weight!");
-                assert_eq!(direct, raw, "Problem with max_weight_product!");
-                println!();
+                let exact = family
+                    .iter()
+                    .filter(|x| x.iter().map(f).sum::<usize>() == budget)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let exact = SetFamily::from_sets(exact, &holder);
+                let exact_weight = s.exact_weight_of(budget, f);
+                exact_weight.check_valid_zdd();
+                assert_eq!(
+                    exact_weight, exact,
+                    "{exact_weight} != {exact} budget = {budget}"
+                );
             }
-        }
-    }
-
-    #[test]
-    fn simple_min_weight_product() {
-        let holder = ZddHolder::new();
-        let weights = [
-            ('a', 1),
-            ('b', 2),
-            ('c', 3),
-            ('d', 4),
-            ('e', 5),
-            ('f', 6),
-            ('g', 7),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-
-        for (a, b, n, res) in [
-            ("a", "a b c", 1, "a"),
-            ("a", "a b c", 4, "a ab ac"),
-            ("a b c", "a b c", 3, "a ab b c"),
-            ("a b c ", "a b c", 3, "a ab b c"),
-            ("a b c ", "a b c ", 3, " a ab b c"),
-        ] {
-            let a = SetFamily::from_sets(str_to_sets(a), &holder);
-            let b = SetFamily::from_sets(str_to_sets(b), &holder);
-            let f = |v: &char| *weights.get(v).unwrap();
-            let s = a.max_weight_product(b, n, f);
-            assert_eq!(s.as_string(), res);
         }
     }
 

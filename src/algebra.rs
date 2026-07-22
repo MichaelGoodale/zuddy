@@ -29,7 +29,6 @@ use crate::{
     utils::{PivotedSets, SingleSet},
 };
 use std::collections::BTreeSet;
-use uuid::Uuid;
 
 use crate::{SetFamily, manager::ZddIndex};
 
@@ -53,8 +52,6 @@ pub(super) enum Operations<V> {
     Minimal(ZddIndex<V>),
     SubsetOf(ZddIndex<V>, ZddIndex<V>),
     Supersets(ZddIndex<V>),
-    MaxWeightCutoff(ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
-    MaxWeightCutoffJoin(ZddIndex<V>, ZddIndex<V>, usize, Uuid), // needs a UUID since the weight depends on a function
 }
 
 mod unate;
