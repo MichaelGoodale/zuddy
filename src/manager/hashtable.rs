@@ -308,15 +308,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             *self.hashes.get() = zeroed_atomic(size);
         }
 
-        for index in except {
-            self.insert_known_data(*index);
-        }
-
         if let Some(size) = resize_to {
             unsafe {
                 (&mut *self.data.get()).resize(size, None);
                 (&mut *self.counts.get()).resize_with(size, || AtomicU64::from(0));
             }
+        }
+        for index in except {
+            self.insert_known_data(*index);
         }
 
         self.slots.clear(except, resize_to);
