@@ -23,6 +23,8 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
+use ahash::AHashMap;
+
 use crate::{
     ZddHolder,
     manager::TempCache,
@@ -52,6 +54,119 @@ pub(super) enum Operations<V> {
     Minimal(ZddIndex<V>),
     SubsetOf(ZddIndex<V>, ZddIndex<V>),
     Supersets(ZddIndex<V>),
+}
+
+enum IntersectStack<'a, V: Eq + Hash> {
+    Search(SetFamily<'a, V>, SetFamily<'a, V>),
+    Retrieve(SetFamily<'a, V>, SetFamily<'a, V>),
+}
+
+fn intersect_search<'a, V>(
+    a: SetFamily<'a, V>,
+    b: SetFamily<'a, V>,
+    stack: &mut Vec<IntersectStack<'a, V>>,
+    cache: &mut AHashMap<(SetFamily<'a, V>, SetFamily<'a, V>), SetFamily<'a, V>>,
+) where
+    V: Hash + Ord + Eq + Clone + Send + Sync,
+{
+    let holder = a.manager();
+    if a.is_zero() || b.is_zero() {
+        cache.insert((a, b), holder.zero());
+        return;
+    }
+    if a == b {
+        cache.insert((a.clone(), b), a);
+        return;
+    }
+
+    if a.is_one() || b.is_one() {
+        let mut one = a;
+        let mut b = b;
+        if b.is_one() {
+            std::mem::swap(&mut b, &mut one);
+        }
+
+        stack.push(IntersectStack::Search(one, b.lo().unwrap()));
+        return;
+    }
+
+    let (a_val, a_lo, a_hi) = a.get().expect("Invalid index");
+    let (b_val, b_lo, b_hi) = b.get().expect("Invalid index");
+
+    match a_val.cmp(&b_val) {
+        std::cmp::Ordering::Less => stack.push(IntersectStack::Search(a_lo, b)),
+        std::cmp::Ordering::Greater => stack.push(IntersectStack::Search(a, b_lo)),
+        std::cmp::Ordering::Equal => {
+            stack.push(IntersectStack::Search(a_lo, b_lo));
+            stack.push(IntersectStack::Search(a_hi, b_hi));
+        }
+    }
+}
+
+fn intersect_retrieve<'a, V>(
+    a: SetFamily<'a, V>,
+    b: SetFamily<'a, V>,
+    cache: &mut AHashMap<(SetFamily<'a, V>, SetFamily<'a, V>), SetFamily<'a, V>>,
+) where
+    V: Hash + Ord + Eq + Clone + Send + Sync,
+{
+    let key = (a.clone(), b.clone());
+    let holder = a.manager();
+    if a.is_one() || b.is_one() {
+        let mut one = a;
+        let mut other = b;
+        if other.is_one() {
+            std::mem::swap(&mut other, &mut one);
+        }
+
+        let v = cache.get(&(one, other.lo().unwrap())).unwrap().clone();
+        cache.insert(key, v);
+        return;
+    }
+
+    let (a_val, a_lo, a_hi) = a.get().expect("Invalid index");
+    let (b_val, b_lo, b_hi) = b.get().expect("Invalid index");
+
+    let r = match a_val.cmp(&b_val) {
+        std::cmp::Ordering::Less => cache.get(&(a_lo, b)).unwrap().clone(),
+        std::cmp::Ordering::Greater => cache.get(&(a, b_lo)).unwrap().clone(),
+        std::cmp::Ordering::Equal => {
+            let lo = cache.get(&(a_lo, b_lo)).unwrap().clone();
+            let hi = cache.get(&(a_hi, b_hi)).unwrap().clone();
+            holder.get_node(a_val, lo, hi)
+        }
+    };
+    cache.insert(key, r);
+}
+
+pub(crate) fn intersect_iterative<'a, V>(
+    a: SetFamily<'a, V>,
+    b: SetFamily<'a, V>,
+) -> SetFamily<'a, V>
+where
+    V: Hash + Ord + Eq + Clone + Send + Sync,
+{
+    let mut stack = vec![IntersectStack::Search(a.clone(), b.clone())];
+
+    let mut map = AHashMap::new();
+    while let Some(x) = stack.pop() {
+        match x {
+            IntersectStack::Search(a, b) => {
+                stack.push(IntersectStack::Retrieve(a.clone(), b.clone()));
+                let key = (a, b);
+                if !map.contains_key(&key) {
+                    intersect_search(key.0, key.1, &mut stack, &mut map);
+                }
+            }
+            IntersectStack::Retrieve(a, b) => {
+                let key = (a, b);
+                if !map.contains_key(&key) {
+                    intersect_retrieve(key.0, key.1, &mut map);
+                }
+            }
+        }
+    }
+    map.remove(&(a, b)).unwrap()
 }
 
 mod unate;
@@ -187,27 +302,34 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn intersect(self, other: Self) -> SetFamily<'a, V> {
+    pub fn intersect(mut self, mut other: Self) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || other.is_zero() {
             return holder.zero();
         }
+
         if self == other {
             return self;
         }
+
+        if self.id > other.id {
+            std::mem::swap(&mut self, &mut other);
+        }
+
         let op = Operations::Intersect(self.as_raw(), other.as_raw());
         if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
-        if self.is_one() || other.is_one() {
-            let mut one = self;
-            let mut other = other;
-            if other.is_one() {
-                std::mem::swap(&mut other, &mut one);
-            }
-
-            return one.intersect(other.lo().unwrap());
+        if self.is_one() {
+            // since we ensure self has a lower id, and one has an id of 1, we only
+            // need to check self and not other since we also checked self==other
+            return if other.contains_empty_set() {
+                //since {empty} intersect X must be either empty or nothing.
+                self
+            } else {
+                holder.zero()
+            };
         }
 
         let (self_val, self_lo, self_hi) = self.get().expect("Invalid index");
@@ -217,7 +339,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             std::cmp::Ordering::Less => self_lo.intersect(other),
             std::cmp::Ordering::Greater => self.intersect(other_lo),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = self.manager.pools().join(
+                let (lo, hi) = holder.pools().join(
                     || self_lo.intersect(other_lo),
                     || self_hi.intersect(other_hi),
                 );
@@ -921,6 +1043,9 @@ mod test {
         ];
         for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
+        }
+        for (a, b, res) in ops {
+            test_op(a, b, res, intersect_iterative, "∩ (IT)", &holder);
         }
         rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
             .flat_map(|x| x.par_iter().copied())

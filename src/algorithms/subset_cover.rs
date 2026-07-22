@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     hash::Hash,
+    time::Instant,
 };
 
 use ahash::RandomState;
@@ -33,30 +34,26 @@ where
         })
         .collect();
 
-    let all_possibles = holder.sets_with_exact_weight(universe.clone(), budget, &f);
+    //let mut all_possibles = holder.sets_with_exact_weight(universe.clone(), budget, &f);
+    let mut all_possibles = holder.all_subsets(universe.clone());
     println!("Preprocessing done!");
 
-    for set in sets.into_iter().take(2) {
+    for set in sets {
         let elements = set_to_elements.get(&set).unwrap();
         let items_not_in_set = universe.difference(elements).cloned().collect::<Vec<_>>();
         let mut super_set = set.superset();
         println!("extending");
         super_set = super_set.extend_as_superset(items_not_in_set);
-        let max_weight = super_set.max_weight(&f);
-        //super_set = super_set.extend_as_superset_with_budget(items_not_in_set, budget, &f, &cache);
-        println!("done, now intersecting, weight of {max_weight:?}");
         println!(
-            "{} node and {} nodes",
+            "{} node and {} nodes, reducing..",
             super_set.n_nodes(),
             all_possibles.n_nodes()
         );
-        super_set = super_set.max_weight_of(28, &f);
-        println!(
-            "reduced! {} and {}",
-            super_set.n_nodes(),
-            all_possibles.n_nodes()
-        );
+        let now = Instant::now();
+        all_possibles = all_possibles.intersect(super_set);
+        let time = now.elapsed().as_secs_f64();
+        println!("Done! Took {time} seconds");
+        println!("reduced! {} ", all_possibles.n_nodes());
     }
-
     todo!()
 }

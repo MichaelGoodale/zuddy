@@ -55,6 +55,9 @@ where
     if budget < min || budget > max {
         return x.manager().zero();
     }
+    if budget == min && budget == max {
+        return x;
+    }
 
     if let Some(r) = cache.get(&x, budget) {
         return r;

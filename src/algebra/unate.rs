@@ -121,9 +121,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         let (o_0, o_1) = cofactor(pivot, &o_v, o_lo, o_hi, other);
 
         let o_0_clone = o_0.clone();
-        let (lo, hi) = holder.pools().join(
-            || s_0.has_subset_in(o_0_clone),
-            || s_1.has_subset_in(o_0.union(o_1)),
+        let (lo, hi) = (
+            s_0.has_subset_in(o_0_clone),
+            s_1.has_subset_in(o_0.union(o_1)),
         );
 
         let r = holder.get_node(pivot.clone(), lo, hi);
