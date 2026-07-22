@@ -23,22 +23,6 @@ pub(crate) fn cmp_tops<V: Ord + Hash + Eq + Clone>(
     }
 }
 
-///Pivot [`SetFamily`] on pivot, assuming val, lo, and hi are already obtained.
-///Returns the set w/o pivot and w/ pivot
-fn cofactor<'a, V: Eq + Hash + Ord>(
-    pivot: &V,
-    val: &V,
-    lo: SetFamily<'a, V>,
-    hi: SetFamily<'a, V>,
-    this: SetFamily<'a, V>,
-) -> (SetFamily<'a, V>, SetFamily<'a, V>) {
-    match pivot.cmp(val) {
-        Equal => (lo, hi),
-        Less => (this, hi.manager().zero()),
-        Greater => panic!("Pivot cannot be greater than val!"),
-    }
-}
-
 impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
@@ -98,36 +82,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
     pub fn has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        if self.is_zero() || other.is_zero() {
-            return self.manager().zero();
-        }
-        let holder = self.manager();
-
-        let op = Operations::SubsetOf(self.as_raw(), other.as_raw());
-        if let Some(r) = holder.get_from_cache(&op) {
-            return r;
-        }
-
-        if other.contains_empty_set() {
-            return self;
-        } else if self.is_one() {
-            return self.manager().zero();
-        }
-
-        let (s_v, s_lo, s_hi) = self.get().unwrap();
-        let (o_v, o_lo, o_hi) = other.get().unwrap();
-        let pivot = std::cmp::min(&s_v, &o_v);
-        let (s_0, s_1) = cofactor(pivot, &s_v, s_lo, s_hi, self);
-        let (o_0, o_1) = cofactor(pivot, &o_v, o_lo, o_hi, other);
-
-        let o_0_clone = o_0.clone();
-        let (lo, hi) = (
-            s_0.has_subset_in(o_0_clone),
-            s_1.has_subset_in(o_0.union(o_1)),
-        );
-
-        let r = holder.get_node(pivot.clone(), lo, hi);
-        holder.put_into_cache(op, r)
+        todo!("Rewrite this function to be less terrible");
     }
 
     ///Divides `self` by `other` according to the unate cube set algebra

@@ -1,10 +1,7 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    hash::Hash,
-    time::Instant,
-};
+use std::{collections::BTreeSet, hash::Hash};
 
 use ahash::RandomState;
+use indicatif::ProgressIterator;
 
 use crate::SetFamily;
 
@@ -24,36 +21,16 @@ where
     let holder = sets.first().unwrap().manager();
     let mut universe = BTreeSet::new();
 
-    let set_to_elements: BTreeMap<_, _> = sets
-        .iter()
-        .cloned()
-        .map(|set| {
-            let set_elements = set.universe::<RandomState>();
-            universe.extend(set_elements.clone());
-            (set, set_elements.into_iter().collect())
-        })
-        .collect();
+    for set in &sets {
+        universe.extend(set.universe::<RandomState>());
+    }
 
-    //let mut all_possibles = holder.sets_with_exact_weight(universe.clone(), budget, &f);
     let mut all_possibles = holder.all_subsets(universe.clone());
+    println!("{}", all_possibles.size());
     println!("Preprocessing done!");
 
-    for set in sets {
-        let elements = set_to_elements.get(&set).unwrap();
-        let items_not_in_set = universe.difference(elements).cloned().collect::<Vec<_>>();
-        let mut super_set = set.superset();
-        println!("extending");
-        super_set = super_set.extend_as_superset(items_not_in_set);
-        println!(
-            "{} node and {} nodes, reducing..",
-            super_set.n_nodes(),
-            all_possibles.n_nodes()
-        );
-        let now = Instant::now();
-        all_possibles = all_possibles.intersect(super_set);
-        let time = now.elapsed().as_secs_f64();
-        println!("Done! Took {time} seconds");
-        println!("reduced! {} ", all_possibles.n_nodes());
+    for set in sets.into_iter().progress() {
+        all_possibles = all_possibles.has_subset_in(set);
     }
-    todo!()
+    all_possibles
 }
