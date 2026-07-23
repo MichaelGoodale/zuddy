@@ -25,7 +25,7 @@ where
         universe.extend(set.universe::<RandomState>());
     }
 
-    let mut all_possibles = holder.all_subsets(universe.clone());
+    let mut all_possibles = holder.sets_with_exact_weight(universe, 28, f);
     println!("{}", all_possibles.size());
     println!("Preprocessing done!");
 

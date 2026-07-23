@@ -23,8 +23,6 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
-use ahash::AHashMap;
-
 use crate::{
     ZddHolder,
     manager::TempCache,
@@ -56,121 +54,7 @@ pub(super) enum Operations<V> {
     Supersets(ZddIndex<V>),
 }
 
-enum IntersectStack<'a, V: Eq + Hash> {
-    Search(SetFamily<'a, V>, SetFamily<'a, V>),
-    Retrieve(SetFamily<'a, V>, SetFamily<'a, V>),
-}
-
-fn intersect_search<'a, V>(
-    a: SetFamily<'a, V>,
-    b: SetFamily<'a, V>,
-    stack: &mut Vec<IntersectStack<'a, V>>,
-    cache: &mut AHashMap<(SetFamily<'a, V>, SetFamily<'a, V>), SetFamily<'a, V>>,
-) where
-    V: Hash + Ord + Eq + Clone + Send + Sync,
-{
-    let holder = a.manager();
-    if a.is_zero() || b.is_zero() {
-        cache.insert((a, b), holder.zero());
-        return;
-    }
-    if a == b {
-        cache.insert((a.clone(), b), a);
-        return;
-    }
-
-    if a.is_one() || b.is_one() {
-        let mut one = a;
-        let mut b = b;
-        if b.is_one() {
-            std::mem::swap(&mut b, &mut one);
-        }
-
-        stack.push(IntersectStack::Search(one, b.lo().unwrap()));
-        return;
-    }
-
-    let (a_val, a_lo, a_hi) = a.get().expect("Invalid index");
-    let (b_val, b_lo, b_hi) = b.get().expect("Invalid index");
-
-    match a_val.cmp(&b_val) {
-        std::cmp::Ordering::Less => stack.push(IntersectStack::Search(a_lo, b)),
-        std::cmp::Ordering::Greater => stack.push(IntersectStack::Search(a, b_lo)),
-        std::cmp::Ordering::Equal => {
-            stack.push(IntersectStack::Search(a_lo, b_lo));
-            stack.push(IntersectStack::Search(a_hi, b_hi));
-        }
-    }
-}
-
-fn intersect_retrieve<'a, V>(
-    a: SetFamily<'a, V>,
-    b: SetFamily<'a, V>,
-    cache: &mut AHashMap<(SetFamily<'a, V>, SetFamily<'a, V>), SetFamily<'a, V>>,
-) where
-    V: Hash + Ord + Eq + Clone + Send + Sync,
-{
-    let key = (a.clone(), b.clone());
-    let holder = a.manager();
-    if a.is_one() || b.is_one() {
-        let mut one = a;
-        let mut other = b;
-        if other.is_one() {
-            std::mem::swap(&mut other, &mut one);
-        }
-
-        let v = cache.get(&(one, other.lo().unwrap())).unwrap().clone();
-        cache.insert(key, v);
-        return;
-    }
-
-    let (a_val, a_lo, a_hi) = a.get().expect("Invalid index");
-    let (b_val, b_lo, b_hi) = b.get().expect("Invalid index");
-
-    let r = match a_val.cmp(&b_val) {
-        std::cmp::Ordering::Less => cache.get(&(a_lo, b)).unwrap().clone(),
-        std::cmp::Ordering::Greater => cache.get(&(a, b_lo)).unwrap().clone(),
-        std::cmp::Ordering::Equal => {
-            let lo = cache.get(&(a_lo, b_lo)).unwrap().clone();
-            let hi = cache.get(&(a_hi, b_hi)).unwrap().clone();
-            holder.get_node(a_val, lo, hi)
-        }
-    };
-    cache.insert(key, r);
-}
-
-pub(crate) fn intersect_iterative<'a, V>(
-    a: SetFamily<'a, V>,
-    b: SetFamily<'a, V>,
-) -> SetFamily<'a, V>
-where
-    V: Hash + Ord + Eq + Clone + Send + Sync,
-{
-    let mut stack = vec![IntersectStack::Search(a.clone(), b.clone())];
-
-    let mut map = AHashMap::new();
-    while let Some(x) = stack.pop() {
-        match x {
-            IntersectStack::Search(a, b) => {
-                stack.push(IntersectStack::Retrieve(a.clone(), b.clone()));
-                let key = (a, b);
-                if !map.contains_key(&key) {
-                    intersect_search(key.0, key.1, &mut stack, &mut map);
-                }
-            }
-            IntersectStack::Retrieve(a, b) => {
-                let key = (a, b);
-                if !map.contains_key(&key) {
-                    intersect_retrieve(key.0, key.1, &mut map);
-                }
-            }
-        }
-    }
-    map.remove(&(a, b)).unwrap()
-}
-
 mod unate;
-
 impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Creates a ZDD with all combinations that don't include `value`
     ///
@@ -706,123 +590,12 @@ impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
 }
 
 #[cfg(test)]
-pub(crate) fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
-    if s.is_empty() {
-        return BTreeSet::default();
-    }
-
-    s.split(' ')
-        .map(|x| x.chars().collect::<BTreeSet<_>>())
-        .collect::<BTreeSet<_>>()
-}
-
-#[cfg(test)]
-///Allows for easy testing of operations, taking family of sets of chars as strings seperated
-///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_op<F: for<'a> Fn(SetFamily<'a, char>, SetFamily<'a, char>) -> SetFamily<'a, char>>(
-    a: &str,
-    b: &str,
-    res: &str,
-    op: F,
-    op_name: &'static str,
-    holder: &ZddHolder<char>,
-) {
-    let a_sets = str_to_sets(a);
-    let b_sets = str_to_sets(b);
-    let a_op_b = str_to_sets(res);
-    println!("{a_sets:?} {op_name} {b_sets:?} = {a_op_b:?}");
-    let a_set_len = a_sets.len();
-    let b_set_len = b_sets.len();
-
-    let a = SetFamily::from_sets(a_sets, holder);
-    let b = SetFamily::from_sets(b_sets, holder);
-    assert_eq!(a.size().unwrap(), a_set_len);
-    a.check_valid_zdd();
-    assert_eq!(b.size().unwrap(), b_set_len);
-    b.check_valid_zdd();
-
-    let result = op(a, b);
-    result.check_valid_zdd();
-
-    let result_recon: BTreeSet<BTreeSet<char>> =
-        result.members().map(|x| x.into_iter().collect()).collect();
-    assert_eq!(result_recon, a_op_b);
-}
-
-#[cfg(test)]
-///Allows for easy testing of operations, taking family of sets of chars as strings seperated
-///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_solo_op<F: for<'a> Fn(SetFamily<'a, char>) -> SetFamily<'a, char>>(
-    a: &str,
-    res: &str,
-    op: F,
-    op_name: &'static str,
-    holder: &ZddHolder<char>,
-) {
-    let a_sets = str_to_sets(a);
-    let a_op_b = str_to_sets(res);
-    println!("{a_sets:?} {op_name} = {a_op_b:?}");
-    let a_set_len = a_sets.len();
-
-    let a = SetFamily::from_sets(a_sets, holder);
-    assert_eq!(a.size().unwrap(), a_set_len);
-    a.check_valid_zdd();
-
-    let result = op(a);
-    result.check_valid_zdd();
-
-    let result_recon: BTreeSet<BTreeSet<char>> =
-        result.members().map(|x| x.into_iter().collect()).collect();
-    assert_eq!(result_recon, a_op_b);
-}
-
-#[cfg(test)]
-///Allows for easy testing of operations, taking family of sets of chars as strings seperated
-///by spaces, with `res` being the intended result with the operand supplied by `op`
-fn test_single_op<F: for<'a> Fn(SetFamily<'a, char>, char) -> SetFamily<'a, char>>(
-    start: &str,
-    actions: Vec<char>,
-    res: &str,
-    op: F,
-    op_name: &'static str,
-    holder: &ZddHolder<char>,
-) {
-    let start = str_to_sets(start);
-
-    let ops = actions
-        .iter()
-        .map(char::to_string)
-        .collect::<Vec<_>>()
-        .join(format!(" {op_name} ").as_str());
-    let intended = str_to_sets(res);
-    println!("{start:?} {op_name} {ops} = {intended:?}");
-
-    let start_len = start.len();
-    let a = SetFamily::from_sets(start, holder);
-    a.check_valid_zdd();
-    assert_eq!(a.size().unwrap(), start_len);
-
-    println!("{}", a.graphviz());
-
-    let mut result = a.clone();
-    for action in actions {
-        result = op(result, action);
-        println!("{}", result.graphviz());
-        result.check_valid_zdd();
-    }
-
-    result.check_valid_zdd();
-    let result_recon: BTreeSet<BTreeSet<char>> =
-        result.members().map(|x| x.into_iter().collect()).collect();
-
-    assert_eq!(result_recon, intended);
-}
-
-#[cfg(test)]
 mod test {
     #![expect(clippy::redundant_closure_for_method_calls)]
 
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
+    use crate::utils::test::{str_to_sets, test_op, test_single_op};
 
     use super::*;
     use std::collections::BTreeSet;
@@ -1043,9 +816,6 @@ mod test {
         ];
         for (a, b, res) in ops {
             test_op(a, b, res, |x, y| x.intersect(y), "∩", &holder);
-        }
-        for (a, b, res) in ops {
-            test_op(a, b, res, intersect_iterative, "∩ (IT)", &holder);
         }
         rayon::iter::repeat_n(ops.as_slice(), PARALLEL_REPS)
             .flat_map(|x| x.par_iter().copied())

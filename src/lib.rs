@@ -150,7 +150,7 @@ impl<V: Eq + Hash + Ord + Clone> SetFamily<'_, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::algebra::str_to_sets;
+    use crate::utils::test::str_to_sets;
 
     use super::*;
 

@@ -230,41 +230,12 @@ impl<V: Eq + Hash + Send + Sync + Ord + Clone> ZddHolder<V> {
 mod test {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-    use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};
+    use crate::utils::test::{random_family, random_weights, str_to_sets};
+    use rand::{SeedableRng, rngs};
 
     use crate::{
-        SetFamily, ZddHolder, algebra::str_to_sets, algorithms::minimum_cutoff::budget_set_inner,
-        tests::all_subsets,
+        SetFamily, ZddHolder, algorithms::minimum_cutoff::budget_set_inner, tests::all_subsets,
     };
-
-    fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
-        universe
-            .iter()
-            .map(|x| (*x, rng.random_range(0..3)))
-            .collect()
-    }
-
-    fn random_family(universe: &[char], rng: &mut impl Rng) -> BTreeSet<BTreeSet<char>> {
-        let n_sets = rng.random_range(0..10);
-        let mut sets = BTreeSet::new();
-        for _ in 0..n_sets {
-            let size = rng.random_range(0..universe.len());
-            let set = universe.sample(rng, size).copied().collect::<BTreeSet<_>>();
-            sets.insert(set);
-        }
-        sets
-    }
-
-    impl SetFamily<'_, char> {
-        fn as_string(&self) -> String {
-            let mut members = self
-                .members()
-                .map(|x| x.into_iter().map(|x| x.to_string()).collect::<String>())
-                .collect::<Vec<_>>();
-            members.sort();
-            members.join(" ")
-        }
-    }
 
     #[test]
     fn exact_weight() {

@@ -49,10 +49,6 @@ impl<'a, V: Eq + Hash> SetFamily<'a, V> {
     pub(crate) fn as_raw(&self) -> ZddIndex<V> {
         ZddIndex::from(self.id)
     }
-
-    pub(crate) fn id(&self) -> usize {
-        self.id
-    }
 }
 impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///Returns the value of this node along with its lo and hi children.

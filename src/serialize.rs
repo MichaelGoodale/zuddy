@@ -331,8 +331,8 @@ impl<V: Eq + Hash + Clone + Send + Sync> MultipleOwnedZdd<V> {
 mod test {
     use crate::{
         SetFamily, ZddHolder,
-        algebra::str_to_sets,
         serialize::{MultipleOwnedZdd, OwnedZdd, to_owned_zdds},
+        utils::test::str_to_sets,
     };
 
     #[test]

@@ -74,17 +74,6 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         super_set.intersect(self)
     }
 
-    ///Takes all the sets in self that have a subset in other.
-    ///
-    /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
-    ///
-    ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
-    #[must_use]
-    pub fn has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        todo!("Rewrite this function to be less terrible");
-    }
-
     ///Divides `self` by `other` according to the unate cube set algebra
     ///of Minato,
     ///
@@ -316,14 +305,75 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         let r = holder.get_node(value, lo, u);
         holder.put_into_cache(op, r)
     }
+
+    ///Takes all the sets in self that have a subset in other.
+    ///
+    /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    #[must_use]
+    pub fn has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        has_subset_in(self, other)
+    }
+}
+
+fn has_subset_in<'a, V>(a: SetFamily<'a, V>, b: SetFamily<'a, V>) -> SetFamily<'a, V>
+where
+    V: Hash + Ord + Eq + Clone + Send + Sync,
+{
+    if a == b || a.is_zero() || b.is_one() || b.contains_empty_set() {
+        return a;
+    } else if a.is_one() {
+        // if a is {{}} and {} is not in b, then the result is zero.
+        return a.manager().zero();
+    } else if b.is_zero() {
+        return b;
+    }
+
+    let op = Operations::SubsetOf(a.as_raw(), b.as_raw());
+    let holder = a.manager();
+    if let Some(r) = holder.get_from_cache(&op) {
+        return r;
+    }
+
+    let (s_v, s_lo, s_hi) = a.get().unwrap();
+    let (o_v, mut o_lo, o_hi) = b.get().unwrap();
+
+    let r = match s_v.cmp(&o_v) {
+        Less => {
+            let lo = s_lo.has_subset_in(b.clone());
+            let hi = s_hi.has_subset_in(b);
+            holder.get_node(s_v, lo, hi)
+        }
+        Equal => holder.get_node(
+            s_v,
+            s_lo.has_subset_in(o_lo.clone()),
+            s_hi.has_subset_in(o_hi.union(o_lo)),
+        ),
+        Greater => {
+            //a cannot be a superset of anything that includes o_v
+            while let Some((new_v, new_lo, _)) = o_lo.get()
+                && new_v < s_v
+            {
+                o_lo = new_lo;
+            }
+            a.has_subset_in(o_lo)
+        }
+    };
+    holder.put_into_cache(op, r)
 }
 
 #[cfg(test)]
 mod test {
     #![expect(clippy::redundant_closure_for_method_calls)]
+    use std::collections::BTreeSet;
+
+    use rand::{SeedableRng, rngs::SmallRng};
+
     use crate::{
-        ZddHolder,
-        algebra::{test_op, test_solo_op},
+        SetFamily, ZddHolder,
+        utils::test::{random_family, random_weights, test_op, test_solo_op},
     };
 
     #[test]
@@ -436,6 +486,28 @@ mod test {
                 |x, y| x.has_subset_in(y),
                 "has subset in",
                 &holder,
+            );
+        }
+
+        let universe = "abcdefghijklmnopqrstuvwxyz".chars().collect::<Vec<_>>();
+        let mut rng = SmallRng::seed_from_u64(1);
+        for i in 0..100 {
+            println!("{i}");
+            let a = random_family(&universe, &mut rng);
+            let b = random_family(&universe, &mut rng);
+            let result: BTreeSet<_> = a
+                .iter()
+                .filter(|x| b.iter().any(|y| x.is_superset(y)))
+                .cloned()
+                .collect();
+
+            let a = SetFamily::from_sets(a, &holder);
+            let b = SetFamily::from_sets(b, &holder);
+            let result = SetFamily::from_sets(result, &holder);
+            let subsets = a.has_subset_in(b);
+            assert_eq!(
+                subsets, result,
+                "Intended result {result} is in fact {subsets}"
             );
         }
     }

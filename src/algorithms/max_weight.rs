@@ -47,6 +47,107 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         cache.insert(self.as_raw(), std::cmp::max(lo, hi))
     }
 
+    ///The size of the biggest possible set.
+    #[must_use]
+    pub fn max_cardinality(&self) -> usize {
+        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
+        self.clone().max_cardinality_inner(&cache)
+    }
+
+    #[must_use]
+    pub(crate) fn max_cardinality_inner(self, cache: &MaxWeightCache<'a, V>) -> usize {
+        if self.is_zero() || self.is_one() {
+            return 0;
+        }
+
+        if let Some(r) = cache.get(&self.as_raw()) {
+            return r;
+        }
+
+        let (lo, hi) = self.children().unwrap();
+
+        let (lo, hi) = (
+            lo.max_cardinality_inner(cache),
+            hi.max_cardinality_inner(cache) + 1,
+        );
+
+        cache.insert(self.as_raw(), std::cmp::max(lo, hi))
+    }
+
+    ///The size of the smallest possible set.
+    ///
+    ///# Panics
+    ///Will panic if passed the empty set.
+    #[must_use]
+    pub fn min_cardinality(&self) -> usize {
+        let cache: MinWeightCache<'a, V> = self.manager().create_temporary_cache();
+        self.clone().min_cardinality_inner(&cache).unwrap()
+    }
+
+    #[must_use]
+    pub(crate) fn min_cardinality_inner(
+        self,
+        cache: &MinWeightCache<'a, V>,
+    ) -> UsizeOrPositiveInfinity {
+        if self.is_zero() {
+            return UsizeOrPositiveInfinity::PositiveInfinity;
+        } else if self.is_one() {
+            return UsizeOrPositiveInfinity::Size(0);
+        }
+
+        if let Some(r) = cache.get(&self.as_raw()) {
+            return r;
+        }
+
+        let (lo, hi) = self.children().unwrap();
+
+        let (lo, hi) = (
+            lo.min_cardinality_inner(cache),
+            hi.min_cardinality_inner(cache).add_usize(1),
+        );
+
+        cache.insert(self.as_raw(), std::cmp::min(lo, hi))
+    }
+
+    ///The size of the smallest possible set.
+    #[must_use]
+    pub fn bounds_cardinality(&self) -> (usize, usize) {
+        let cache: BoundsWeightCache<'a, V> = self.manager().create_temporary_cache();
+        let (min, max) = self.clone().bounds_cardinality_inner(&cache);
+        (min.unwrap(), max)
+    }
+
+    #[must_use]
+    pub(crate) fn bounds_cardinality_inner(
+        self,
+        cache: &BoundsWeightCache<'a, V>,
+    ) -> (UsizeOrPositiveInfinity, usize) {
+        if self.is_zero() {
+            return (UsizeOrPositiveInfinity::PositiveInfinity, 0);
+        } else if self.is_one() {
+            return (UsizeOrPositiveInfinity::Size(0), 0);
+        }
+
+        if let Some(r) = cache.get(&self.as_raw()) {
+            return r;
+        }
+
+        let (lo, hi) = self.children().unwrap();
+
+        let ((lo_min, lo_max), (hi_min, hi_max)) = (
+            lo.bounds_cardinality_inner(cache),
+            hi.bounds_cardinality_inner(cache),
+        );
+
+        let hi_min = hi_min.add_usize(1);
+        let hi_max = hi_max + 1;
+
+        cache.insert(
+            self.as_raw(),
+            (std::cmp::min(lo_min, hi_min), std::cmp::max(lo_max, hi_max)),
+        )
+    }
+
     ///The size of the smallest possible set by summed weight
     ///# Panics
     ///Will panic if passed the empty set.
@@ -141,7 +242,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
 #[cfg(test)]
 mod test {
-    use crate::{SetFamily, ZddHolder, algebra::str_to_sets};
+    use std::collections::BTreeSet;
+
+    use crate::{SetFamily, ZddHolder, utils::test::str_to_sets};
 
     #[test]
     fn test_max_weight() {
@@ -155,8 +258,10 @@ mod test {
                 .map(|set| set.iter().map(f).sum::<usize>())
                 .max()
                 .unwrap_or(0);
+            let max_card = s.iter().map(BTreeSet::len).max().unwrap_or(0);
             let s = SetFamily::from_sets(s, &holder);
             assert_eq!(s.max_weight(f), max_size);
+            assert_eq!(s.max_cardinality(), max_card);
         }
     }
 
@@ -172,8 +277,10 @@ mod test {
                 .map(|set| set.iter().map(f).sum::<usize>())
                 .min()
                 .unwrap_or(0);
+            let min_card = s.iter().map(BTreeSet::len).min().unwrap_or(0);
             let s = SetFamily::from_sets(s, &holder);
             assert_eq!(s.min_weight(f), min_size);
+            assert_eq!(s.min_cardinality(), min_card);
         }
     }
 
@@ -194,8 +301,13 @@ mod test {
                 .map(|set| set.iter().map(f).sum::<usize>())
                 .max()
                 .unwrap_or(0);
+
+            let min_card = s.iter().map(BTreeSet::len).min().unwrap_or(0);
+            let max_card = s.iter().map(BTreeSet::len).max().unwrap_or(0);
+
             let s = SetFamily::from_sets(s, &holder);
             assert_eq!(s.bounds(f), (min_size, max_size));
+            assert_eq!(s.bounds_cardinality(), (min_card, max_card));
         }
     }
 }
