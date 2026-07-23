@@ -17,7 +17,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
                 None
             };
             self.cache.clear();
-            self.sum_cache.clear();
+            self.size_caches.clear();
 
             let marked = DashSet::new();
             self.used_variables().for_each(|g| mark(g, &marked, self));

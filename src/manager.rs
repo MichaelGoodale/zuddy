@@ -26,7 +26,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     generation: AtomicU64,
     uniq_table: HashTable<RawZddData<V>>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
-    sum_cache: DashMap<ZddIndex<V>, UsizeOrPositiveInfinity, RandomState>,
+    size_caches: DashMap<SizeKey<V>, SizeValue, RandomState>,
     id: Uuid,
 }
 
@@ -49,7 +49,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         Self {
             generation: AtomicU64::new(0),
             uniq_table: HashTable::new(n, n_pools),
-            sum_cache: DashMap::default(),
+            size_caches: DashMap::default(),
             cache: DashMap::default(),
             id,
         }
@@ -95,19 +95,6 @@ impl<V: Eq + Hash> ZddHolder<V> {
             .map(|s| SetFamily::from_set_family(*s, self))
     }
 
-    pub(crate) fn sum_cache_get(&self, key: ZddIndex<V>) -> Option<UsizeOrPositiveInfinity> {
-        self.sum_cache.get(&key).map(|x| *x.value())
-    }
-
-    pub(crate) fn sum_cache_insert(
-        &self,
-        key: ZddIndex<V>,
-        value: UsizeOrPositiveInfinity,
-    ) -> UsizeOrPositiveInfinity {
-        self.sum_cache.insert(key, value);
-        value
-    }
-
     pub(crate) fn put_into_cache<'a>(
         &'a self,
         op: Operations<V>,
@@ -121,6 +108,79 @@ impl<V: Eq + Hash> ZddHolder<V> {
     #[must_use]
     pub fn n_nodes(&self) -> usize {
         self.uniq_table.n_used()
+    }
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub(crate) enum SizeKey<V> {
+    Size(ZddIndex<V>),
+    Min(ZddIndex<V>),
+    Max(ZddIndex<V>),
+    Bounds(ZddIndex<V>),
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub(crate) enum SizeValue {
+    Size(UsizeOrPositiveInfinity),
+    Min(UsizeOrPositiveInfinity),
+    Max(usize),
+    Bounds(UsizeOrPositiveInfinity, usize),
+}
+
+impl SizeValue {
+    pub fn unwrap_size(self) -> UsizeOrPositiveInfinity {
+        let SizeValue::Size(x) = self else {
+            panic!("Not a SizeValue::Size!")
+        };
+        x
+    }
+    pub fn unwrap_min(self) -> UsizeOrPositiveInfinity {
+        let SizeValue::Min(x) = self else {
+            panic!("Not a SizeValue::Size!")
+        };
+        x
+    }
+
+    pub fn unwrap_max(self) -> usize {
+        let SizeValue::Max(x) = self else {
+            panic!("Not a SizeValue::Size!")
+        };
+        x
+    }
+    pub fn unwrap_bounds(self) -> (UsizeOrPositiveInfinity, usize) {
+        let SizeValue::Bounds(x, y) = self else {
+            panic!("Not a SizeValue::Size!")
+        };
+        (x, y)
+    }
+}
+
+#[cfg(test)]
+impl<V> SizeKey<V> {
+    fn check_same_type(&self, v: &SizeValue) -> bool {
+        matches!(
+            (self, v),
+            (SizeKey::Size(_), SizeValue::Size(_))
+                | (SizeKey::Min(_), SizeValue::Min(_))
+                | (SizeKey::Max(_), SizeValue::Max(_))
+                | (SizeKey::Bounds(..), SizeValue::Bounds(..))
+        )
+    }
+}
+
+impl<V: Eq + Hash> ZddHolder<V> {
+    pub(crate) fn size_cache_get(&self, op: &SizeKey<V>) -> Option<SizeValue> {
+        self.size_caches.get(&op).map(|x| x.value().clone())
+    }
+
+    pub(crate) fn size_cache_insert(&self, key: SizeKey<V>, value: SizeValue) -> SizeValue {
+        #[cfg(test)]
+        assert!(
+            key.check_same_type(&value),
+            "Key and value must both be of agreeing types!"
+        );
+        self.size_caches.insert(key, value.clone());
+        value
     }
 }
 

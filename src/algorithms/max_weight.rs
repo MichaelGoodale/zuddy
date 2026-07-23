@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::{
     SetFamily,
     algorithms::UsizeOrPositiveInfinity,
-    manager::{TempCache, ZddIndex},
+    manager::{SizeKey, SizeValue, TempCache, ZddIndex},
 };
 
 pub(crate) type MaxWeightCache<'a, V> = TempCache<'a, V, ZddIndex<V>, usize>;
@@ -50,102 +50,88 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///The size of the biggest possible set.
     #[must_use]
     pub fn max_cardinality(&self) -> usize {
-        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
-        self.clone().max_cardinality_inner(&cache)
-    }
-
-    #[must_use]
-    pub(crate) fn max_cardinality_inner(self, cache: &MaxWeightCache<'a, V>) -> usize {
         if self.is_zero() || self.is_one() {
             return 0;
         }
 
-        if let Some(r) = cache.get(&self.as_raw()) {
+        let holder = self.manager();
+        if let Some(SizeValue::Max(r)) = holder.size_cache_get(&SizeKey::Max(self.as_raw())) {
             return r;
         }
 
+        #[expect(clippy::missing_panics_doc)]
         let (lo, hi) = self.children().unwrap();
 
-        let (lo, hi) = (
-            lo.max_cardinality_inner(cache),
-            hi.max_cardinality_inner(cache) + 1,
-        );
+        let (lo, hi) = (lo.max_cardinality(), hi.max_cardinality() + 1);
 
-        cache.insert(self.as_raw(), std::cmp::max(lo, hi))
+        holder
+            .size_cache_insert(
+                SizeKey::Max(self.as_raw()),
+                SizeValue::Max(std::cmp::max(lo, hi)),
+            )
+            .unwrap_max()
     }
 
     ///The size of the smallest possible set.
     ///
-    ///# Panics
-    ///Will panic if passed the empty set.
+    ///Returns [`UsizeOrPositiveInfinity::PositiveInfinity`] if it is the empty set.
     #[must_use]
-    pub fn min_cardinality(&self) -> usize {
-        let cache: MinWeightCache<'a, V> = self.manager().create_temporary_cache();
-        self.clone().min_cardinality_inner(&cache).unwrap()
-    }
-
-    #[must_use]
-    pub(crate) fn min_cardinality_inner(
-        self,
-        cache: &MinWeightCache<'a, V>,
-    ) -> UsizeOrPositiveInfinity {
+    pub fn min_cardinality(&self) -> UsizeOrPositiveInfinity {
         if self.is_zero() {
             return UsizeOrPositiveInfinity::PositiveInfinity;
         } else if self.is_one() {
             return UsizeOrPositiveInfinity::Size(0);
         }
 
-        if let Some(r) = cache.get(&self.as_raw()) {
+        let holder = self.manager();
+        if let Some(SizeValue::Min(r)) = holder.size_cache_get(&SizeKey::Min(self.as_raw())) {
             return r;
         }
 
+        #[expect(clippy::missing_panics_doc)]
         let (lo, hi) = self.children().unwrap();
 
-        let (lo, hi) = (
-            lo.min_cardinality_inner(cache),
-            hi.min_cardinality_inner(cache).add_usize(1),
-        );
+        let (lo, hi) = (lo.min_cardinality(), hi.min_cardinality().add_usize(1));
 
-        cache.insert(self.as_raw(), std::cmp::min(lo, hi))
+        holder
+            .size_cache_insert(
+                SizeKey::Min(self.as_raw()),
+                SizeValue::Min(std::cmp::min(lo, hi)),
+            )
+            .unwrap_min()
     }
 
     ///The size of the smallest possible set.
     #[must_use]
-    pub fn bounds_cardinality(&self) -> (usize, usize) {
-        let cache: BoundsWeightCache<'a, V> = self.manager().create_temporary_cache();
-        let (min, max) = self.clone().bounds_cardinality_inner(&cache);
-        (min.unwrap(), max)
-    }
-
-    #[must_use]
-    pub(crate) fn bounds_cardinality_inner(
-        self,
-        cache: &BoundsWeightCache<'a, V>,
-    ) -> (UsizeOrPositiveInfinity, usize) {
+    pub fn bounds_cardinality(&self) -> (UsizeOrPositiveInfinity, usize) {
         if self.is_zero() {
             return (UsizeOrPositiveInfinity::PositiveInfinity, 0);
         } else if self.is_one() {
             return (UsizeOrPositiveInfinity::Size(0), 0);
         }
 
-        if let Some(r) = cache.get(&self.as_raw()) {
-            return r;
+        let holder = self.manager();
+        if let Some(SizeValue::Bounds(a, b)) =
+            holder.size_cache_get(&SizeKey::Bounds(self.as_raw()))
+        {
+            return (a, b);
         }
 
+        #[expect(clippy::missing_panics_doc)]
         let (lo, hi) = self.children().unwrap();
 
-        let ((lo_min, lo_max), (hi_min, hi_max)) = (
-            lo.bounds_cardinality_inner(cache),
-            hi.bounds_cardinality_inner(cache),
-        );
+        let ((lo_min, lo_max), (hi_min, hi_max)) =
+            (lo.bounds_cardinality(), hi.bounds_cardinality());
 
         let hi_min = hi_min.add_usize(1);
         let hi_max = hi_max + 1;
 
-        cache.insert(
-            self.as_raw(),
-            (std::cmp::min(lo_min, hi_min), std::cmp::max(lo_max, hi_max)),
-        )
+        holder
+            .size_cache_insert(
+                SizeKey::Bounds(self.as_raw()),
+                SizeValue::Bounds(std::cmp::min(lo_min, hi_min), std::cmp::max(lo_max, hi_max)),
+            )
+            .unwrap_bounds()
     }
 
     ///The size of the smallest possible set by summed weight
@@ -244,7 +230,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 mod test {
     use std::collections::BTreeSet;
 
-    use crate::{SetFamily, ZddHolder, utils::test::str_to_sets};
+    use crate::{
+        SetFamily, ZddHolder, algorithms::UsizeOrPositiveInfinity, utils::test::str_to_sets,
+    };
 
     #[test]
     fn test_max_weight() {
@@ -280,7 +268,7 @@ mod test {
             let min_card = s.iter().map(BTreeSet::len).min().unwrap_or(0);
             let s = SetFamily::from_sets(s, &holder);
             assert_eq!(s.min_weight(f), min_size);
-            assert_eq!(s.min_cardinality(), min_card);
+            assert_eq!(s.min_cardinality().unwrap(), min_card);
         }
     }
 
@@ -307,7 +295,10 @@ mod test {
 
             let s = SetFamily::from_sets(s, &holder);
             assert_eq!(s.bounds(f), (min_size, max_size));
-            assert_eq!(s.bounds_cardinality(), (min_card, max_card));
+            assert_eq!(
+                s.bounds_cardinality(),
+                (UsizeOrPositiveInfinity::Size(min_card), max_card)
+            );
         }
     }
 }

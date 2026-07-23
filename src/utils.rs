@@ -6,7 +6,7 @@ use std::{
 
 use ahash::HashSetExt;
 mod single_set;
-use crate::manager::{ZddHolder, ZddIndex};
+use crate::manager::{SizeKey, SizeValue, ZddHolder, ZddIndex};
 use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
 pub(crate) use single_set::{PivotedSets, SingleSet};
 
@@ -136,14 +136,16 @@ impl<V: Eq + Hash + Clone> ZddIndex<V> {
             return UsizeOrPositiveInfinity::Size(1);
         }
 
-        if let Some(sum) = holder.sum_cache_get(self) {
+        if let Some(SizeValue::Size(sum)) = holder.size_cache_get(&SizeKey::Size(self)) {
             return sum;
         }
         let (lo, hi) = self.children(holder).unwrap();
 
         let sum = lo.size(holder) + hi.size(holder);
 
-        holder.sum_cache_insert(self, sum)
+        holder
+            .size_cache_insert(SizeKey::Size(self), SizeValue::Size(sum))
+            .unwrap_size()
     }
 }
 
