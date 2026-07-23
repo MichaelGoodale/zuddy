@@ -117,6 +117,7 @@ pub(crate) enum SizeKey<V> {
     Min(ZddIndex<V>),
     Max(ZddIndex<V>),
     Bounds(ZddIndex<V>),
+    EmptySet(ZddIndex<V>),
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
@@ -125,6 +126,7 @@ pub(crate) enum SizeValue {
     Min(UsizeOrPositiveInfinity),
     Max(usize),
     Bounds(UsizeOrPositiveInfinity, usize),
+    EmptySet(bool),
 }
 
 impl SizeValue {
@@ -147,6 +149,7 @@ impl SizeValue {
         };
         x
     }
+
     pub fn unwrap_bounds(self) -> (UsizeOrPositiveInfinity, usize) {
         let SizeValue::Bounds(x, y) = self else {
             panic!("Not a SizeValue::Size!")
@@ -164,13 +167,14 @@ impl<V> SizeKey<V> {
                 | (SizeKey::Min(_), SizeValue::Min(_))
                 | (SizeKey::Max(_), SizeValue::Max(_))
                 | (SizeKey::Bounds(..), SizeValue::Bounds(..))
+                | (SizeKey::EmptySet(_), SizeValue::EmptySet(_))
         )
     }
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
     pub(crate) fn size_cache_get(&self, op: &SizeKey<V>) -> Option<SizeValue> {
-        self.size_caches.get(&op).map(|x| x.value().clone())
+        self.size_caches.get(op).map(|x| x.value().clone())
     }
 
     pub(crate) fn size_cache_insert(&self, key: SizeKey<V>, value: SizeValue) -> SizeValue {

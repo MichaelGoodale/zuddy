@@ -372,8 +372,8 @@ mod test {
             .to_set_families(&holder)
             .into_values()
             .collect::<Vec<_>>();
-        new_sets.sort();
-        all_sets.sort();
+        new_sets.sort_by_key(|x| x.id);
+        all_sets.sort_by_key(|x| x.id);
         assert_eq!(new_sets, all_sets);
 
         Ok(())

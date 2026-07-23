@@ -1,6 +1,9 @@
 use ahash::RandomState;
 
-use crate::{Operations, SetFamily};
+use crate::{
+    Operations, SetFamily,
+    manager::{SizeKey, SizeValue},
+};
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
     hash::Hash,
@@ -51,10 +54,19 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let mut x = self.as_raw();
         let holder = self.manager();
+        if let Some(SizeValue::EmptySet(r)) = holder.size_cache_get(&SizeKey::EmptySet(x)) {
+            return r;
+        }
+        let mut path = vec![x];
         while let Some((lo, _)) = x.children(holder) {
+            path.push(lo);
             x = lo;
         }
-        x.is_one()
+        let r = x.is_one();
+        for p in path {
+            holder.size_cache_insert(SizeKey::EmptySet(p), SizeValue::EmptySet(r));
+        }
+        r
     }
     ///Takes all the sets in self that have a subset in other.
     ///
@@ -314,54 +326,53 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
     pub fn has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        has_subset_in(self, other)
-    }
-}
-
-fn has_subset_in<'a, V>(a: SetFamily<'a, V>, b: SetFamily<'a, V>) -> SetFamily<'a, V>
-where
-    V: Hash + Ord + Eq + Clone + Send + Sync,
-{
-    if a == b || a.is_zero() || b.is_one() || b.contains_empty_set() {
-        return a;
-    } else if a.is_one() {
-        // if a is {{}} and {} is not in b, then the result is zero.
-        return a.manager().zero();
-    } else if b.is_zero() {
-        return b;
-    }
-
-    let op = Operations::SubsetOf(a.as_raw(), b.as_raw());
-    let holder = a.manager();
-    if let Some(r) = holder.get_from_cache(&op) {
-        return r;
-    }
-
-    let (s_v, s_lo, s_hi) = a.get().unwrap();
-    let (o_v, mut o_lo, o_hi) = b.get().unwrap();
-
-    let r = match s_v.cmp(&o_v) {
-        Less => {
-            let lo = s_lo.has_subset_in(b.clone());
-            let hi = s_hi.has_subset_in(b);
-            holder.get_node(s_v, lo, hi)
+        if self == other || self.is_zero() || other.is_one() || other.contains_empty_set() {
+            return self;
+        } else if self.is_one() {
+            // if self is {{}} and {} is not in b, then the result is zero.
+            return self.manager().zero();
+        } else if other.is_zero() {
+            return other;
         }
-        Equal => holder.get_node(
-            s_v,
-            s_lo.has_subset_in(o_lo.clone()),
-            s_hi.has_subset_in(o_hi.union(o_lo)),
-        ),
-        Greater => {
-            //a cannot be a superset of anything that includes o_v
-            while let Some((new_v, new_lo, _)) = o_lo.get()
-                && new_v < s_v
-            {
-                o_lo = new_lo;
+
+        let op = Operations::SubsetOf(self.as_raw(), other.as_raw());
+        let holder = self.manager();
+        if let Some(r) = holder.get_from_cache(&op) {
+            return r;
+        }
+
+        let s_max = self.max_cardinality();
+        let o_min = other.min_cardinality().unwrap();
+        if o_min > s_max {
+            return holder.put_into_cache(op, holder.zero());
+        }
+
+        let (s_v, s_lo, s_hi) = self.get().unwrap();
+        let (o_v, mut o_lo, o_hi) = other.get().unwrap();
+
+        let r = match s_v.cmp(&o_v) {
+            Less => {
+                let lo = s_lo.has_subset_in(other.clone());
+                let hi = s_hi.has_subset_in(other);
+                holder.get_node(s_v, lo, hi)
             }
-            a.has_subset_in(o_lo)
-        }
-    };
-    holder.put_into_cache(op, r)
+            Equal => holder.get_node(
+                s_v,
+                s_lo.has_subset_in(o_lo.clone()),
+                s_hi.has_subset_in(o_hi.union(o_lo)),
+            ),
+            Greater => {
+                //a cannot be a superset of anything that includes o_v
+                while let Some((new_v, new_lo, _)) = o_lo.get()
+                    && new_v < s_v
+                {
+                    o_lo = new_lo;
+                }
+                self.has_subset_in(o_lo)
+            }
+        };
+        holder.put_into_cache(op, r)
+    }
 }
 
 #[cfg(test)]

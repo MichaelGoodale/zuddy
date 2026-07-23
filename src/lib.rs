@@ -51,20 +51,6 @@ impl<V: Eq + Hash> PartialEq for SetFamily<'_, V> {
 
 impl<V: Eq + Hash> Eq for SetFamily<'_, V> {}
 
-impl<V: Eq + Hash> PartialOrd for SetFamily<'_, V> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<V: Eq + Hash> Ord for SetFamily<'_, V> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id
-            .cmp(&other.id)
-            .then(self.manager.id().cmp(&other.manager.id()))
-    }
-}
-
 impl<V: Eq + Hash + Display + Clone + Ord> Display for SetFamily<'_, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut members = self
