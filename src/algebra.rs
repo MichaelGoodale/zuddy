@@ -421,7 +421,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///Adds a value to all sets.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f}
+    ///It is defined as `f.insert(x)` = { α ∪ {x} | α ∈ f}
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
     #[must_use]
@@ -456,9 +456,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         holder.put_into_cache(op, r)
     }
 
-    ///Adds a value to all sets, but keeps the original sets
+    ///Adds a value to all sets, while keeping the original set.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f} ∪ f
+    ///It is defined as `f.insert_as_superset(x)` = { α ∪ {x} | α ∈ f} ∪ f
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
     #[must_use]
@@ -494,9 +494,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         holder.put_into_cache(op, r)
     }
 
-    ///Adds a value to all sets, but keeps the original sets
+    ///Performs [`SetFamily::insert_as_superset`] multiple times and is more efficient than doing it
+    ///in a loop.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f} ∪ f
     ///# Panics
     ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
     #[must_use]

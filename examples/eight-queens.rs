@@ -1,5 +1,7 @@
 //! An example of the usage of ZDDs using the 8 queens problem.
 
+use std::time::Instant;
+
 use rand::prelude::*;
 use zuddy::{SetFamily, ZddHolder};
 
@@ -71,6 +73,7 @@ fn queens_at_row(i: u8, board_size: u8) -> impl Iterator<Item = QueenPosition> {
 }
 
 fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rng) -> usize {
+    let start = Instant::now();
     let mut state = queens_at_row(0, board_size).fold(holder.zero(), |acc, x| {
         acc.union(SetFamily::singleton(x, holder))
     });
@@ -90,9 +93,10 @@ fn n_queens(board_size: u8, holder: &ZddHolder<QueenPosition>, rng: &mut impl Rn
     }
 
     let n_sol = state.size().unwrap();
+    let time = start.elapsed().as_millis();
 
     println!(
-        "{board_size}-Queens has {n_sol} solutions! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
+        "{board_size}-Queens has {n_sol} solutions after {time} ms of calculation! (ZDD size: {}, holder size: {})\nHere's a random one for you:",
         state.n_nodes(),
         holder.n_nodes()
     );

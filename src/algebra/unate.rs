@@ -1,5 +1,3 @@
-use ahash::RandomState;
-
 use crate::{
     Operations, SetFamily,
     manager::{SizeKey, SizeValue},
@@ -67,23 +65,6 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             holder.size_cache_insert(SizeKey::EmptySet(p), SizeValue::EmptySet(r));
         }
         r
-    }
-    ///Takes all the sets in self that have a subset in other.
-    ///
-    /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
-    ///
-    ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
-    #[must_use]
-    pub fn alt_has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        let s_u = self.universe::<RandomState>();
-        let o_u = other.universe::<RandomState>();
-        let new_items = s_u.difference(&o_u).cloned().collect::<Vec<_>>();
-        let mut super_set = other.superset();
-        super_set = super_set.extend_as_superset(new_items);
-        println!("done, now intersecting!");
-        println!("{} node and {} nodes", super_set.n_nodes(), self.n_nodes());
-        super_set.intersect(self)
     }
 
     ///Divides `self` by `other` according to the unate cube set algebra
@@ -295,7 +276,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///Gets all possible supersets of `self`.
     ///
-    ///Will not include supersets involving elements that are not in any set of `self`.
+    ///Will not include supersets involving elements that are not in any set of `self` (see
+    ///[`SetFamily::insert_as_superset`])
     ///
     ///Toda, T., Takeuchi, S., Tsuda, K., Minato, Si. (2015). Superset Generation on Decision Diagrams. In: Rahman, M.S., Tomita, E. (eds) WALCOM: Algorithms and Computation. WALCOM 2015. Lecture Notes in Computer Science, vol 8973. Springer, Cham. <https://doi.org/10.1007/978-3-319-15612-5_28>
     #[must_use]
@@ -384,7 +366,7 @@ mod test {
 
     use crate::{
         SetFamily, ZddHolder,
-        utils::test::{random_family, random_weights, test_op, test_solo_op},
+        utils::test::{random_family, test_op, test_solo_op},
     };
 
     #[test]

@@ -110,8 +110,8 @@ mod test {
             .map(|x| (x, 0))
             .collect::<BTreeMap<_, _>>();
 
-        let mut holder = ZddHolder::new();
-        let set = SetFamily::from_sets(sets, &mut holder);
+        let holder = ZddHolder::new();
+        let set = SetFamily::from_sets(sets, &holder);
         let mut rng = rand::rngs::StdRng::seed_from_u64(0);
         for _ in 0..1000 {
             let sample = set.sample(&mut rng).into_iter().collect::<BTreeSet<_>>();
