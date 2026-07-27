@@ -294,7 +294,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         #[expect(clippy::missing_panics_doc)] // fine since we check if terminal before
         let (value, lo, hi) = self.get().unwrap();
-        let (lo, hi) = holder.pools().join(|| lo.superset(), || hi.superset());
+        let (lo, hi) = (lo.superset(), hi.superset());
         let u = lo.clone().union(hi);
         let r = holder.get_node(value, lo, u);
         holder.put_into_cache(op, r)

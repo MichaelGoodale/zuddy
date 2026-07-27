@@ -28,7 +28,7 @@ use crate::{
     manager::TempCache,
     utils::{PivotedSets, SingleSet},
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::Add};
 
 use crate::{SetFamily, manager::ZddIndex};
 
@@ -506,7 +506,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         }
         let values = self.manager().single_set(values.into_iter().collect());
         let cache = self.manager().create_temporary_cache();
-        extend_as_superset_inner(self.clone(), values, &cache)
+        let o_cache = self.manager().create_temporary_cache();
+        extend_as_superset_inner(self.clone(), values, &cache, &o_cache)
     }
 }
 
@@ -514,6 +515,7 @@ fn extend_as_superset_inner<'a, V>(
     set: SetFamily<'a, V>,
     values: SingleSet<'a, V>,
     cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>)>,
+    o_cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>)>,
 ) -> SetFamily<'a, V>
 where
     V: Eq + Hash + Ord + Send + Sync + Clone,
@@ -523,7 +525,7 @@ where
     }
     let holder = set.manager;
     if set.is_one() {
-        return add_all_subsets(holder.one(), values);
+        return add_all_subsets(holder.one(), values, o_cache);
     }
 
     let op = (set.as_raw(), values.clone());
@@ -541,16 +543,16 @@ where
     let set = if let Some(top) = higher_or_equal.first() {
         if top > this_val {
             let (lo, hi) = holder.pools().join(
-                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache),
-                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache),
+                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
+                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
             );
             holder.get_node(this_val, lo, hi)
         } else {
             higher_or_equal.pop_first();
             // top must be equal since we've checked if it was smaller or bigger.
             let (lo, hi) = holder.pools().join(
-                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache),
-                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache),
+                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
+                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
             );
             holder.get_node(this_val, lo.clone(), hi.union(lo))
         }
@@ -560,21 +562,29 @@ where
     };
 
     //Add all possible subsets that are smaller to the set.
-    let r = add_all_subsets(set, lower);
+    let r = add_all_subsets(set, lower, o_cache);
     cache.insert(op, r)
 }
 
 ///Adds all subsets from `values` to `set`, assuming that all members of `values` are lower than all
 ///members of `values`.
-fn add_all_subsets<'a, V>(mut set: SetFamily<'a, V>, values: SingleSet<'a, V>) -> SetFamily<'a, V>
+fn add_all_subsets<'a, V>(
+    mut set: SetFamily<'a, V>,
+    values: SingleSet<'a, V>,
+    cache: &TempCache<'a, V, (ZddIndex<V>, SingleSet<'a, V>)>,
+) -> SetFamily<'a, V>
 where
     V: Eq + Hash + Ord + Send + Sync + Clone,
 {
+    let op = (set.as_raw(), values.clone());
+    if let Some(r) = cache.get(&op) {
+        return r;
+    }
     let holder = set.manager();
     for value in values.into_iter().rev() {
         set = holder.get_node(value, set.clone(), set);
     }
-    set
+    cache.insert(op, set)
 }
 
 impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {

@@ -1,9 +1,11 @@
+use ahash::HashMap;
 use rayon::{ThreadPool, prelude::*};
 use std::{
     cell::UnsafeCell,
+    fmt::Debug,
     hash::{Hash, Hasher},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, RwLock,
         atomic::{
             AtomicBool, AtomicU64,
             Ordering::{Acquire, Relaxed, Release},
@@ -17,7 +19,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmut
 use crate::{
     ZddHolder,
     manager::{
-        ZddIndex,
+        RawZddData, ZddIndex,
         hashtable::slots::{REGION_SIZE, Slots},
     },
 };
@@ -100,7 +102,7 @@ impl HashEntry {
 pub(super) struct HashTable<V> {
     slots: Slots,
     hashes: UnsafeCell<Vec<AtomicU64>>,
-    data: UnsafeCell<Vec<Option<V>>>,
+    data: UnsafeCell<Vec<Option<RawZddData<V>>>>,
     counts: UnsafeCell<Vec<AtomicU64>>,
     reading: Vec<AtomicU64>,
     pause: AtomicBool,
@@ -163,7 +165,7 @@ impl<V: Hash + Eq> HashTable<V> {
 pub(crate) struct FullTable<V> {
     pub(crate) size: usize,
     pub(crate) n_used: usize,
-    pub(crate) value: V,
+    pub(crate) value: RawZddData<V>,
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
@@ -208,7 +210,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { &*self.data.get() }.len()
     }
 
-    fn hash(&self, data: &V) -> u32 {
+    fn hash(&self, data: &RawZddData<V>) -> u32 {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
         let hash = h.finish().saturating_add(2);
@@ -231,15 +233,15 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             .map(|(i, h)| (i, HashEntry::from_atomic_u64(h)))
     }
 
-    fn equal_at_index(&self, i: usize, data: &V) -> bool {
+    fn equal_at_index(&self, i: usize, data: &RawZddData<V>) -> bool {
         unsafe { (&*self.data.get())[i].as_ref() == Some(data) }
     }
 
-    pub(super) unsafe fn get_unchecked(&self, i: usize) -> Option<V> {
+    pub(super) unsafe fn get_unchecked(&self, i: usize) -> Option<RawZddData<V>> {
         unsafe { (&*self.data.get())[i].clone() }
     }
 
-    pub(crate) fn get(&self, i: usize) -> Option<V> {
+    pub(crate) fn get(&self, i: usize) -> Option<RawZddData<V>> {
         let reading = self.read_table();
         let x = unsafe { (&*self.data.get())[i].clone() };
         drop(reading);
@@ -252,7 +254,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         (count) as f64 / unsafe { &*self.data.get() }.len() as f64
     }
 
-    pub(crate) fn find_or_insert(&self, data: V) -> Result<(usize, Option<usize>), FullTable<V>> {
+    pub(crate) fn find_or_insert(
+        &self,
+        data: RawZddData<V>,
+    ) -> Result<(usize, Option<usize>), FullTable<V>> {
         let read = self.read_table();
         let h = self.hash(&data);
         let mut index = 0;
@@ -398,7 +403,15 @@ mod test {
 
             let vals = MOBY
                 .par_chars()
-                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
+                .map(|k| {
+                    hash_table
+                        .find_or_insert(RawZddData {
+                            value: k,
+                            lo: ZddIndex::from(k as usize),
+                            hi: ZddIndex::from(0),
+                        })
+                        .map(|(v, _)| (k, v))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let mut map = HashMap::new();
             for (k, v) in vals {
@@ -418,7 +431,15 @@ mod test {
         let vals = pools.install(|| {
             "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
                 .par_chars()
-                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
+                .map(|k| {
+                    hash_table
+                        .find_or_insert(RawZddData {
+                            value: k,
+                            lo: ZddIndex::from(k as usize),
+                            hi: ZddIndex::from(0),
+                        })
+                        .map(|(v, _)| (k, v))
+                })
                 .collect::<Result<Vec<_>, _>>()
         })?;
         println!("{vals:?}");
@@ -433,7 +454,15 @@ mod test {
 
         let vals = pools.install(|| {
             MOBY.par_chars()
-                .map(|k| hash_table.find_or_insert(k).map(|(v, _)| (k, v)))
+                .map(|k| {
+                    hash_table
+                        .find_or_insert(RawZddData {
+                            value: k,
+                            lo: ZddIndex::from(k as usize),
+                            hi: ZddIndex::from(0),
+                        })
+                        .map(|(v, _)| (k, v))
+                })
                 .collect::<Result<Vec<_>, _>>()
         })?;
         let mut map = HashMap::new();

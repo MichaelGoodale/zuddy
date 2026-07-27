@@ -24,7 +24,7 @@ use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V: Eq + Hash> {
     generation: AtomicU64,
-    uniq_table: HashTable<RawZddData<V>>,
+    uniq_table: HashTable<V>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: DashMap<SizeKey<V>, SizeValue, RandomState>,
     id: Uuid,

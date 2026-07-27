@@ -125,9 +125,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         if max_weight <= budget {
             return self;
         }
-        //if let Some(r) = map.get(&self, budget) {
-        //    return r;
-        //}
+        if let Some(r) = map.get(&self, budget) {
+            return r;
+        }
 
         let (value, lo, hi) = self.get().unwrap();
 
