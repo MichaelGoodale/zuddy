@@ -134,6 +134,15 @@ impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
     }
 }
 
+impl<V: Eq + Hash> ZddHolder<V> {
+    pub(crate) fn empty_single_set(&self) -> SingleSet<'_, V> {
+        SingleSet {
+            set: self.one(),
+            last: None,
+        }
+    }
+}
+
 impl<V: Eq + Hash + Clone + Ord> From<SingleSet<'_, V>> for BTreeSet<V> {
     fn from(value: SingleSet<V>) -> Self {
         let mut set = BTreeSet::new();

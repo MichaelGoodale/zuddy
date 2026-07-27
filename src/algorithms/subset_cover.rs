@@ -5,9 +5,8 @@ use std::{
     time::Instant,
 };
 
-use ahash::RandomState;
-use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressState, ProgressStyle};
-use rayon::prelude::*;
+use ahash::{HashMap, RandomState};
+use indicatif::{ProgressIterator, ProgressStyle};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct QueueWrapper<'a, V: Eq + Hash + Clone>(SetFamily<'a, V>);
@@ -29,9 +28,10 @@ impl<V: Eq + Hash + Clone> Ord for QueueWrapper<'_, V> {
 }
 
 use crate::{
-    SetFamily, ZddHolder,
-    algorithms::{UsizeOrPositiveInfinity, max_weight::MinWeightCache},
-    manager::{TempCache, ZddIndex},
+    SetFamily,
+    algorithms::UsizeOrPositiveInfinity,
+    manager::{TempCache, TempCacheItem, ZddIndex},
+    utils::SingleSet,
 };
 
 //TODO: Write a DP style algo based on `[SetFamily::budget_exact]` which adds all sets that add up o 28.
@@ -71,13 +71,16 @@ where
         .unwrap()
         .progress_chars("#>-");
 
-    let up_sets = sets
+    println!("Now splitting!");
+    let split_sets = sets
         .into_iter()
-        .map(SetFamily::superset)
+        .map(|x| x.bounded_supersets(&f, budget))
         .progress_with_style(style.clone())
         .collect::<Vec<_>>();
 
-    println!("Done supersetting!");
+    panic!("Done!");
+
+    /*
     let up_sets = up_sets
         .into_iter()
         .map(|x| {
@@ -103,121 +106,182 @@ where
     }
     bar.finish();
     let time = time.elapsed().as_secs_f64();
-    println!("Joining took {time} seconds.");
+    println!("Joining took {time} seconds.");*/
 
-    /*
-    let start = Instant::now();
-    for i in 1..budget {
-        println!("Trying {i}");
-        let this_start = Instant::now();
-        let x = mass_intersection(sets.clone(), holder, i, &f, &cache, &min_weight_cache);
-
-        let this_op = this_start.elapsed().as_secs_f64();
-        let total = start.elapsed().as_secs_f64();
-        println!("Took {this_op} seconds, total time {total} seconds");
-        if !x.is_zero() {
-            println!("Success at {i}");
-            return Some(x);
-        }
-    }*/
     None
 }
 
-type SubsetKey<V> = (Vec<ZddIndex<V>>, usize);
-
-fn to_key<V, F>(sets: &[SetFamily<V>], budget: usize, f: &F) -> SubsetKey<V>
-where
-    V: Eq + Hash + Clone + Ord + Send + Sync + Debug,
-    F: Fn(&V) -> usize + Send + Sync,
-{
-    (sets.iter().map(SetFamily::as_raw).collect(), budget)
+struct SplitSetFamily<'a, V: Eq + Hash> {
+    sets: HashMap<usize, SetFamily<'a, V>>,
 }
 
-fn mass_intersection<'a, V, F>(
-    mut sets: Vec<SetFamily<'a, V>>,
-    holder: &'a ZddHolder<V>,
-    budget: usize,
-    f: &F,
-    cache: &TempCache<'a, V, SubsetKey<V>>,
-    weight_cache: &MinWeightCache<'a, V>,
-) -> SetFamily<'a, V>
-where
-    V: Eq + Hash + Clone + Ord + Send + Sync + Debug,
-    F: Fn(&V) -> usize + Send + Sync,
-{
-    if sets.iter().any(SetFamily::is_zero) {
-        return holder.zero();
+struct RawSplitSetFamily<V: Eq + Hash> {
+    sets: HashMap<usize, ZddIndex<V>>,
+}
+
+impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for RawSplitSetFamily<V> {
+    type Output = SplitSetFamily<'a, V>;
+
+    fn to_gc(&self, holder: &'a crate::ZddHolder<V>) -> Self::Output {
+        SplitSetFamily {
+            sets: self
+                .sets
+                .iter()
+                .map(|(k, v)| (*k, SetFamily::from_set_family(*v, holder)))
+                .collect(),
+        }
     }
 
-    sets.retain(|x| !x.is_one());
-    if sets.is_empty() {
-        return holder.one();
+    fn from_gc(x: &Self::Output) -> Self {
+        RawSplitSetFamily {
+            sets: x.sets.iter().map(|(k, v)| (*k, v.as_raw())).collect(),
+        }
     }
+}
 
-    let op = to_key(&sets, budget, f);
-    if let Some(r) = cache.get(&op) {
-        return r;
-    }
-
-    let min_w = sets
-        .iter()
-        .map(|x| x.clone().min_weight_inner(f, weight_cache).unwrap())
-        .collect::<Vec<_>>();
-
-    if min_w.iter().any(|x| x > &budget) {
-        return cache.insert(op, holder.zero());
-    }
-
-    let nodes = sets
-        .into_iter()
-        .map(|x| x.get().unwrap())
-        .collect::<Vec<_>>();
-
-    let top = nodes.iter().map(|(x, _, _)| x).min().unwrap().clone();
-    let w = f(&top);
-    let mut new_lo = nodes
-        .iter()
-        .map(|(value, lo, hi)| {
-            if value == &top {
-                lo.clone()
-            } else {
-                holder.get_node(value.clone(), lo.clone(), hi.clone())
-            }
-        })
-        .collect::<Vec<_>>();
-    new_lo.sort_by_key(|x| x.id);
-    new_lo.dedup();
-
-    let r = if let Some(hi_budget) = budget.checked_sub(w) {
-        let mut new_hi = nodes
-            .iter()
-            .cloned()
-            .map(|(value, lo, hi)| {
-                if value == top {
-                    let hi_w = hi.clone().min_weight_inner(f, weight_cache);
-                    if hi_w > UsizeOrPositiveInfinity::Size(hi_budget) {
-                        lo.clone()
-                    } else {
-                        hi
-                        //hi.union(lo.clone())
-                    }
-                } else {
-                    holder.get_node(value, lo, hi)
-                }
+impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SplitSetFamily<'a, V> {
+    ///adds a value v w/ weight w to each set, **assuming** that the value is not present and that
+    ///it is the current least value.
+    fn add_val(&mut self, v: V, w: usize) {
+        self.sets = self
+            .sets
+            .drain()
+            .zip(std::iter::repeat(v))
+            .map(|((x, s), v)| {
+                let holder = s.manager();
+                (x + w, holder.get_node(v, holder.zero(), s))
             })
-            .collect::<Vec<_>>();
+            .collect();
+    }
 
-        new_hi.sort_by_key(|x| x.id);
-        new_hi.dedup();
+    fn union(mut self, mut other: Self) -> Self {
+        let keys = self
+            .sets
+            .keys()
+            .chain(other.sets.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
 
-        let (lo, hi) = (
-            mass_intersection(new_lo, holder, budget, f, cache, weight_cache),
-            mass_intersection(new_hi, holder, hi_budget, f, cache, weight_cache),
-        );
-        holder.get_node(top, lo, hi)
-    } else {
-        mass_intersection(new_lo, holder, budget, f, cache, weight_cache)
-    };
+        SplitSetFamily {
+            sets: keys
+                .into_iter()
+                .map(|k| {
+                    let a = self.sets.remove(&k);
+                    let b = other.sets.remove(&k);
+                    match (a, b) {
+                        (None, None) => panic!("can't happen bc keys is made from the sets"),
+                        (None, Some(x)) | (Some(x), None) => (k, x),
+                        (Some(x), Some(y)) => (k, x.union(y)),
+                    }
+                })
+                .collect(),
+        }
+    }
+}
 
-    cache.insert(op, r)
+impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
+    fn split<F>(&self, f: &F, max_budget: usize) -> SplitSetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        let cache = self.manager().create_temporary_cache();
+        self.clone().inner_split(f, max_budget, &cache)
+    }
+
+    fn bounded_supersets<F>(self, f: &F, max_budget: usize) -> SetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        let cache = self.manager().create_temporary_cache();
+        let w_cache = self.manager().create_temporary_cache();
+        self.inner_bounded_supersets(f, max_budget, &cache, &w_cache)
+    }
+
+    fn inner_bounded_supersets<F>(
+        self,
+        f: &F,
+        max_budget: usize,
+        cache: &TempCache<'a, V, (ZddIndex<V>, usize)>,
+        w_cache: &TempCache<'a, V, ZddIndex<V>, UsizeOrPositiveInfinity>,
+    ) -> SetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        if self.is_zero() || self.is_one() {
+            return self;
+        }
+
+        let holder = self.manager();
+        let op = (self.as_raw(), max_budget);
+        if let Some(r) = cache.get(&op) {
+            return r;
+        }
+
+        let min = self.clone().min_weight_inner(f, w_cache);
+        if min.unwrap() > max_budget {
+            return holder.zero();
+        }
+
+        let (value, lo, hi) = self.get().unwrap();
+        let mut r = lo
+            .clone()
+            .inner_bounded_supersets(f, max_budget, cache, w_cache);
+
+        let w = f(&value);
+        if let Some(hi_budget) = max_budget.checked_sub(w) {
+            let lo = lo.inner_bounded_supersets(f, hi_budget, cache, w_cache);
+            let hi = hi.inner_bounded_supersets(f, hi_budget, cache, w_cache);
+            r = holder.get_node(value, r, lo.union(hi));
+        }
+
+        cache.insert(op, r)
+    }
+
+    fn inner_split<F>(
+        self,
+        f: &F,
+        max_budget: usize,
+        cache: &TempCache<'a, V, ZddIndex<V>, RawSplitSetFamily<V>>,
+    ) -> SplitSetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        if self.is_zero() {
+            return SplitSetFamily {
+                sets: HashMap::default(),
+            };
+        }
+
+        if self.is_one() {
+            return SplitSetFamily {
+                sets: [(0, self)].into_iter().collect(),
+            };
+        }
+
+        if let Some(r) = cache.get(&self.as_raw()) {
+            return r;
+        }
+
+        let (min, max) = self.bounds(f);
+
+        let r = if min == max {
+            //then we can treat all subsequent sets identically.
+            SplitSetFamily {
+                sets: [(min, self.clone())].into_iter().collect(),
+            }
+        } else {
+            let (v, lo, hi) = self.get().unwrap(); //since min == max if x is terminal.
+            let mut sets = lo.inner_split(f, max_budget, cache);
+
+            let w = f(&v);
+            if let Some(hi_budget) = max_budget.checked_sub(w) {
+                let mut hi = hi.inner_split(f, hi_budget, cache);
+                hi.add_val(v, w);
+                sets = sets.union(hi);
+            }
+
+            sets
+        };
+        cache.insert(self.as_raw(), r)
+    }
 }

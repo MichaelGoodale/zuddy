@@ -10,7 +10,7 @@ mod hashtable;
 mod parallelism;
 mod raw;
 mod temp_cache;
-pub(crate) use temp_cache::TempCache;
+pub(crate) use temp_cache::{TempCache, TempCacheItem};
 
 use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
