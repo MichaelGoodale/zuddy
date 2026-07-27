@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt::Display, hash::Hash};
 
-use crate::{SetFamily, ZddHolder};
+use crate::{SetFamily, ZddHolder, manager::ZddIndex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SingleSet<'a, V: Eq + Hash> {
@@ -119,6 +119,19 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SingleSet<'a, V> {
                 last: self.last.clone(),
             },
         }
+    }
+    pub(crate) fn as_raw(&self) -> ZddIndex<V> {
+        self.set.as_raw()
+    }
+
+    pub(crate) fn powerset(self) -> SetFamily<'a, V> {
+        let holder = self.set.manager();
+        let mut set = holder.one();
+        let values: BTreeSet<_> = self.into();
+        for v in values.into_iter().rev() {
+            set = holder.get_node(v, set.clone(), set);
+        }
+        set
     }
 }
 

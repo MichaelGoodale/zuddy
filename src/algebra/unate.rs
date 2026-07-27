@@ -1,9 +1,11 @@
 use crate::{
     Operations, SetFamily,
     manager::{SizeKey, SizeValue},
+    utils::SingleSet,
 };
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
+    fmt::Display,
     hash::Hash,
 };
 
@@ -274,32 +276,6 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         self.manager().put_into_cache(op, r.clone())
     }
 
-    ///Gets all possible supersets of `self`.
-    ///
-    ///Will not include supersets involving elements that are not in any set of `self` (see
-    ///[`SetFamily::insert_as_superset`])
-    ///
-    ///Toda, T., Takeuchi, S., Tsuda, K., Minato, Si. (2015). Superset Generation on Decision Diagrams. In: Rahman, M.S., Tomita, E. (eds) WALCOM: Algorithms and Computation. WALCOM 2015. Lecture Notes in Computer Science, vol 8973. Springer, Cham. <https://doi.org/10.1007/978-3-319-15612-5_28>
-    #[must_use]
-    pub fn superset(self) -> SetFamily<'a, V> {
-        if self.is_zero() || self.is_one() {
-            return self;
-        }
-
-        let holder = self.manager();
-        let op = Operations::Supersets(self.as_raw());
-        if let Some(r) = holder.get_from_cache(&op) {
-            return r;
-        }
-
-        #[expect(clippy::missing_panics_doc)] // fine since we check if terminal before
-        let (value, lo, hi) = self.get().unwrap();
-        let (lo, hi) = (lo.superset(), hi.superset());
-        let u = lo.clone().union(hi);
-        let r = holder.get_node(value, lo, u);
-        holder.put_into_cache(op, r)
-    }
-
     ///Takes all the sets in self that have a subset in other.
     ///
     /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
@@ -353,6 +329,54 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
                 self.has_subset_in(o_lo)
             }
         };
+        holder.put_into_cache(op, r)
+    }
+
+    ///Gets all possible supersets of `self`.
+    ///
+    ///Will not include supersets involving elements that are not in any set of `self` (see
+    ///[`SetFamily::insert_as_superset`])
+    ///
+    ///Adapted from Toda, T., Takeuchi, S., Tsuda, K., Minato, Si. (2015). Superset Generation on Decision Diagrams. In: Rahman, M.S., Tomita, E. (eds) WALCOM: Algorithms and Computation. WALCOM 2015. Lecture Notes in Computer Science, vol 8973. Springer, Cham. <https://doi.org/10.1007/978-3-319-15612-5_28>
+    #[must_use]
+    pub fn superset(self) -> SetFamily<'a, V> {
+        let values = self.universe_single_set();
+        self.superset_inner(values)
+    }
+
+    #[must_use]
+    fn superset_inner(self, mut values: SingleSet<'a, V>) -> SetFamily<'a, V> {
+        if self.is_zero() {
+            return self;
+        }
+        if self.is_one() {
+            return values.powerset();
+        }
+
+        let holder = self.manager();
+        let op = Operations::Supersets(self.as_raw(), values.as_raw());
+        if let Some(r) = holder.get_from_cache(&op) {
+            return r;
+        }
+
+        let (value, lo, hi) = self.get().unwrap();
+        let set_v = values.pop_first().unwrap();
+
+        let r = match set_v.cmp(&value) {
+            Less => {
+                let v = self.superset_inner(values);
+                holder.get_node(set_v, v.clone(), v)
+            }
+            Equal => {
+                let (lo, hi) = (lo.superset_inner(values.clone()), hi.superset_inner(values));
+                let u = lo.clone().union(hi);
+                holder.get_node(value, lo, u)
+            }
+            Greater => {
+                panic!("Will only happen if there is a mismatch between values and superset")
+            } // but this won't happen since it will only be called by superset which has the right arguments"
+        };
+
         holder.put_into_cache(op, r)
     }
 }
@@ -431,6 +455,7 @@ mod test {
             ("a", "a"),
             ("a ", "a "),
             ("a b c", "a b c ab bc ca abc"),
+            (" a ab b bc", " a ab abc b bc ab ac c"),
         ] {
             test_solo_op(a, res, |x| x.superset(), "sup", &holder);
         }

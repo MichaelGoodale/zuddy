@@ -126,6 +126,24 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
         nodes
     }
 }
+impl<'a, V: Eq + Hash + Clone + Ord + Send + Sync> SetFamily<'a, V> {
+    pub(crate) fn universe_single_set(&self) -> SingleSet<'a, V> {
+        let mut stack = vec![self.as_raw()];
+        let mut seen = HashSet::<ZddIndex<V>, ahash::RandomState>::default();
+        let mut nodes = BTreeSet::new();
+
+        while let Some(x) = stack.pop() {
+            if !seen.contains(&x)
+                && let Some((v, lo, hi)) = x.get(self.manager())
+            {
+                seen.insert(x);
+                nodes.insert(v);
+                stack.extend([lo, hi].into_iter().filter(|x| !seen.contains(x)));
+            }
+        }
+        self.manager().single_set(nodes)
+    }
+}
 
 impl<V: Eq + Hash + Clone> ZddIndex<V> {
     pub(crate) fn size(self, holder: &ZddHolder<V>) -> UsizeOrPositiveInfinity {
@@ -177,6 +195,17 @@ pub mod test {
         universe
             .iter()
             .map(|x| (*x, rng.random_range(0..3)))
+            .collect()
+    }
+
+    pub fn random_isize_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, isize> {
+        universe
+            .iter()
+            .map(|x| {
+                let w: u8 = rng.random_range(0..10);
+
+                (*x, isize::from(w) - 5)
+            })
             .collect()
     }
 

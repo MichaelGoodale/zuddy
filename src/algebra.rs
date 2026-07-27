@@ -51,7 +51,7 @@ pub(super) enum Operations<V> {
     NonSup(ZddIndex<V>, ZddIndex<V>),
     Minimal(ZddIndex<V>),
     SubsetOf(ZddIndex<V>, ZddIndex<V>),
-    Supersets(ZddIndex<V>),
+    Supersets(ZddIndex<V>, ZddIndex<V>),
 }
 
 mod unate;
