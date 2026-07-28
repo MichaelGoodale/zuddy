@@ -14,7 +14,7 @@ pub fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, us
 }
 
 pub fn random_family(universe: &[char], rng: &mut impl Rng) -> BTreeSet<BTreeSet<char>> {
-    let n_sets = rng.random_range(0..200);
+    let n_sets = rng.random_range(0..30);
     let mut sets = BTreeSet::new();
     for _ in 0..n_sets {
         let size = rng.random_range(0..universe.len());
@@ -32,7 +32,7 @@ fn sets<'a>(
     holder: &'a ZddHolder<char>,
     universe: &[char],
     rng: &mut impl Rng,
-) -> Vec<(SetFamily<'a, char>, SetFamily<'a, char>, isize)> {
+) -> Vec<(SetFamily<'a, char>, SetFamily<'a, char>, usize)> {
     let mut v = vec![];
     for _ in 0..100 {
         let family_a = random_family(universe, rng);
@@ -130,28 +130,29 @@ fn join_and_clip(bencher: Bencher) {
 
     let sets = sets(&holder, &universe, &mut rng);
     let weights = random_weights(&universe, &mut rng);
-    let f = |c: &char| *weights.get(c).unwrap() as isize;
+    let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
-        for (a, b, bud) in sets.iter().cloned() {
-            let c = a.join(b).clip_weight(bud, &f);
+        for (a, b, budget) in sets.iter().cloned() {
+            let c = a.join(b).clip_weight_usize(budget, f);
             holder.clear_cache();
         }
     });
 }
 
 #[divan::bench()]
-fn join_clip(bencher: Bencher) {
+fn join_clip_fused(bencher: Bencher) {
     let holder = ZddHolder::new();
     let universe = [
         'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
     ];
     let mut rng = rngs::SmallRng::seed_from_u64(32);
+
     let sets = sets(&holder, &universe, &mut rng);
     let weights = random_weights(&universe, &mut rng);
-    let f = |c: &char| *weights.get(c).unwrap() as isize;
+    let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
-        for (a, b, bud) in sets.iter().cloned() {
-            let c = a.bounded_join(b, &f, bud);
+        for (a, b, budget) in sets.iter().cloned() {
+            let c = a.bounded_join(b, f, budget);
             holder.clear_cache();
         }
     });
