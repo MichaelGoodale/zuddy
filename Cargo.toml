@@ -26,6 +26,10 @@ anyhow = "1.0.103"
 name = "queens"
 harness = false
 
+[[bench]]
+name = "joins"
+harness = false
+
 [features]
 default = ["sampling"]
 sampling = ["dep:rand"]

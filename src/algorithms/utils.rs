@@ -1,4 +1,7 @@
-use std::{fmt::Display, ops::Add};
+use std::{
+    fmt::Display,
+    ops::{Add, AddAssign},
+};
 
 ///Represents a usize, or positive infinity
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
@@ -38,6 +41,12 @@ impl Add for UsizeOrPositiveInfinity {
                 }),
             _ => UsizeOrPositiveInfinity::PositiveInfinity,
         }
+    }
+}
+
+impl AddAssign for UsizeOrPositiveInfinity {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
     }
 }
 

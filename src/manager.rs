@@ -54,6 +54,13 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             id,
         }
     }
+
+    ///Clears the cache (i.e. for profiling code)
+    ///Does not perform GC.
+    pub fn clear_cache(&self) {
+        self.cache.clear();
+        self.size_caches.clear();
+    }
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {

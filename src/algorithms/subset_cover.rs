@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, BinaryHeap},
     fmt::{Debug, Display},
     hash::Hash,
-    ops::Add,
+    ops::{Add, AddAssign},
     time::Instant,
 };
 
@@ -31,9 +31,10 @@ impl<V: Eq + Hash + Clone> Ord for QueueWrapper<'_, V> {
 }
 
 use crate::{
-    SetFamily,
+    SetFamily, ZddHolder,
     algorithms::{
         UsizeOrPositiveInfinity,
+        max_weight::MinWeightCache,
         minimum_cutoff::MaxWeightOfCache,
         subset_cover::ISizeOrInfinity::{Finite, NegInfinity, PosInfinity},
     },
@@ -80,45 +81,29 @@ where
 
     println!("Now supersets!");
 
-    let universe_single = sets.first().unwrap().manager().single_set(universe.clone());
-
-    let split_sets = sets
+    let mut up_sets = sets
         .into_iter()
-        .map(|x| x.bounded_supersets(&f, budget))
-        .progress_with_style(style.clone())
-        .collect::<Vec<_>>();
-
-    panic!("Done!");
-
-    /*
-    let up_sets = up_sets
-        .into_iter()
-        .map(|x| {
-            let u = x.universe::<RandomState>().into_iter().collect();
-            x.extend_as_superset(universe.difference(&u).cloned())
-        })
-        .progress_with_style(style.clone())
-        .collect::<Vec<_>>();
-
-    println!("Done extending!");
-    let mut up_sets = up_sets
-        .into_iter()
-        .map(|x| QueueWrapper(x))
+        .map(|x| QueueWrapper(x.clip_weight(budget, &f)))
+        .progress()
         .collect::<BinaryHeap<_>>();
 
     let bar = indicatif::ProgressBar::new(up_sets.len() as u64 - 1).with_style(style);
     while up_sets.len() >= 2 {
         let a = up_sets.pop().unwrap().0;
         let b = up_sets.pop().unwrap().0;
-        let c = a.intersect(b);
+        let c = a.bounded_join(b, &f, budget);
         up_sets.push(QueueWrapper(c));
         bar.inc(1);
     }
     bar.finish();
     let time = time.elapsed().as_secs_f64();
-    println!("Joining took {time} seconds.");*/
+    println!("Joining took {time} seconds.");
 
     None
+}
+
+impl<'a, V> SetFamily<'a, V> {
+    fn alt_join(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {}
 }
 
 struct SplitSetFamily<'a, V: Eq + Hash> {
@@ -196,6 +181,12 @@ enum ISizeOrInfinity {
     PosInfinity,
 }
 
+impl AddAssign for ISizeOrInfinity {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
 impl Add for ISizeOrInfinity {
     type Output = Self;
 
@@ -237,23 +228,55 @@ impl Display for ISizeOrInfinity {
 }
 
 #[derive(Debug, Clone)]
-struct IntervalCache<'a, K, V: Eq + Hash>(
-    HashMap<K, RangeMap<ISizeOrInfinity, NodeInterval<'a, V>>>,
+struct IntervalCache<'a, K, V: Eq + Hash, T: PossiblyInfinite>(
+    HashMap<K, RangeMap<T::PossiblyInfiniteType, NodeInterval<'a, T, V>>>,
 );
 
-impl<'a, K: Hash + Eq, V: Eq + Hash + Clone> IntervalCache<'a, K, V> {
-    fn get(&self, node: &K, budget: isize) -> Option<NodeInterval<'a, V>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NodeInterval<'a, T: PossiblyInfinite, V: Eq + Hash> {
+    node: SetFamily<'a, V>,
+    accepted_worst: T::PossiblyInfiniteType,
+    rejected_best: T::PossiblyInfiniteType,
+}
+
+trait PossiblyInfinite: Copy + PartialEq {
+    type PossiblyInfiniteType: Copy
+        + Clone
+        + PartialEq
+        + Ord
+        + AddAssign
+        + Add<Output = Self::PossiblyInfiniteType>;
+    fn as_finite(self) -> Self::PossiblyInfiniteType;
+}
+
+impl PossiblyInfinite for isize {
+    type PossiblyInfiniteType = ISizeOrInfinity;
+
+    fn as_finite(self) -> Self::PossiblyInfiniteType {
+        ISizeOrInfinity::Finite(self)
+    }
+}
+impl PossiblyInfinite for usize {
+    type PossiblyInfiniteType = UsizeOrPositiveInfinity;
+
+    fn as_finite(self) -> Self::PossiblyInfiniteType {
+        UsizeOrPositiveInfinity::Size(self)
+    }
+}
+
+impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T: PossiblyInfinite> IntervalCache<'a, K, V, T> {
+    fn get(&self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
         self.0
             .get(node)
-            .and_then(|x| x.get(&Finite(budget)))
+            .and_then(|x| x.get(&budget.as_finite()))
             .cloned()
     }
 
     fn insert(
         &mut self,
         node: K,
-        accepted_worst: ISizeOrInfinity,
-        rejected_best: ISizeOrInfinity,
+        accepted_worst: T::PossiblyInfiniteType,
+        rejected_best: T::PossiblyInfiniteType,
         r: SetFamily<'a, V>,
     ) {
         self.0.entry(node).or_default().insert(
@@ -267,14 +290,10 @@ impl<'a, K: Hash + Eq, V: Eq + Hash + Clone> IntervalCache<'a, K, V> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NodeInterval<'a, V: Eq + Hash> {
-    node: SetFamily<'a, V>,
-    accepted_worst: ISizeOrInfinity,
-    rejected_best: ISizeOrInfinity,
-}
-
-impl<V: Eq + Hash + Display + Clone + Ord> Display for NodeInterval<'_, V> {
+impl<V: Eq + Hash + Display + Clone + Ord, T: PossiblyInfinite> Display for NodeInterval<'_, T, V>
+where
+    T::PossiblyInfiniteType: Display,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -284,12 +303,17 @@ impl<V: Eq + Hash + Display + Clone + Ord> Display for NodeInterval<'_, V> {
     }
 }
 
-impl<V: Eq + Hash + Clone + Ord + Send + Sync> NodeInterval<'_, V> {
+impl<V: Eq + Hash + Clone + Ord + Send + Sync, T: PossiblyInfinite> NodeInterval<'_, T, V> {
+    fn add_weight(&mut self, w: T::PossiblyInfiniteType) {
+        self.accepted_worst += w;
+        self.rejected_best += w;
+    }
+
     fn combine<F>(lo: Self, hi: Self, value: V, f: F) -> Self
     where
-        F: Fn(&V) -> isize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
     {
-        let w = Finite(f(&value));
+        let w = f(&value).as_finite();
         let accepted_worst = std::cmp::max(lo.accepted_worst, hi.accepted_worst + w);
         let rejected_best = std::cmp::min(lo.rejected_best, hi.rejected_best + w);
         let holder = lo.node.manager();
@@ -311,14 +335,86 @@ impl<V: Eq + Hash + Clone + Ord + Send + Sync> NodeInterval<'_, V> {
     }
 }
 
-impl<K, V: Eq + Hash> Default for IntervalCache<'_, K, V> {
+impl<K, V: Eq + Hash, T: PossiblyInfinite> Default for IntervalCache<'_, K, V, T> {
     fn default() -> Self {
         Self(HashMap::default())
     }
 }
 
 impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
-    fn clip_weight<F>(&self, budget: isize, f: F) -> SetFamily<'a, V>
+    pub fn clip_weight_usize<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        let cache = self.manager().create_temporary_cache();
+        self.clone()
+            .clip_weight_usize_inner(&f, budget, &mut IntervalCache::default(), &cache)
+            .node
+    }
+
+    ///Adapted from Minato, S., Kawahara, J., Banbara, M., Horiyama, T., Takigawa, I., & Yamaguchi, Y. (2025). Fast enumeration of all cost-bounded solutions for combinatorial problems using ZDDs. Discrete Applied Mathematics, 360, 467–486. https://doi.org/10.1016/j.dam.2024.10.003
+    fn clip_weight_usize_inner<F>(
+        self,
+        f: &F,
+        budget: usize,
+        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, usize>,
+        min_cache: &MinWeightCache<'a, V>,
+    ) -> NodeInterval<'a, usize, V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        if self.is_zero() {
+            return NodeInterval {
+                node: self,
+                accepted_worst: UsizeOrPositiveInfinity::Size(0),
+                rejected_best: UsizeOrPositiveInfinity::PositiveInfinity,
+            };
+        }
+
+        if self.is_one() {
+            return NodeInterval {
+                node: self,
+                accepted_worst: UsizeOrPositiveInfinity::Size(0),
+                rejected_best: UsizeOrPositiveInfinity::PositiveInfinity,
+            };
+        }
+
+        if let Some(r) = cache.get(&self, budget) {
+            return r;
+        }
+
+        let (v, lo, hi) = self.get().unwrap();
+
+        let mut lo_interval = lo.clip_weight_usize_inner(f, budget, cache, min_cache);
+        let w = f(&v);
+        if let Some(hi_budget) = budget.checked_sub(w) {
+            let hi_interval = hi.clip_weight_usize_inner(f, hi_budget, cache, min_cache);
+            let combined = NodeInterval::combine(lo_interval, hi_interval, v, f);
+
+            cache.insert(
+                self.clone(),
+                combined.accepted_worst,
+                combined.rejected_best,
+                combined.node.clone(),
+            );
+            combined
+        } else {
+            let h = hi.min_weight_inner(f, min_cache).add_usize(w);
+            lo_interval.rejected_best = std::cmp::min(lo_interval.rejected_best, h);
+
+            cache.insert(
+                self.clone(),
+                lo_interval.accepted_worst,
+                lo_interval.rejected_best,
+                lo_interval.node.clone(),
+            );
+            lo_interval
+        }
+    }
+}
+
+impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
+    pub fn clip_weight<F>(&self, budget: isize, f: F) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> isize + Send + Sync,
     {
@@ -332,8 +428,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         self,
         f: &F,
         budget: isize,
-        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V>,
-    ) -> NodeInterval<'a, V>
+        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, isize>,
+    ) -> NodeInterval<'a, isize, V>
     where
         F: Fn(&V) -> isize + Send + Sync,
     {
@@ -382,6 +478,138 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
 }
 
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
+    ///Performs join (Minato, 1994 refers to this as "product") over two family
+    ///subsets while capping the maximum size of output
+    ///
+    ///It is defined as join(f, g) = { α ∪ β | α ∈ f ∧ β ∈ g ∧ \sum_{x\in α ∪ β} f(x) <= budget }
+    ///
+    ///# Panics
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    #[must_use]
+    pub fn bounded_join<F>(
+        mut self,
+        mut other: SetFamily<'a, V>,
+        f: F,
+        budget: isize,
+    ) -> SetFamily<'a, V>
+    where
+        F: Fn(&V) -> isize + Send + Sync,
+    {
+        self.inner_bounded_join(
+            other,
+            &f,
+            budget,
+            &mut IntervalCache::default(),
+            &mut IntervalCache::default(),
+        )
+        .node
+    }
+
+    fn inner_bounded_join<F>(
+        mut self,
+        mut other: SetFamily<'a, V>,
+        f: &F,
+        budget: isize,
+        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SetFamily<'a, V>), V, isize>,
+        clipping_cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, isize>,
+    ) -> NodeInterval<'a, isize, V>
+    where
+        F: Fn(&V) -> isize + Send + Sync,
+    {
+        if other.is_zero() || self.is_zero() {
+            return NodeInterval {
+                node: self.manager().zero(),
+                accepted_worst: NegInfinity,
+                rejected_best: PosInfinity,
+            };
+        }
+
+        if other.is_one() {
+            return self.clip_weight_inner(f, budget, clipping_cache);
+        }
+
+        if self.is_one() {
+            return other.clip_weight_inner(f, budget, clipping_cache);
+        }
+
+        let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
+        let (mut other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
+        if value > other_v {
+            std::mem::swap(&mut value, &mut other_v);
+            std::mem::swap(&mut self_lo, &mut other_lo);
+            std::mem::swap(&mut self_hi, &mut other_hi);
+            std::mem::swap(&mut self, &mut other);
+        }
+
+        let holder = self.manager;
+        let op = (self.clone(), other.clone());
+        if let Some(r) = cache.get(&op, budget) {
+            return r;
+        }
+
+        if other_v > value {
+            other_lo = other;
+            other_hi = self.manager.zero();
+        }
+
+        let w = f(&value);
+
+        let mut his = [
+            self_hi.clone().inner_bounded_join(
+                other_hi.clone(),
+                f,
+                budget - w,
+                cache,
+                clipping_cache,
+            ),
+            self_hi.inner_bounded_join(other_lo.clone(), f, budget - w, cache, clipping_cache),
+            self_lo
+                .clone()
+                .inner_bounded_join(other_hi, f, budget - w, cache, clipping_cache),
+        ];
+        let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache, clipping_cache);
+
+        for x in &mut his {
+            x.add_weight(Finite(w));
+        }
+
+        let accepted_worst = his
+            .iter()
+            .chain(std::iter::once(&lo))
+            .map(|x| x.accepted_worst)
+            .max()
+            .unwrap();
+
+        let rejected_best = his
+            .iter()
+            .chain(std::iter::once(&lo))
+            .map(|x| x.rejected_best)
+            .min()
+            .unwrap();
+
+        let product = his
+            .into_iter()
+            .map(|x| x.node)
+            .reduce(SetFamily::union)
+            .unwrap();
+
+        let v_product = holder.get_node(value, holder.zero(), product);
+
+        let joined = NodeInterval {
+            node: v_product.union(lo.node),
+            accepted_worst,
+            rejected_best,
+        };
+
+        cache.insert(
+            op,
+            joined.accepted_worst,
+            joined.rejected_best,
+            joined.node.clone(),
+        );
+        joined
+    }
+
     fn split<F>(&self, f: &F, max_budget: usize) -> SplitSetFamily<'a, V>
     where
         F: Fn(&V) -> usize + Send + Sync,
@@ -404,8 +632,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         mut values: SingleSet<'a, V>,
         f: &F,
         budget: isize,
-        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SingleSet<'a, V>), V>,
-    ) -> NodeInterval<'a, V>
+        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SingleSet<'a, V>), V, isize>,
+    ) -> NodeInterval<'a, isize, V>
     where
         F: Fn(&V) -> isize + Send + Sync,
     {
@@ -550,7 +778,7 @@ mod test {
 
     use crate::{
         ZddHolder,
-        utils::test::{random_family, random_isize_weights},
+        utils::test::{random_family, random_isize_weights, random_weights},
     };
 
     use super::*;
@@ -593,6 +821,35 @@ mod test {
     }
 
     #[test]
+    fn clipping_usize() {
+        let holder = ZddHolder::new();
+        let universe = "abcdef".chars().collect::<Vec<_>>();
+        let mut rng = rngs::SmallRng::seed_from_u64(37);
+
+        for i in 0..1000 {
+            println!("{i}");
+            let family = random_family(&universe, &mut rng);
+            let weights = random_weights(&universe, &mut rng);
+            let f = |v: &char| *weights.get(v).unwrap();
+            let max_budget = weights.values().sum::<usize>();
+
+            let s = SetFamily::from_sets(family.clone(), &holder);
+
+            for budget in 0..=max_budget {
+                let other = family
+                    .iter()
+                    .filter(|x| x.iter().map(f).sum::<usize>() <= budget)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let other = SetFamily::from_sets(other, &holder);
+                let max_weight = s.clip_weight_usize(budget, f);
+                max_weight.check_valid_zdd();
+                assert_eq!(max_weight, other, "{max_weight} != {other}");
+            }
+        }
+    }
+
+    #[test]
     fn bounded_superset() {
         let holder = ZddHolder::new();
         let universe = "abcd".chars().collect::<Vec<_>>();
@@ -624,6 +881,59 @@ mod test {
                 println!("budget={b} s={s} bounded={bounded_sets:?} {weights:?}");
                 let bounded_sets = SetFamily::from_sets(bounded_sets, &holder);
                 let bounded_s = s.clone().bounded_supersets(f, b);
+                bounded_s.check_valid_zdd();
+
+                assert_eq!(
+                    bounded_s, bounded_sets,
+                    "Calculated != desired {bounded_s} != {bounded_sets} "
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_join() {
+        let holder = ZddHolder::new();
+        let universe = "abcd".chars().collect::<Vec<_>>();
+        let mut rng = rngs::SmallRng::seed_from_u64(0);
+
+        for _ in 0..1000 {
+            let weights = random_weights(&universe, &mut rng);
+            let weights = weights
+                .into_iter()
+                .map(|(k, v)| (k, v as isize))
+                .collect::<HashMap<_, _>>();
+            let f = |v: &char| *weights.get(v).unwrap();
+
+            let a = random_family(&universe, &mut rng);
+            let b = random_family(&universe, &mut rng);
+            let c = a
+                .iter()
+                .cartesian_product(b.iter())
+                .map(|(a, b)| a.union(b).copied().collect::<BTreeSet<_>>())
+                .collect::<BTreeSet<_>>();
+
+            let a = SetFamily::from_sets(a, &holder);
+            let b = SetFamily::from_sets(b, &holder);
+
+            let max_budget = weights.values().sum::<isize>();
+            for budget in 0..max_budget {
+                println!("{weights:?}");
+                println!("{a} x {b} while under {budget}");
+                let alt_c = a.clone().join(b.clone());
+                assert_eq!(alt_c, SetFamily::from_sets(c.clone(), &holder));
+
+                let bounded_c = c
+                    .iter()
+                    .filter(|x| {
+                        let sum = x.iter().map(f).sum::<isize>();
+                        sum >= 0 && sum <= budget
+                    })
+                    .cloned()
+                    .collect();
+                let bounded_sets = SetFamily::from_sets(bounded_c, &holder);
+                assert_eq!(alt_c.clip_weight(budget, f), bounded_sets);
+                let bounded_s = a.clone().bounded_join(b.clone(), f, budget);
                 bounded_s.check_valid_zdd();
 
                 assert_eq!(

@@ -5,7 +5,6 @@ use crate::{
 };
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
-    fmt::Display,
     hash::Hash,
 };
 
@@ -130,17 +129,26 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
-    pub fn join(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
-        if cmp_tops(&self, &other) == Greater {
-            return other.join(self);
-        }
-
-        if other.is_zero() {
-            return other;
+    pub fn join(mut self, mut other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        if other.is_zero() || self.is_zero() {
+            return self.manager().zero();
         }
 
         if other.is_one() {
             return self;
+        }
+
+        if self.is_one() {
+            return other;
+        }
+
+        let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
+        let (mut other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
+        if value > other_v {
+            std::mem::swap(&mut value, &mut other_v);
+            std::mem::swap(&mut self_lo, &mut other_lo);
+            std::mem::swap(&mut self_hi, &mut other_hi);
+            std::mem::swap(&mut self, &mut other);
         }
 
         let holder = self.manager;
@@ -148,9 +156,6 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
-
-        let (value, self_lo, self_hi) = self.get().expect("Invalid index!");
-        let (other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
 
         if other_v > value {
             other_lo = other;
