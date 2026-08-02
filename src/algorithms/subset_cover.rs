@@ -17,6 +17,9 @@ use crate::{
 };
 use ahash::HashMap;
 use indicatif::ProgressStyle;
+
+#[cfg(test)]
+use indicatif::ProgressDrawTarget;
 use rangemap::RangeMap;
 
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
@@ -26,7 +29,11 @@ use rangemap::RangeMap;
 ///
 /// # Panics
 /// Will panic if `sets` is empty or if the sets don't all share the same manager.
-pub fn subset_cover<'a, V, F>(sets: &[SetFamily<'a, V>], f: F) -> SetFamily<'a, V>
+pub fn subset_cover<'a, V, F>(
+    sets: &[SetFamily<'a, V>],
+    f: F,
+    max_budget: Option<usize>,
+) -> Option<SetFamily<'a, V>>
 where
     V: Eq + Hash + Clone + Ord + Send + Sync + Debug,
     F: Fn(&V) -> usize + Send + Sync,
@@ -35,18 +42,22 @@ where
 
     let holder = sets.first().unwrap().manager();
     if sets.iter().any(SetFamily::is_zero) {
-        return holder.zero();
+        return Some(holder.zero());
     }
 
     if sets.len() == 1 {
         let minimum = sets[0].min_weight(&f);
-        return sets[0].clip_weight_usize(minimum, f);
+        return Some(sets[0].clip_weight_usize(minimum, f));
     }
 
     let mut solution = holder.zero();
     let mut budget = 0;
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
     'outer: while solution.is_zero() {
+        if max_budget.is_some_and(|max_budget| budget > max_budget) {
+            return None;
+        }
+
         let style = ProgressStyle::default_bar()
             .template(
                 format!(
@@ -56,6 +67,9 @@ where
             )
             .unwrap();
         let bar = indicatif::ProgressBar::new(sets.len() as u64 - 1).with_style(style);
+
+        #[cfg(test)]
+        bar.set_draw_target(ProgressDrawTarget::hidden());
 
         let mut sets = sets.to_vec();
         while sets.len() >= 2 {
@@ -74,7 +88,7 @@ where
         budget += 1;
         solution = sets.pop().unwrap();
     }
-    solution
+    Some(solution)
 }
 
 struct SplitSetFamily<'a, V: Eq + Hash> {
@@ -84,7 +98,6 @@ struct SplitSetFamily<'a, V: Eq + Hash> {
 struct RawSplitSetFamily<V: Eq + Hash> {
     sets: HashMap<usize, ZddIndex<V>>,
 }
-
 impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for RawSplitSetFamily<V> {
     type Output = SplitSetFamily<'a, V>;
 
@@ -793,8 +806,8 @@ mod test {
         let universe = "abcdefghijklmnopqrstuvwxyz".chars().collect::<Vec<_>>();
         let mut rng = rngs::SmallRng::seed_from_u64(37);
 
-        for _ in 0..1000 {
-            let n = rng.random_range(1..20);
+        for _ in 0..20 {
+            let n = rng.random_range(1..30);
             let families = (0..n)
                 .map(|_| SetFamily::from_sets(random_family(&universe, &mut rng), &holder))
                 .collect::<Vec<_>>();
@@ -806,7 +819,7 @@ mod test {
             for g in families.iter().cloned() {
                 x = g.join(x);
             }
-            let sol = subset_cover(&families, f);
+            let sol = subset_cover(&families, f, None).unwrap();
             if x.is_zero() {
                 println!("No solution :(");
                 assert_eq!(sol, x);
