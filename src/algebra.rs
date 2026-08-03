@@ -26,7 +26,7 @@
 use crate::{
     ZddHolder,
     manager::TempCache,
-    utils::{PivotedSets, SingleSet},
+    utils::single_set::{PivotedSets, SingleSet},
 };
 use std::collections::BTreeSet;
 

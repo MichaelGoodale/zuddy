@@ -11,7 +11,7 @@ pub mod algorithms;
 ///Defines iterators of various kinds over [`SetFamily`]
 pub mod iterators;
 pub mod manager;
-mod utils;
+pub mod utils;
 
 #[cfg(feature = "sampling")]
 mod sampling;

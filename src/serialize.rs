@@ -19,8 +19,8 @@ struct OwnedZddNode<T> {
     lo: usize,
 }
 
-///The index of a [`OwnedZDD`] in a [`MultipleOwnedZDD`]. Useful if you need to get specific members
-///of a [`MultipleOwnedZDD`] or store them in a collection somehow.
+///The index of a [`OwnedZdd`] in a [`MultipleOwnedZdd`]. Useful if you need to get specific members
+///of a [`MultipleOwnedZdd`] or store them in a collection somehow.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OwnedZddIndex(usize);
 
@@ -34,7 +34,7 @@ pub struct OwnedZdd<T> {
     root: OwnedZddIndex,
 }
 
-///A set of ZDDs which own their own data, like [`OwnedZDD`].
+///A set of ZDDs which own their own data, like [`OwnedZdd`].
 ///By serializing a _set_ of ZDDs, we save a lot on serialization space.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
 #[serde(try_from = "UnverifiedOwnedZdd<T>")]
@@ -46,23 +46,23 @@ pub struct MultipleOwnedZdd<T> {
 
 impl<T> MultipleOwnedZdd<T> {
     ///Retuns a [`BTreeSet`] with the indices of all ZDD roots.
-    ///May be useful in combination with [`MultipleOwnedZDD::to_set_families`]'s returned
+    ///May be useful in combination with [`MultipleOwnedZdd::to_set_families`]'s returned
     ///[`HashMap`].
     ///
-    ///See [`to_owned_zdds_with_mapping`] to see how to make a [`MultipleOwnedZDD`] while keeping
+    ///See [`to_owned_zdds_with_mapping`] to see how to make a [`MultipleOwnedZdd`] while keeping
     ///track of which Zdd is which.
     #[must_use]
     pub fn members(&self) -> &BTreeSet<OwnedZddIndex> {
         &self.roots
     }
 
-    ///The number of Zdds roots in this [`MultipleOwnedZDD`].
+    ///The number of Zdds roots in this [`MultipleOwnedZdd`].
     #[must_use]
     pub fn len(&self) -> usize {
         self.roots.len()
     }
 
-    ///Check whether the [`MultipleOwnedZDD`] lacks any roots.
+    ///Check whether the [`MultipleOwnedZdd`] lacks any roots.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.roots.is_empty()
@@ -124,9 +124,9 @@ impl<'a, V: Eq + Hash> AsRef<SetFamily<'a, V>> for SetFamily<'a, V> {
     }
 }
 
-///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZDD`].
+///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZdd`].
 ///
-///If you need to record info about each ZDD beyond having a set of ZDDs, see: [`MultipleOwnedZDD`].
+///If you need to record info about each ZDD beyond having a set of ZDDs, see: [`MultipleOwnedZdd`].
 #[must_use]
 pub fn to_owned_zdds<'a, V, T, X>(zdds: T) -> MultipleOwnedZdd<V>
 where
@@ -154,8 +154,8 @@ where
     }
 }
 
-///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZDD`] while returning
-///a [`HashMap`] from the elements of the collection to their index in the [`MultipleOwnedZDD`].
+///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZdd`] while returning
+///a [`HashMap`] from the elements of the collection to their index in the [`MultipleOwnedZdd`].
 ///
 ///Useful if you need information connected to specific ZDDs beyond a set of ZDDs.
 ///
@@ -261,7 +261,7 @@ where
 }
 
 impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
-    ///Convert this [`SetFamily`] to an [`OwnedZDD`] (useful for serialization)
+    ///Convert this [`SetFamily`] to an [`OwnedZdd`] (useful for serialization)
     #[must_use]
     pub fn to_owned_zdd(&self) -> OwnedZdd<V> {
         let MultipleOwnedZdd {
@@ -278,7 +278,7 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> OwnedZdd<V> {
-    ///Converts an [`OwnedZDD`] into a [`SetFamily`] associated with `holder`.
+    ///Converts an [`OwnedZdd`] into a [`SetFamily`] associated with `holder`.
     pub fn to_set_family(self, holder: &ZddHolder<V>) -> SetFamily<'_, V> {
         let mut mapping = ahash::HashMap::new();
         mapping.insert(0, holder.zero());
@@ -300,7 +300,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> OwnedZdd<V> {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> MultipleOwnedZdd<V> {
-    ///Converts an [`MultipleOwnedZDD`] into a [`SetFamily`] associated with `holder`.
+    ///Converts an [`MultipleOwnedZdd`] into a [`SetFamily`] associated with `holder`.
     pub fn to_set_families(
         self,
         holder: &ZddHolder<V>,

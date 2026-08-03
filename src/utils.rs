@@ -1,3 +1,5 @@
+//! Useful utility functions for ZDDs.
+//!
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     fmt::{Display, Write},
@@ -5,10 +7,10 @@ use std::{
 };
 
 use ahash::HashSetExt;
-mod single_set;
+pub mod single_set;
 use crate::manager::{SizeKey, SizeValue, ZddHolder, ZddIndex};
 use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
-pub(crate) use single_set::{PivotedSets, SingleSet};
+use single_set::SingleSet;
 
 impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -183,6 +185,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 }
 
 #[cfg(test)]
+#[expect(missing_docs, clippy::missing_panics_doc)]
 pub mod test {
     use std::collections::{BTreeSet, HashMap};
 
@@ -231,6 +234,7 @@ pub mod test {
         }
     }
 
+    #[must_use]
     pub fn str_to_sets(s: &str) -> BTreeSet<BTreeSet<char>> {
         if s.is_empty() {
             return BTreeSet::default();

@@ -1,3 +1,5 @@
+//! Representation of a single set backed by ZDDs.
+
 use std::{collections::BTreeSet, fmt::Display, hash::Hash};
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex};
@@ -15,11 +17,14 @@ pub struct SingleSet<'a, V: Eq + Hash> {
 ///`lower`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PivotedSets<'a, V: Eq + Hash> {
+    ///All values lower than the pivot.
     pub lower: SingleSet<'a, V>,
+    ///All higher or equal to the pivot.
     pub higher_or_equal: SingleSet<'a, V>,
 }
 
 impl<V: Eq + Hash> SingleSet<'_, V> {
+    ///If the set is empty
     pub fn is_empty(&self) -> bool {
         self.set.is_one()
     }

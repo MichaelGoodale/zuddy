@@ -323,7 +323,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///It is defined as join(f, g) = { α ∪ β | α ∈ f ∧ β ∈ g ∧ \sum_{x\in α ∪ β} f(x) <= budget }
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
     pub fn bounded_join<F>(self, other: SetFamily<'a, V>, f: F, budget: usize) -> SetFamily<'a, V>
     where

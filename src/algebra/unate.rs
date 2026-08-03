@@ -1,7 +1,7 @@
 use crate::{
     Operations, SetFamily,
     manager::{SizeKey, SizeValue},
-    utils::SingleSet,
+    utils::single_set::SingleSet,
 };
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
@@ -61,8 +61,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// For example, {abc,bc,ac}/{bc} = {a, {}} and {abd,abe,abg,cd,ce,ch}/{ab,c} = {d,e}
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
-    ///[`SetFamily::ZERO`] (the empty set)**.
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder) or **if `other` is
+    ///the empty set**.
     #[must_use]
     #[expect(clippy::needless_pass_by_value)]
     pub fn divide(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
@@ -110,7 +110,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///It is defined as join(f, g) = { α ∪ β | α ∈ f, β ∈ g}
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
     pub fn join(mut self, mut other: SetFamily<'a, V>) -> SetFamily<'a, V> {
         if other.is_zero() || self.is_zero() {
@@ -172,8 +172,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// for more details.
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`] or **if `other` is
-    ///[`SetFamily::ZERO`] (the empty set)**.
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder) or **if `other` is
+    ///the empty set**.
     #[must_use]
     pub fn remainder(self, other: Self) -> Self {
         self.clone()
@@ -185,7 +185,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// `f.minimal()` = {x ∈ f | y ∈ f and x ⊇ y implies x=y }
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
     pub fn minimal_elements(self) -> Self {
         if self.is_zero() || self.is_one() {
@@ -212,7 +212,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// f.nonsup(g) = {x ∈ f | y ∈ g implies x ⊉ y }
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
     pub fn nonsup(self, other: Self) -> Self {
         if other.is_zero() {
@@ -269,7 +269,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// `self.has_subset(other)` = {x ∈ `self` | ∃y∈`other` y ⊆ x }
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
     pub fn has_subset_in(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
         if self == other || self.is_zero() || other.is_one() || other.contains_empty_set() {

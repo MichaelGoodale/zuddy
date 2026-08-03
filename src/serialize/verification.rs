@@ -2,10 +2,10 @@ use super::{MultipleOwnedZdd, OwnedZdd, OwnedZddIndex, OwnedZddNode, UnverifiedO
 use ahash::HashSetExt;
 use thiserror::Error;
 
-///An error triggered by a improper ZDD represented by [`UnverifiedOwnedZdd`].
+///An error triggered by a improper ZDD when converting from an unverified ZDD to an [`OwnedZdd`].
 #[derive(Debug, Copy, Clone, Error)]
 pub enum InvalidZdd {
-    ///Trying to convert to [`OwnedZdd`] when there are multiple roots (try [`MultipleOwnedZDD`]).
+    ///Trying to convert to [`OwnedZdd`] when there are multiple roots (try [`MultipleOwnedZdd`]).
     #[error("This contains multiple ZDDs not just one!")]
     NotSingle,
     ///This violates the order for a ZDD with children having a lower value than their parents.
@@ -14,7 +14,7 @@ pub enum InvalidZdd {
     ///To make serialization faster, all children must be stored before their parents.
     #[error("This has children come after parents!")]
     BadSerialOrder,
-    ///There cannot be any unused nodes in the [`UnverifiedOwnedZdd`].
+    ///There cannot be any unused nodes in the Zdd.
     #[error("There are nodes that are dangling!")]
     UnvisitedNodes,
 }
