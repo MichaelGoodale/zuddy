@@ -28,7 +28,7 @@ use crate::{
     manager::TempCache,
     utils::{PivotedSets, SingleSet},
 };
-use std::{collections::BTreeSet, ops::Add};
+use std::collections::BTreeSet;
 
 use crate::{SetFamily, manager::ZddIndex};
 

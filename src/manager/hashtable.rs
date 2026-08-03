@@ -1,11 +1,10 @@
-use ahash::HashMap;
 use rayon::{ThreadPool, prelude::*};
 use std::{
     cell::UnsafeCell,
     fmt::Debug,
     hash::{Hash, Hasher},
     sync::{
-        Arc, Condvar, Mutex, RwLock,
+        Arc, Condvar, Mutex,
         atomic::{
             AtomicBool, AtomicU64,
             Ordering::{Acquire, Relaxed, Release},

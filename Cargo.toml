@@ -8,6 +8,7 @@ edition = "2024"
 ahash = "0.8.12"
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 indicatif = { version = "0.18.6", features = ["rayon"] }
+num-traits = "0.2.19"
 rand = { version = "0.10.1", optional = true }
 rangemap = "1.7.1"
 rayon = "1.12.0"

@@ -194,7 +194,7 @@ pub mod test {
     pub fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
         universe
             .iter()
-            .map(|x| (*x, rng.random_range(0..3)))
+            .map(|x| (*x, rng.random_range(0..4)))
             .collect()
     }
 

@@ -6,10 +6,7 @@ use std::{
 
 use ahash::AHashMap;
 
-use crate::{
-    SetFamily, ZddHolder,
-    algorithms::max_weight::{BoundsWeightCache, MaxWeightCache},
-};
+use crate::{SetFamily, ZddHolder, algorithms::max_weight::BoundsWeightCache};
 
 pub(crate) struct MaxWeightOfCache<'a, V: Eq + Hash>(
     AHashMap<usize, AHashMap<SetFamily<'a, V>, SetFamily<'a, V>>>,
@@ -40,7 +37,7 @@ fn exact_weight_of<'a, V, F>(
     budget: usize,
     f: &F,
     cache: &mut MaxWeightOfCache<'a, V>,
-    bounds_cache: &BoundsWeightCache<'a, V>,
+    bounds_cache: &BoundsWeightCache<'a, V, usize>,
 ) -> SetFamily<'a, V>
 where
     V: Eq + Hash + Clone + Send + Sync + Ord,
@@ -91,59 +88,6 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         let mut cache = MaxWeightOfCache::new();
         let bounds_cache = self.manager().create_temporary_cache();
         exact_weight_of(self.clone(), budget, &f, &mut cache, &bounds_cache)
-    }
-
-    ///Assign each element a weight using the `f` function, and return the Zdd consisting of all
-    ///sets that have a maximum summed weight of `budget` or less.
-    #[must_use]
-    pub fn max_weight_of<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
-    where
-        F: Fn(&V) -> usize + Send + Sync,
-    {
-        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
-        let mut max_weight_of_cache = MaxWeightOfCache::new();
-        self.clone()
-            .max_weight_of_inner(budget, &f, &mut max_weight_of_cache, &cache)
-    }
-
-    #[must_use]
-    pub(crate) fn max_weight_of_inner<F>(
-        self,
-        budget: usize,
-        f: &F,
-        map: &mut MaxWeightOfCache<'a, V>,
-        cache: &MaxWeightCache<'a, V>,
-    ) -> SetFamily<'a, V>
-    where
-        F: Fn(&V) -> usize + Send + Sync,
-    {
-        if self.is_zero() || self.is_one() {
-            return self;
-        }
-
-        let max_weight = self.clone().max_weight_inner(f, cache);
-        if max_weight <= budget {
-            return self;
-        }
-        if let Some(r) = map.get(&self, budget) {
-            return r;
-        }
-
-        let (value, lo, hi) = self.get().unwrap();
-
-        let w = f(&value);
-
-        let r = if let Some(hi_budget) = budget.checked_sub(w) {
-            let (lo, hi) = (
-                lo.max_weight_of_inner(budget, f, map, cache),
-                hi.max_weight_of_inner(hi_budget, f, map, cache),
-            );
-            self.manager().get_node(value, lo, hi)
-        } else {
-            lo.max_weight_of_inner(budget, f, map, cache)
-        };
-
-        map.insert(self, budget, r)
     }
 }
 
@@ -295,7 +239,7 @@ mod test {
                     .cloned()
                     .collect::<BTreeSet<_>>();
                 let other = SetFamily::from_sets(other, &holder);
-                let max_weight = s.max_weight_of(budget, f);
+                let max_weight = s.clip_weight_usize(budget, f);
                 max_weight.check_valid_zdd();
                 assert_eq!(max_weight, other, "{max_weight} != {other}");
 
@@ -344,7 +288,7 @@ mod test {
             (7, "a ab ad ae b c efg"),
             (8, "a ab ad ae b c efg"),
         ] {
-            let set = set.max_weight_of(n, f);
+            let set = set.clip_weight_usize(n, f);
             println!("{n}");
             assert_eq!(res, set.as_string());
         }

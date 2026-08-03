@@ -8,23 +8,6 @@ use std::{
     hash::Hash,
 };
 
-pub(crate) fn cmp_tops<V: Ord + Hash + Eq + Clone>(
-    a: &SetFamily<V>,
-    b: &SetFamily<V>,
-) -> std::cmp::Ordering {
-    match (a.id, b.id) {
-        (a, b) if a == b => Equal,
-        (1 | 0, 0 | 1) => Equal,
-        (1 | 0, _) => Greater,
-        (_, 0 | 1) => Less,
-        (_, _) => {
-            let (a, _, _) = a.get().unwrap();
-            let (b, _, _) = b.get().unwrap();
-            a.cmp(&b)
-        }
-    }
-}
-
 impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]

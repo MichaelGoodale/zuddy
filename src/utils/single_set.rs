@@ -2,14 +2,19 @@ use std::{collections::BTreeSet, fmt::Display, hash::Hash};
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex};
 
+///A representation of a single set, backed by a ZDD.
+///Normally much worse than a [`BTreeSet`] or a [`HashSet`](std::collections::HashSet), but may use
+///less memory thanks to hash-consing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SingleSet<'a, V: Eq + Hash> {
+pub struct SingleSet<'a, V: Eq + Hash> {
     set: SetFamily<'a, V>,
     last: Option<V>,
 }
 
+///Two sets where all values higher or equal to a value are in `higher_or_equal` and those lower in
+///`lower`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PivotedSets<'a, V: Eq + Hash> {
+pub struct PivotedSets<'a, V: Eq + Hash> {
     pub lower: SingleSet<'a, V>,
     pub higher_or_equal: SingleSet<'a, V>,
 }
@@ -50,7 +55,7 @@ impl<V: Eq + Hash + Clone> IntoIterator for SingleSet<'_, V> {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> SingleSet<'_, V> {
-    #[expect(dead_code)]
+    ///Remove the biggest value from the [`SingleSet`] (takes at least O(n)).
     pub fn pop_last(&mut self) -> Option<V> {
         let mut pos = self.set.clone();
         let mut s = vec![];
@@ -71,15 +76,17 @@ impl<V: Eq + Hash + Clone + Send + Sync> SingleSet<'_, V> {
         last
     }
 
-    #[expect(dead_code)]
+    ///See the biggest value from the [`SingleSet`] (O(1)).
     pub fn last(&self) -> Option<V> {
         self.last.clone()
     }
 
+    ///See the smallest value from the [`SingleSet`] (O(1)).
     pub fn first(&self) -> Option<V> {
         self.set.get().map(|(x, _, _)| x)
     }
 
+    ///Remove the smallest value from the [`SingleSet`] (O(1)).
     pub fn pop_first(&mut self) -> Option<V> {
         if let Some((v, _, hi)) = self.set.get() {
             self.set = hi;
@@ -94,6 +101,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> SingleSet<'_, V> {
 }
 
 impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SingleSet<'a, V> {
+    ///Splits the set into two with [`PivotedSets`] around `v`.
     pub fn pivot(&self, v: &V) -> PivotedSets<'a, V> {
         let mut pos = self.set.clone();
         let mut lower_vals = vec![];
@@ -124,7 +132,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SingleSet<'a, V> {
         self.set.as_raw()
     }
 
-    pub(crate) fn powerset(self) -> SetFamily<'a, V> {
+    ///Creates a [`SetFamily`] consisting of the powerset made of this single set.
+    pub fn powerset(self) -> SetFamily<'a, V> {
         let holder = self.set.manager();
         let mut set = holder.one();
         let values: BTreeSet<_> = self.into();
@@ -148,7 +157,8 @@ impl<V: Eq + Hash + Ord + Send + Sync + Clone> ZddHolder<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
-    pub(crate) fn empty_single_set(&self) -> SingleSet<'_, V> {
+    /// Create a [`SingleSet`] with no members.
+    pub fn empty_single_set(&self) -> SingleSet<'_, V> {
         SingleSet {
             set: self.one(),
             last: None,

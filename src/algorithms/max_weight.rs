@@ -1,34 +1,45 @@
 use std::hash::Hash;
 
+use num_traits::Num;
+
 use crate::{
     SetFamily,
     algorithms::UsizeOrPositiveInfinity,
-    manager::{SizeKey, SizeValue, TempCache, ZddIndex},
+    manager::{SizeKey, SizeValue, TempCache, TempCacheItem, ZddIndex},
 };
 
-pub(crate) type MaxWeightCache<'a, V> = TempCache<'a, V, ZddIndex<V>, usize>;
-pub(crate) type MinWeightCache<'a, V> = TempCache<'a, V, ZddIndex<V>, UsizeOrPositiveInfinity>;
-pub(crate) type BoundsWeightCache<'a, V> =
-    TempCache<'a, V, ZddIndex<V>, (UsizeOrPositiveInfinity, usize)>;
+pub(crate) type MaxWeightCache<'a, V, Int> = TempCache<'a, V, ZddIndex<V>, Int>;
+pub(crate) type MinWeightCache<'a, V, I> = TempCache<'a, V, ZddIndex<V>, I>;
+pub(crate) type BoundsWeightCache<'a, V, I> = TempCache<'a, V, ZddIndex<V>, (Option<I>, I)>;
+
+fn min_none_first<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (None, None) => None,
+        (None, Some(x)) | (Some(x), None) => Some(x),
+        (Some(x), Some(y)) => Some(std::cmp::min(x, y)),
+    }
+}
 
 impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///The size of the biggest possible set by summed weight
     #[must_use]
-    pub fn max_weight<F>(&self, f: F) -> usize
+    pub fn max_weight<F, Int>(&self, f: F) -> Int
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> Int + Send + Sync,
+        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
     {
-        let cache: MaxWeightCache<'a, V> = self.manager().create_temporary_cache();
+        let cache: MaxWeightCache<'a, V, Int> = self.manager().create_temporary_cache();
         self.clone().max_weight_inner(&f, &cache)
     }
 
     #[must_use]
-    pub(crate) fn max_weight_inner<F>(self, f: &F, cache: &MaxWeightCache<'a, V>) -> usize
+    pub(crate) fn max_weight_inner<F, Int>(self, f: &F, cache: &MaxWeightCache<'a, V, Int>) -> Int
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> Int + Send + Sync,
+        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
     {
         if self.is_zero() || self.is_one() {
-            return 0;
+            return Int::zero();
         }
 
         if let Some(r) = cache.get(&self.as_raw()) {
@@ -134,31 +145,33 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             .unwrap_bounds()
     }
 
-    ///The size of the smallest possible set by summed weight
+    ///The size of the smallest possible set by summed weight. Accepts weights as [`usize`] or [`isize`].
     ///# Panics
     ///Will panic if passed the empty set.
     #[must_use]
-    pub fn min_weight<F>(&self, f: F) -> usize
+    pub fn min_weight<F, Int>(&self, f: F) -> Int
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> Int + Send + Sync,
+        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int>,
     {
-        let cache: MinWeightCache<'a, V> = self.manager().create_temporary_cache();
+        let cache: MinWeightCache<'a, V, Option<Int>> = self.manager().create_temporary_cache();
         self.clone().min_weight_inner(&f, &cache).unwrap()
     }
 
     #[must_use]
-    pub(crate) fn min_weight_inner<F>(
+    pub(crate) fn min_weight_inner<F, Int>(
         self,
         f: &F,
-        cache: &MinWeightCache<'a, V>,
-    ) -> UsizeOrPositiveInfinity
+        cache: &MinWeightCache<'a, V, Option<Int>>,
+    ) -> Option<Int>
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> Int + Send + Sync,
+        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int>,
     {
         if self.is_zero() {
-            return UsizeOrPositiveInfinity::PositiveInfinity;
+            return None;
         } else if self.is_one() {
-            return UsizeOrPositiveInfinity::Size(0);
+            return Some(Int::zero());
         }
 
         if let Some(r) = cache.get(&self.as_raw()) {
@@ -171,38 +184,40 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
         let (lo, hi) = (
             lo.min_weight_inner(f, cache),
-            hi.min_weight_inner(f, cache).add_usize(w),
+            hi.min_weight_inner(f, cache).map(|x| x + w),
         );
 
-        cache.insert(self.as_raw(), std::cmp::min(lo, hi))
+        cache.insert(self.as_raw(), min_none_first(lo, hi))
     }
 
     ///The upper and lower bound of size of any set in the ZDD.
     ///# Panics
     ///Will panic if passed the empty set.
     #[must_use]
-    pub fn bounds<F>(&self, f: F) -> (usize, usize)
+    pub fn bounds<F, T>(&self, f: F) -> (T, T)
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T>,
     {
-        let cache: BoundsWeightCache<'a, V> = self.manager().create_temporary_cache();
+        let cache: BoundsWeightCache<'a, V, T> = self.manager().create_temporary_cache();
         let (min, max) = self.clone().bounds_inner(&f, &cache);
         (min.unwrap(), max)
     }
 
     #[must_use]
-    pub(crate) fn bounds_inner<F>(
+    pub(crate) fn bounds_inner<F, T>(
         self,
         f: &F,
-        cache: &BoundsWeightCache<'a, V>,
-    ) -> (UsizeOrPositiveInfinity, usize)
+        cache: &BoundsWeightCache<'a, V, T>,
+    ) -> (Option<T>, T)
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T>,
     {
         if self.is_zero() {
-            return (UsizeOrPositiveInfinity::PositiveInfinity, 0);
+            return (None, T::zero());
         } else if self.is_one() {
-            return (UsizeOrPositiveInfinity::Size(0), 0);
+            return (Some(T::zero()), T::zero());
         }
 
         if let Some(r) = cache.get(&self.as_raw()) {
@@ -216,12 +231,15 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         let ((lo_min, lo_max), (hi_min, hi_max)) =
             (lo.bounds_inner(f, cache), hi.bounds_inner(f, cache));
 
-        let hi_min = hi_min.add_usize(w);
+        let hi_min = hi_min.map(|x| x + w.clone());
         let hi_max = hi_max + w;
 
         cache.insert(
             self.as_raw(),
-            (std::cmp::min(lo_min, hi_min), std::cmp::max(lo_max, hi_max)),
+            (
+                min_none_first(lo_min, hi_min),
+                std::cmp::max(lo_max, hi_max),
+            ),
         )
     }
 }

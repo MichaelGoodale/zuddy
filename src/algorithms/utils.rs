@@ -1,7 +1,10 @@
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
+    hash::Hash,
     ops::{Add, AddAssign},
 };
+
+use thiserror::Error;
 
 ///Represents a usize, or positive infinity
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
@@ -76,5 +79,115 @@ impl UsizeOrPositiveInfinity {
             UsizeOrPositiveInfinity::Size(x) => x,
             UsizeOrPositiveInfinity::PositiveInfinity => panic!("Size is infinite!"),
         }
+    }
+}
+
+///Isize or positive or negative infinity
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub enum IsizeOrInfinity {
+    ///Negative Infinity
+    NegInfinity,
+    ///Any finite value
+    Finite(isize),
+    ///Positive Infinity
+    PosInfinity,
+}
+
+impl AddAssign for IsizeOrInfinity {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl Add for IsizeOrInfinity {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (IsizeOrInfinity::Finite(x), IsizeOrInfinity::Finite(y)) => {
+                IsizeOrInfinity::Finite(x + y)
+            }
+            (
+                IsizeOrInfinity::NegInfinity | IsizeOrInfinity::Finite(_),
+                IsizeOrInfinity::NegInfinity,
+            )
+            | (IsizeOrInfinity::NegInfinity, IsizeOrInfinity::Finite(_)) => {
+                IsizeOrInfinity::NegInfinity
+            }
+            (
+                IsizeOrInfinity::PosInfinity | IsizeOrInfinity::Finite(_),
+                IsizeOrInfinity::PosInfinity,
+            )
+            | (IsizeOrInfinity::PosInfinity, IsizeOrInfinity::Finite(_)) => {
+                IsizeOrInfinity::PosInfinity
+            }
+            (IsizeOrInfinity::PosInfinity, IsizeOrInfinity::NegInfinity)
+            | (IsizeOrInfinity::NegInfinity, IsizeOrInfinity::PosInfinity) => {
+                panic!("Negative infinity plus positive infinity is undefined!")
+            }
+        }
+    }
+}
+
+impl Display for IsizeOrInfinity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IsizeOrInfinity::NegInfinity => write!(f, "-∞"),
+            IsizeOrInfinity::Finite(x) => write!(f, "{x}"),
+            IsizeOrInfinity::PosInfinity => write!(f, "∞"),
+        }
+    }
+}
+
+pub trait PossiblyInfinite: Copy + PartialEq + TryFrom<Self::PossiblyInfiniteType> {
+    type PossiblyInfiniteType: Copy
+        + Clone
+        + PartialEq
+        + Ord
+        + AddAssign
+        + Add<Output = Self::PossiblyInfiniteType>;
+
+    fn as_finite(self) -> Self::PossiblyInfiniteType;
+}
+
+#[derive(Debug, Error)]
+#[error("This value is not finite!")]
+pub struct IsInfinite;
+
+impl TryFrom<IsizeOrInfinity> for isize {
+    type Error = IsInfinite;
+
+    fn try_from(value: IsizeOrInfinity) -> Result<Self, Self::Error> {
+        match value {
+            IsizeOrInfinity::NegInfinity | IsizeOrInfinity::PosInfinity => Err(IsInfinite),
+            IsizeOrInfinity::Finite(x) => Ok(x),
+        }
+    }
+}
+
+impl PossiblyInfinite for isize {
+    type PossiblyInfiniteType = IsizeOrInfinity;
+
+    fn as_finite(self) -> Self::PossiblyInfiniteType {
+        IsizeOrInfinity::Finite(self)
+    }
+}
+
+impl TryFrom<UsizeOrPositiveInfinity> for usize {
+    type Error = IsInfinite;
+
+    fn try_from(value: UsizeOrPositiveInfinity) -> Result<Self, Self::Error> {
+        match value {
+            UsizeOrPositiveInfinity::PositiveInfinity => Err(IsInfinite),
+            UsizeOrPositiveInfinity::Size(x) => Ok(x),
+        }
+    }
+}
+
+impl PossiblyInfinite for usize {
+    type PossiblyInfiniteType = UsizeOrPositiveInfinity;
+
+    fn as_finite(self) -> Self::PossiblyInfiniteType {
+        UsizeOrPositiveInfinity::Size(self)
     }
 }
