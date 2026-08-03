@@ -343,75 +343,6 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     }
 }
 
-/*
-impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
-    ///Given a function that maps elements of the [`SetFamily`] to isize and a `budget`, return the
-    ///ZDD consisting of all sets whose elements sum to budget or less. Allows for negative weights.
-    ///
-    ///Adapted from Minato, S., Kawahara, J., Banbara, M., Horiyama, T., Takigawa, I., & Yamaguchi, Y. (2025). Fast enumeration of all cost-bounded solutions for combinatorial problems using ZDDs. Discrete Applied Mathematics, 360, 467–486. `<https://doi.org/10.1016/j.dam.2024.10.003>`
-    #[must_use]
-    pub fn clip_weight<F>(&self, budget: isize, f: F) -> SetFamily<'a, V>
-    where
-        F: Fn(&V) -> isize + Send + Sync,
-    {
-        self.clone()
-            .clip_weight_inner(&f, budget, &mut IntervalCache::default())
-            .node
-    }
-
-    fn clip_weight_inner<F>(
-        self,
-        f: &F,
-        budget: isize,
-        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, isize>,
-    ) -> NodeInterval<'a, isize, V>
-    where
-        F: Fn(&V) -> isize + Send + Sync,
-    {
-        if self.is_zero() {
-            return NodeInterval {
-                node: self,
-                accepted_worst: IsizeOrInfinity::NegInfinity,
-                rejected_best: IsizeOrInfinity::PosInfinity,
-            };
-        }
-
-        if self.is_one() {
-            return if budget >= 0 {
-                NodeInterval {
-                    node: self,
-                    accepted_worst: IsizeOrInfinity::Finite(0),
-                    rejected_best: IsizeOrInfinity::PosInfinity,
-                }
-            } else {
-                NodeInterval {
-                    node: self.manager().zero(),
-                    accepted_worst: IsizeOrInfinity::NegInfinity,
-                    rejected_best: IsizeOrInfinity::Finite(0),
-                }
-            };
-        }
-
-        if let Some(r) = cache.get(&self, budget) {
-            return r;
-        }
-
-        let (v, lo, hi) = self.get().unwrap();
-
-        let lo_interval = lo.clip_weight_inner(f, budget, cache);
-        let hi_interval = hi.clip_weight_inner(f, budget - f(&v), cache);
-        let combined = NodeInterval::combine(lo_interval, hi_interval, v, f);
-
-        cache.insert(
-            self.clone(),
-            combined.accepted_worst,
-            combined.rejected_best,
-            combined.node.clone(),
-        );
-        combined
-    }
-}*/
-
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets while capping the maximum size of output
@@ -421,9 +352,10 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
-    pub fn bounded_join<F>(self, other: SetFamily<'a, V>, f: F, budget: usize) -> SetFamily<'a, V>
+    pub fn bounded_join<F, T>(self, other: SetFamily<'a, V>, f: F, budget: T) -> SetFamily<'a, V>
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
     {
         let min_cache = self.manager().create_temporary_cache();
         self.inner_bounded_join(
@@ -437,22 +369,23 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         .node
     }
 
-    fn inner_bounded_join<F>(
+    fn inner_bounded_join<F, T>(
         mut self,
         mut other: SetFamily<'a, V>,
         f: &F,
-        budget: usize,
-        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SetFamily<'a, V>), V, usize>,
-        clipping_cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, usize>,
-        min_cache: &MinWeightCache<'a, V, Option<usize>>,
-    ) -> NodeInterval<'a, usize, V>
+        budget: T,
+        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SetFamily<'a, V>), V, T>,
+        clipping_cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, T>,
+        min_cache: &MinWeightCache<'a, V, Option<T>>,
+    ) -> NodeInterval<'a, T, V>
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
     {
         if other.is_zero() || self.is_zero() {
             return NodeInterval {
                 node: self.manager().zero(),
-                accepted_worst: Infinite::Finite(0),
+                accepted_worst: Infinite::NegInf,
                 rejected_best: Infinite::PosInf,
             };
         }
@@ -476,7 +409,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
 
         let holder = self.manager;
         let op = (self.clone(), other.clone());
-        if let Some(r) = cache.get(&op, budget) {
+        if let Some(r) = cache.get(&op, budget.clone()) {
             return r;
         }
 
@@ -487,12 +420,12 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
 
         let w = f(&value);
 
-        let his = if let Some(hi_budget) = budget.checked_sub(w) {
+        let his = if let Some(hi_budget) = budget.checked_sub(&w) {
             let mut his = [
                 self_hi.clone().inner_bounded_join(
                     other_hi.clone(),
                     f,
-                    hi_budget,
+                    hi_budget.clone(),
                     cache,
                     clipping_cache,
                     min_cache,
@@ -500,7 +433,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
                 self_hi.inner_bounded_join(
                     other_lo.clone(),
                     f,
-                    hi_budget,
+                    hi_budget.clone(),
                     cache,
                     clipping_cache,
                     min_cache,
@@ -516,29 +449,29 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             ];
 
             for x in &mut his {
-                x.add_weight(w);
+                x.add_weight(w.clone());
             }
 
             his
         } else {
             [0; 3].map(|_| NodeInterval {
                 node: self.manager().zero(),
-                accepted_worst: Infinite::Finite(0),
-                rejected_best: Infinite::Finite(budget + 1),
+                accepted_worst: Infinite::Finite(T::zero()),
+                rejected_best: Infinite::Finite(budget.clone() + T::one()),
             })
         };
         let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache, clipping_cache, min_cache);
         let accepted_worst = his
             .iter()
             .chain(std::iter::once(&lo))
-            .map(|x| x.accepted_worst)
+            .map(|x| x.accepted_worst.clone())
             .max()
             .unwrap();
 
         let rejected_best = his
             .iter()
             .chain(std::iter::once(&lo))
-            .map(|x| x.rejected_best)
+            .map(|x| x.rejected_best.clone())
             .min()
             .unwrap();
 
@@ -558,8 +491,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
 
         cache.insert(
             op,
-            joined.accepted_worst,
-            joined.rejected_best,
+            joined.accepted_worst.clone(),
+            joined.rejected_best.clone(),
             joined.node.clone(),
         );
         joined
@@ -724,6 +657,52 @@ mod test {
                 let bounded_c = c
                     .iter()
                     .filter(|x| x.iter().map(f).sum::<usize>() <= budget)
+                    .cloned()
+                    .collect();
+                let bounded_sets = SetFamily::from_sets(bounded_c, &holder);
+                assert_eq!(alt_c.clip_weight(budget, f), bounded_sets);
+                let bounded_s = a.clone().bounded_join(b.clone(), f, budget);
+                bounded_s.check_valid_zdd();
+
+                assert_eq!(
+                    bounded_s, bounded_sets,
+                    "Calculated != desired {bounded_s} != {bounded_sets} "
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_join_isize() {
+        let holder = ZddHolder::new();
+        let universe = "abcd".chars().collect::<Vec<_>>();
+        let mut rng = rngs::SmallRng::seed_from_u64(0);
+
+        for _ in 0..1000 {
+            let weights = random_isize_weights(&universe, &mut rng);
+            let f = |v: &char| *weights.get(v).unwrap();
+
+            let a = random_family(&universe, &mut rng);
+            let b = random_family(&universe, &mut rng);
+            let c = a
+                .iter()
+                .cartesian_product(b.iter())
+                .map(|(a, b)| a.union(b).copied().collect::<BTreeSet<_>>())
+                .collect::<BTreeSet<_>>();
+
+            let a = SetFamily::from_sets(a, &holder);
+            let b = SetFamily::from_sets(b, &holder);
+
+            let max_budget = weights.values().sum::<isize>();
+            for budget in 0..max_budget {
+                println!("{weights:?}");
+                println!("{a} x {b} while under {budget}");
+                let alt_c = a.clone().join(b.clone());
+                assert_eq!(alt_c, SetFamily::from_sets(c.clone(), &holder));
+
+                let bounded_c = c
+                    .iter()
+                    .filter(|x| x.iter().map(f).sum::<isize>() <= budget)
                     .cloned()
                     .collect();
                 let bounded_sets = SetFamily::from_sets(bounded_c, &holder);
