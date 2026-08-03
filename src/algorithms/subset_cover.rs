@@ -4,7 +4,11 @@ use std::{
     ops::{Add, AddAssign, Sub},
 };
 
-use crate::{SetFamily, algorithms::max_weight::MinWeightCache, manager::TempCacheItem};
+use crate::{
+    SetFamily, ZddHolder,
+    algorithms::max_weight::WeightCache,
+    manager::{TempCacheItem, ZddIndex},
+};
 use ahash::HashMap;
 use indicatif::ProgressStyle;
 
@@ -122,10 +126,14 @@ where
     Some(solution)
 }
 
+type RawNodeInterval<V, T> = (ZddIndex<V>, Infinite<T>, Infinite<T>);
+
 #[derive(Debug, Clone)]
-struct IntervalCache<'a, K, V: Eq + Hash, T>(
-    HashMap<K, RangeMap<Infinite<T>, NodeInterval<'a, T, V>>>,
-);
+struct IntervalCache<'a, K, V: Eq + Hash, T> {
+    map: HashMap<K, RangeMap<Infinite<T>, RawNodeInterval<V, T>>>,
+    holder: &'a ZddHolder<V>,
+    generation: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NodeInterval<'a, T, V: Eq + Hash> {
@@ -137,14 +145,30 @@ struct NodeInterval<'a, T, V: Eq + Hash> {
 impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T> IntervalCache<'a, K, V, T>
 where
     T: Ord + Clone,
+    K: TempCacheItem<'a, V>,
 {
-    fn get(&self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
-        self.0
+    fn get(&mut self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
+        self.clear_if_not_current();
+        self.map
             .get(node)
             .and_then(|x| x.get(&Infinite::Finite(budget)))
             .cloned()
+            .map(|(node, accepted_worst, rejected_best)| NodeInterval {
+                node: SetFamily::from_set_family(node, self.holder),
+                accepted_worst,
+                rejected_best,
+            })
     }
 
+    fn clear_if_not_current(&mut self) {
+        let current = self.holder.current_generation();
+        if current != self.generation {
+            self.generation = current;
+            self.map.clear();
+        }
+    }
+
+    #[expect(clippy::needless_pass_by_value)]
     fn insert(
         &mut self,
         node: K,
@@ -152,13 +176,10 @@ where
         rejected_best: Infinite<T>,
         r: SetFamily<'a, V>,
     ) {
-        self.0.entry(node).or_default().insert(
+        self.clear_if_not_current();
+        self.map.entry(node).or_default().insert(
             accepted_worst.clone()..rejected_best.clone(),
-            NodeInterval {
-                node: r,
-                accepted_worst,
-                rejected_best,
-            },
+            (r.as_raw(), accepted_worst, rejected_best),
         );
     }
 }
@@ -244,9 +265,13 @@ impl_checked_sub_always!(
     NotNan<f64>
 );
 
-impl<K, V: Eq + Hash, T> Default for IntervalCache<'_, K, V, T> {
-    fn default() -> Self {
-        Self(HashMap::default())
+impl<'a, K, V: Eq + Hash, T> IntervalCache<'a, K, V, T> {
+    fn new(holder: &'a ZddHolder<V>) -> Self {
+        Self {
+            map: HashMap::default(),
+            generation: holder.current_generation(),
+            holder,
+        }
     }
 }
 
@@ -264,7 +289,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     {
         let cache = self.manager().create_temporary_cache();
         self.clone()
-            .clip_weight_inner(&f, budget, &mut IntervalCache::default(), &cache)
+            .clip_weight_inner(&f, budget, &mut IntervalCache::new(self.manager()), &cache)
             .node
     }
 
@@ -274,8 +299,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         self,
         f: &F,
         budget: T,
-        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, T>,
-        min_cache: &MinWeightCache<'a, V, Option<T>>,
+        cache: &mut IntervalCache<'a, ZddIndex<V>, V, T>,
+        min_cache: &WeightCache<'a, V, Option<T>>,
     ) -> NodeInterval<'a, T, V>
     where
         F: Fn(&V) -> T + Send + Sync,
@@ -305,7 +330,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
             };
         }
 
-        if let Some(r) = cache.get(&self, budget.clone()) {
+        if let Some(r) = cache.get(&self.as_raw(), budget.clone()) {
             return r;
         }
 
@@ -318,7 +343,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
             let combined = NodeInterval::combine(lo_interval, hi_interval, v, f);
 
             cache.insert(
-                self.clone(),
+                self.as_raw(),
                 combined.accepted_worst.clone(),
                 combined.rejected_best.clone(),
                 combined.node.clone(),
@@ -333,7 +358,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
             lo_interval.rejected_best = std::cmp::min(lo_interval.rejected_best, h);
 
             cache.insert(
-                self.clone(),
+                self.as_raw(),
                 lo_interval.accepted_worst.clone(),
                 lo_interval.rejected_best.clone(),
                 lo_interval.node.clone(),
@@ -357,13 +382,14 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> T + Send + Sync,
         T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
     {
+        let holder = self.manager();
         let min_cache = self.manager().create_temporary_cache();
         self.inner_bounded_join(
             other,
             &f,
             budget,
-            &mut IntervalCache::default(),
-            &mut IntervalCache::default(),
+            &mut IntervalCache::new(holder),
+            &mut IntervalCache::new(holder),
             &min_cache,
         )
         .node
@@ -374,9 +400,9 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         mut other: SetFamily<'a, V>,
         f: &F,
         budget: T,
-        cache: &mut IntervalCache<'a, (SetFamily<'a, V>, SetFamily<'a, V>), V, T>,
-        clipping_cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, T>,
-        min_cache: &MinWeightCache<'a, V, Option<T>>,
+        cache: &mut IntervalCache<'a, (ZddIndex<V>, ZddIndex<V>), V, T>,
+        clipping_cache: &mut IntervalCache<'a, ZddIndex<V>, V, T>,
+        min_cache: &WeightCache<'a, V, Option<T>>,
     ) -> NodeInterval<'a, T, V>
     where
         F: Fn(&V) -> T + Send + Sync,
@@ -408,7 +434,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         }
 
         let holder = self.manager;
-        let op = (self.clone(), other.clone());
+        let op = (self.as_raw(), other.as_raw());
         if let Some(r) = cache.get(&op, budget.clone()) {
             return r;
         }

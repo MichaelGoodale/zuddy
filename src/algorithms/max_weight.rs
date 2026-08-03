@@ -8,8 +8,7 @@ use crate::{
     utils::UsizeOrPositiveInfinity,
 };
 
-pub(crate) type MaxWeightCache<'a, V, Int> = TempCache<'a, V, ZddIndex<V>, Int>;
-pub(crate) type MinWeightCache<'a, V, I> = TempCache<'a, V, ZddIndex<V>, I>;
+pub(crate) type WeightCache<'a, V, Int> = TempCache<'a, V, ZddIndex<V>, Int>;
 pub(crate) type BoundsWeightCache<'a, V, I> = TempCache<'a, V, ZddIndex<V>, (Option<I>, I)>;
 
 fn min_none_first<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
@@ -28,12 +27,12 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> Int + Send + Sync,
         Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
     {
-        let cache: MaxWeightCache<'a, V, Int> = self.manager().create_temporary_cache();
+        let cache: WeightCache<'a, V, Int> = self.manager().create_temporary_cache();
         self.clone().max_weight_inner(&f, &cache)
     }
 
     #[must_use]
-    pub(crate) fn max_weight_inner<F, Int>(self, f: &F, cache: &MaxWeightCache<'a, V, Int>) -> Int
+    pub(crate) fn max_weight_inner<F, Int>(self, f: &F, cache: &WeightCache<'a, V, Int>) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
         Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
@@ -154,7 +153,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> Int + Send + Sync,
         Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int>,
     {
-        let cache: MinWeightCache<'a, V, Option<Int>> = self.manager().create_temporary_cache();
+        let cache: WeightCache<'a, V, Option<Int>> = self.manager().create_temporary_cache();
         self.clone().min_weight_inner(&f, &cache).unwrap()
     }
 
@@ -162,7 +161,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub(crate) fn min_weight_inner<F, Int>(
         self,
         f: &F,
-        cache: &MinWeightCache<'a, V, Option<Int>>,
+        cache: &WeightCache<'a, V, Option<Int>>,
     ) -> Option<Int>
     where
         F: Fn(&V) -> Int + Send + Sync,

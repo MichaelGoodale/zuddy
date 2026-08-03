@@ -66,7 +66,7 @@ where
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
-    fn current_generation(&self) -> u64 {
+    pub(crate) fn current_generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
 
