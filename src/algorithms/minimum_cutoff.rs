@@ -239,7 +239,7 @@ mod test {
                     .cloned()
                     .collect::<BTreeSet<_>>();
                 let other = SetFamily::from_sets(other, &holder);
-                let max_weight = s.clip_weight_usize(budget, f);
+                let max_weight = s.clip_weight(budget, f);
                 max_weight.check_valid_zdd();
                 assert_eq!(max_weight, other, "{max_weight} != {other}");
 
@@ -288,7 +288,7 @@ mod test {
             (7, "a ab ad ae b c efg"),
             (8, "a ab ad ae b c efg"),
         ] {
-            let set = set.clip_weight_usize(n, f);
+            let set = set.clip_weight(n, f);
             println!("{n}");
             assert_eq!(res, set.as_string());
         }

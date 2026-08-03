@@ -1,22 +1,57 @@
 use std::{
     fmt::{Debug, Display},
     hash::Hash,
+    ops::{Add, AddAssign, Sub},
 };
 
-use crate::{
-    SetFamily,
-    algorithms::{
-        UsizeOrPositiveInfinity,
-        max_weight::MinWeightCache,
-        utils::{IsizeOrInfinity, PossiblyInfinite},
-    },
-};
+use crate::{SetFamily, algorithms::max_weight::MinWeightCache, manager::TempCacheItem};
 use ahash::HashMap;
 use indicatif::ProgressStyle;
 
 #[cfg(test)]
 use indicatif::ProgressDrawTarget;
+use num_traits::Num;
 use rangemap::RangeMap;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
+enum Infinite<T> {
+    NegInf,
+    Finite(T),
+    PosInf,
+}
+
+impl<T: Add<T, Output = T>> Add for Infinite<T> {
+    type Output = Infinite<T>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Infinite::NegInf | Infinite::Finite(_), Infinite::NegInf)
+            | (Infinite::NegInf, Infinite::Finite(_)) => Infinite::NegInf,
+            (Infinite::Finite(x), Infinite::Finite(y)) => Infinite::Finite(x + y),
+            (Infinite::Finite(_) | Infinite::PosInf, Infinite::PosInf)
+            | (Infinite::PosInf, Infinite::Finite(_)) => Infinite::PosInf,
+            (Infinite::NegInf, Infinite::PosInf) | (Infinite::PosInf, Infinite::NegInf) => {
+                panic!("Addining positive and negative infinity is undefined!")
+            }
+        }
+    }
+}
+
+impl<T: Add<T, Output = T> + Clone> AddAssign for Infinite<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = self.clone() + rhs;
+    }
+}
+
+impl<T: Display> Display for Infinite<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Infinite::NegInf => write!(f, "-∞"),
+            Infinite::Finite(v) => write!(f, "{v}"),
+            Infinite::PosInf => write!(f, "∞"),
+        }
+    }
+}
 
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
 /// such that where $b$ is the budget:
@@ -43,7 +78,7 @@ where
 
     if sets.len() == 1 {
         let minimum = sets[0].min_weight(&f);
-        return Some(sets[0].clip_weight_usize(minimum, f));
+        return Some(sets[0].clip_weight(minimum, f));
     }
 
     let mut solution = holder.zero();
@@ -88,34 +123,37 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct IntervalCache<'a, K, V: Eq + Hash, T: PossiblyInfinite>(
-    HashMap<K, RangeMap<T::PossiblyInfiniteType, NodeInterval<'a, T, V>>>,
+struct IntervalCache<'a, K, V: Eq + Hash, T>(
+    HashMap<K, RangeMap<Infinite<T>, NodeInterval<'a, T, V>>>,
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NodeInterval<'a, T: PossiblyInfinite, V: Eq + Hash> {
+struct NodeInterval<'a, T, V: Eq + Hash> {
     node: SetFamily<'a, V>,
-    accepted_worst: T::PossiblyInfiniteType,
-    rejected_best: T::PossiblyInfiniteType,
+    accepted_worst: Infinite<T>,
+    rejected_best: Infinite<T>,
 }
 
-impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T: PossiblyInfinite> IntervalCache<'a, K, V, T> {
+impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T> IntervalCache<'a, K, V, T>
+where
+    T: Ord + Clone,
+{
     fn get(&self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
         self.0
             .get(node)
-            .and_then(|x| x.get(&budget.as_finite()))
+            .and_then(|x| x.get(&Infinite::Finite(budget)))
             .cloned()
     }
 
     fn insert(
         &mut self,
         node: K,
-        accepted_worst: T::PossiblyInfiniteType,
-        rejected_best: T::PossiblyInfiniteType,
+        accepted_worst: Infinite<T>,
+        rejected_best: Infinite<T>,
         r: SetFamily<'a, V>,
     ) {
         self.0.entry(node).or_default().insert(
-            accepted_worst..rejected_best,
+            accepted_worst.clone()..rejected_best.clone(),
             NodeInterval {
                 node: r,
                 accepted_worst,
@@ -125,9 +163,9 @@ impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T: PossiblyInfinite> IntervalCache<
     }
 }
 
-impl<V: Eq + Hash + Display + Clone + Ord, T: PossiblyInfinite> Display for NodeInterval<'_, T, V>
+impl<V: Eq + Hash + Display + Clone + Ord, T> Display for NodeInterval<'_, T, V>
 where
-    T::PossiblyInfiniteType: Display,
+    T: Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -138,18 +176,18 @@ where
     }
 }
 
-impl<V: Eq + Hash + Clone + Ord + Send + Sync, T: PossiblyInfinite> NodeInterval<'_, T, V> {
-    fn add_weight(&mut self, w: T::PossiblyInfiniteType) {
-        self.accepted_worst += w;
-        self.rejected_best += w;
+impl<V: Eq + Hash + Clone + Ord + Send + Sync, T: Num + Clone + Ord> NodeInterval<'_, T, V> {
+    fn add_weight(&mut self, w: T) {
+        self.accepted_worst += Infinite::Finite(w.clone());
+        self.rejected_best += Infinite::Finite(w);
     }
 
     fn combine<F>(lo: Self, hi: Self, value: V, f: F) -> Self
     where
         F: Fn(&V) -> T + Send + Sync,
     {
-        let w = f(&value).as_finite();
-        let accepted_worst = std::cmp::max(lo.accepted_worst, hi.accepted_worst + w);
+        let w = Infinite::Finite(f(&value));
+        let accepted_worst = std::cmp::max(lo.accepted_worst, hi.accepted_worst + w.clone());
         let rejected_best = std::cmp::min(lo.rejected_best, hi.rejected_best + w);
         let holder = lo.node.manager();
         NodeInterval {
@@ -160,7 +198,53 @@ impl<V: Eq + Hash + Clone + Ord + Send + Sync, T: PossiblyInfinite> NodeInterval
     }
 }
 
-impl<K, V: Eq + Hash, T: PossiblyInfinite> Default for IntervalCache<'_, K, V, T> {
+///Re-implementation of `checked_sub` even when not necessary.
+pub trait PossiblyPointlessCheckedSub: Sized + Sub<Output = Self> {
+    fn checked_sub(&self, v: &Self) -> Option<Self>;
+}
+
+/// For types with a native `checked_sub` inherent method (integers).
+macro_rules! impl_checked_sub_native {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl PossiblyPointlessCheckedSub for $t {
+                fn checked_sub(&self, v: &Self) -> Option<Self> {
+                    <$t>::checked_sub(*self, *v)
+                }
+            }
+        )*
+    };
+}
+
+/// For types with only a regular `Sub` impl (e.g. floats), so the
+/// subtraction is always "checked" successfully.
+macro_rules! impl_checked_sub_always {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl PossiblyPointlessCheckedSub for $t {
+                fn checked_sub(&self, v: &Self) -> Option<Self> {
+                    Some(*self - *v)
+                }
+            }
+        )*
+    };
+}
+
+impl_checked_sub_native!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+);
+
+use ordered_float::{NotNan, OrderedFloat};
+impl_checked_sub_always!(
+    f32,
+    f64,
+    OrderedFloat<f32>,
+    OrderedFloat<f64>,
+    NotNan<f32>,
+    NotNan<f64>
+);
+
+impl<K, V: Eq + Hash, T> Default for IntervalCache<'_, K, V, T> {
     fn default() -> Self {
         Self(HashMap::default())
     }
@@ -173,74 +257,85 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     ///
     ///Adapted from Minato, S., Kawahara, J., Banbara, M., Horiyama, T., Takigawa, I., & Yamaguchi, Y. (2025). Fast enumeration of all cost-bounded solutions for combinatorial problems using ZDDs. Discrete Applied Mathematics, 360, 467–486. `<https://doi.org/10.1016/j.dam.2024.10.003>`
     #[must_use]
-    pub fn clip_weight_usize<F>(&self, budget: usize, f: F) -> SetFamily<'a, V>
+    pub fn clip_weight<F, T>(&self, budget: T, f: F) -> SetFamily<'a, V>
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
     {
         let cache = self.manager().create_temporary_cache();
         self.clone()
-            .clip_weight_usize_inner(&f, budget, &mut IntervalCache::default(), &cache)
+            .clip_weight_inner(&f, budget, &mut IntervalCache::default(), &cache)
             .node
     }
 
     ///Adapted from Minato, S., Kawahara, J., Banbara, M., Horiyama, T., Takigawa, I., & Yamaguchi, Y. (2025). Fast enumeration of all cost-bounded solutions for combinatorial problems using ZDDs. Discrete Applied Mathematics, 360, 467–486. `<https://doi.org/10.1016/j.dam.2024.10.003>`
-    fn clip_weight_usize_inner<F>(
+    #[expect(clippy::needless_pass_by_value)]
+    fn clip_weight_inner<F, T>(
         self,
         f: &F,
-        budget: usize,
-        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, usize>,
-        min_cache: &MinWeightCache<'a, V, Option<usize>>,
-    ) -> NodeInterval<'a, usize, V>
+        budget: T,
+        cache: &mut IntervalCache<'a, SetFamily<'a, V>, V, T>,
+        min_cache: &MinWeightCache<'a, V, Option<T>>,
+    ) -> NodeInterval<'a, T, V>
     where
-        F: Fn(&V) -> usize + Send + Sync,
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
     {
         if self.is_zero() {
             return NodeInterval {
                 node: self,
-                accepted_worst: UsizeOrPositiveInfinity::Size(0),
-                rejected_best: UsizeOrPositiveInfinity::PositiveInfinity,
+                accepted_worst: Infinite::NegInf,
+                rejected_best: Infinite::PosInf,
             };
         }
 
         if self.is_one() {
-            return NodeInterval {
-                node: self,
-                accepted_worst: UsizeOrPositiveInfinity::Size(0),
-                rejected_best: UsizeOrPositiveInfinity::PositiveInfinity,
+            return if budget >= T::zero() {
+                NodeInterval {
+                    node: self,
+                    accepted_worst: Infinite::Finite(T::zero()),
+                    rejected_best: Infinite::PosInf,
+                }
+            } else {
+                NodeInterval {
+                    node: self.manager().zero(),
+                    accepted_worst: Infinite::NegInf,
+                    rejected_best: Infinite::Finite(T::zero()),
+                }
             };
         }
 
-        if let Some(r) = cache.get(&self, budget) {
+        if let Some(r) = cache.get(&self, budget.clone()) {
             return r;
         }
 
         let (v, lo, hi) = self.get().unwrap();
 
-        let mut lo_interval = lo.clip_weight_usize_inner(f, budget, cache, min_cache);
+        let mut lo_interval = lo.clip_weight_inner(f, budget.clone(), cache, min_cache);
         let w = f(&v);
-        if let Some(hi_budget) = budget.checked_sub(w) {
-            let hi_interval = hi.clip_weight_usize_inner(f, hi_budget, cache, min_cache);
+        if let Some(hi_budget) = budget.checked_sub(&w) {
+            let hi_interval = hi.clip_weight_inner(f, hi_budget, cache, min_cache);
             let combined = NodeInterval::combine(lo_interval, hi_interval, v, f);
 
             cache.insert(
                 self.clone(),
-                combined.accepted_worst,
-                combined.rejected_best,
+                combined.accepted_worst.clone(),
+                combined.rejected_best.clone(),
                 combined.node.clone(),
             );
             combined
         } else {
             let h = hi.min_weight_inner(f, min_cache).map(|x| x + w);
             let h = match h {
-                Some(num) => UsizeOrPositiveInfinity::Size(num),
-                None => UsizeOrPositiveInfinity::PositiveInfinity,
+                Some(num) => Infinite::Finite(num),
+                None => Infinite::PosInf,
             };
             lo_interval.rejected_best = std::cmp::min(lo_interval.rejected_best, h);
 
             cache.insert(
                 self.clone(),
-                lo_interval.accepted_worst,
-                lo_interval.rejected_best,
+                lo_interval.accepted_worst.clone(),
+                lo_interval.rejected_best.clone(),
                 lo_interval.node.clone(),
             );
             lo_interval
@@ -248,6 +343,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     }
 }
 
+/*
 impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     ///Given a function that maps elements of the [`SetFamily`] to isize and a `budget`, return the
     ///ZDD consisting of all sets whose elements sum to budget or less. Allows for negative weights.
@@ -314,7 +410,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         );
         combined
     }
-}
+}*/
 
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
@@ -356,17 +452,17 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         if other.is_zero() || self.is_zero() {
             return NodeInterval {
                 node: self.manager().zero(),
-                accepted_worst: UsizeOrPositiveInfinity::Size(0),
-                rejected_best: UsizeOrPositiveInfinity::PositiveInfinity,
+                accepted_worst: Infinite::Finite(0),
+                rejected_best: Infinite::PosInf,
             };
         }
 
         if other.is_one() {
-            return self.clip_weight_usize_inner(f, budget, clipping_cache, min_cache);
+            return self.clip_weight_inner(f, budget, clipping_cache, min_cache);
         }
 
         if self.is_one() {
-            return other.clip_weight_usize_inner(f, budget, clipping_cache, min_cache);
+            return other.clip_weight_inner(f, budget, clipping_cache, min_cache);
         }
 
         let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
@@ -420,15 +516,15 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             ];
 
             for x in &mut his {
-                x.add_weight(UsizeOrPositiveInfinity::Size(w));
+                x.add_weight(w);
             }
 
             his
         } else {
             [0; 3].map(|_| NodeInterval {
                 node: self.manager().zero(),
-                accepted_worst: UsizeOrPositiveInfinity::Size(0),
-                rejected_best: UsizeOrPositiveInfinity::Size(budget + 1),
+                accepted_worst: Infinite::Finite(0),
+                rejected_best: Infinite::Finite(budget + 1),
             })
         };
         let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache, clipping_cache, min_cache);
@@ -486,10 +582,10 @@ mod test {
 
     #[test]
     fn isize_tests() {
-        assert!(IsizeOrInfinity::NegInfinity < IsizeOrInfinity::Finite(3));
-        assert!(IsizeOrInfinity::NegInfinity < IsizeOrInfinity::PosInfinity);
-        assert!(IsizeOrInfinity::Finite(3) < IsizeOrInfinity::PosInfinity);
-        assert!(IsizeOrInfinity::Finite(-3) < IsizeOrInfinity::Finite(3));
+        assert!(Infinite::NegInf < Infinite::Finite(3));
+        assert!(Infinite::<u32>::NegInf < Infinite::PosInf);
+        assert!(Infinite::Finite(3) < Infinite::PosInf);
+        assert!(Infinite::Finite(-3) < Infinite::Finite(3));
     }
 
     #[test]
@@ -518,7 +614,7 @@ mod test {
                 continue;
             }
             let budget = x.min_weight(f);
-            let clipped_sol = x.clip_weight_usize(budget, f);
+            let clipped_sol = x.clip_weight(budget, f);
 
             for g in families {
                 let g = g
@@ -590,7 +686,7 @@ mod test {
                     .cloned()
                     .collect::<BTreeSet<_>>();
                 let other = SetFamily::from_sets(other, &holder);
-                let max_weight = s.clip_weight_usize(budget, f);
+                let max_weight = s.clip_weight(budget, f);
                 max_weight.check_valid_zdd();
                 assert_eq!(max_weight, other, "{max_weight} != {other}");
             }
@@ -631,7 +727,7 @@ mod test {
                     .cloned()
                     .collect();
                 let bounded_sets = SetFamily::from_sets(bounded_c, &holder);
-                assert_eq!(alt_c.clip_weight_usize(budget, f), bounded_sets);
+                assert_eq!(alt_c.clip_weight(budget, f), bounded_sets);
                 let bounded_s = a.clone().bounded_join(b.clone(), f, budget);
                 bounded_s.check_valid_zdd();
 

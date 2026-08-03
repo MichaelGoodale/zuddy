@@ -16,7 +16,7 @@ use raw::RawZddData;
 pub(crate) use raw::ZddIndex;
 use uuid::Uuid;
 
-use crate::{algorithms::UsizeOrPositiveInfinity, manager::hashtable::HashTable};
+use crate::{manager::hashtable::HashTable, utils::UsizeOrPositiveInfinity};
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 

@@ -4,8 +4,8 @@ use num_traits::Num;
 
 use crate::{
     SetFamily,
-    algorithms::UsizeOrPositiveInfinity,
     manager::{SizeKey, SizeValue, TempCache, TempCacheItem, ZddIndex},
+    utils::UsizeOrPositiveInfinity,
 };
 
 pub(crate) type MaxWeightCache<'a, V, Int> = TempCache<'a, V, ZddIndex<V>, Int>;
@@ -248,9 +248,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 mod test {
     use std::collections::BTreeSet;
 
-    use crate::{
-        SetFamily, ZddHolder, algorithms::UsizeOrPositiveInfinity, utils::test::str_to_sets,
-    };
+    use crate::{SetFamily, ZddHolder, utils::UsizeOrPositiveInfinity, utils::test::str_to_sets};
 
     #[test]
     fn test_max_weight() {

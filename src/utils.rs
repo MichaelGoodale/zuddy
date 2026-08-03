@@ -2,15 +2,92 @@
 //!
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
-    fmt::{Display, Write},
+    fmt::{Debug, Display, Write},
     hash::{BuildHasher, Hash},
+    ops::{Add, AddAssign},
 };
 
 use ahash::HashSetExt;
 pub mod single_set;
+use crate::SetFamily;
 use crate::manager::{SizeKey, SizeValue, ZddHolder, ZddIndex};
-use crate::{SetFamily, algorithms::UsizeOrPositiveInfinity};
 use single_set::SingleSet;
+
+///Represents a usize, or positive infinity
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub enum UsizeOrPositiveInfinity {
+    ///A usize
+    Size(usize),
+    ///Positive Infinity
+    PositiveInfinity,
+}
+impl Display for UsizeOrPositiveInfinity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UsizeOrPositiveInfinity::Size(x) => write!(f, "{x}"),
+            UsizeOrPositiveInfinity::PositiveInfinity => write!(f, "∞"),
+        }
+    }
+}
+
+impl From<UsizeOrPositiveInfinity> for Option<usize> {
+    fn from(value: UsizeOrPositiveInfinity) -> Self {
+        match value {
+            UsizeOrPositiveInfinity::Size(x) => Some(x),
+            UsizeOrPositiveInfinity::PositiveInfinity => None,
+        }
+    }
+}
+
+impl Add for UsizeOrPositiveInfinity {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (UsizeOrPositiveInfinity::Size(x), UsizeOrPositiveInfinity::Size(y)) => x
+                .checked_add(y)
+                .map_or(UsizeOrPositiveInfinity::PositiveInfinity, |z| {
+                    UsizeOrPositiveInfinity::Size(z)
+                }),
+            _ => UsizeOrPositiveInfinity::PositiveInfinity,
+        }
+    }
+}
+
+impl AddAssign for UsizeOrPositiveInfinity {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl UsizeOrPositiveInfinity {
+    ///Adds a value to a [`UsizeOrPositiveInfinity`], turning to [`UsizeOrPositiveInfinity::PositiveInfinity`] if there is an
+    ///overflow.
+    #[must_use]
+    pub fn add_usize(self, x: usize) -> Self {
+        match self {
+            UsizeOrPositiveInfinity::Size(s) => s
+                .checked_add(x)
+                .map_or(UsizeOrPositiveInfinity::PositiveInfinity, |z| {
+                    UsizeOrPositiveInfinity::Size(z)
+                }),
+            UsizeOrPositiveInfinity::PositiveInfinity => UsizeOrPositiveInfinity::PositiveInfinity,
+        }
+    }
+
+    ///Take a [`UsizeOrPositiveInfinity`] and unwrap it, assuming it is
+    ///[`UsizeOrPositiveInfinity::Size`]
+    ///
+    ///# Panics
+    ///Will panic if this is [`UsizeOrPositiveInfinity::PositiveInfinity`]
+    #[must_use]
+    pub fn unwrap(self) -> usize {
+        match self {
+            UsizeOrPositiveInfinity::Size(x) => x,
+            UsizeOrPositiveInfinity::PositiveInfinity => panic!("Size is infinite!"),
+        }
+    }
+}
 
 impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ///Returns the [`SetFamily`] as a string with a [Graphviz](https://graphviz.org/) formatted graph
@@ -193,6 +270,7 @@ pub mod test {
 
     use crate::SetFamily;
     use crate::ZddHolder;
+    use crate::utils::UsizeOrPositiveInfinity;
 
     pub fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
         universe
@@ -344,5 +422,21 @@ pub mod test {
             result.members().map(|x| x.into_iter().collect()).collect();
 
         assert_eq!(result_recon, intended);
+    }
+
+    #[test]
+    fn ordering_of_usize_with_inf() {
+        assert!(
+            UsizeOrPositiveInfinity::PositiveInfinity > UsizeOrPositiveInfinity::Size(usize::MAX)
+        );
+        assert_eq!(
+            UsizeOrPositiveInfinity::PositiveInfinity,
+            UsizeOrPositiveInfinity::PositiveInfinity
+        );
+        assert!(UsizeOrPositiveInfinity::Size(3) > UsizeOrPositiveInfinity::Size(0));
+        assert_eq!(
+            UsizeOrPositiveInfinity::Size(0),
+            UsizeOrPositiveInfinity::Size(0)
+        );
     }
 }

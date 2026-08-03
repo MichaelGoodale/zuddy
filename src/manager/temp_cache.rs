@@ -5,11 +5,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::{
-    SetFamily, ZddHolder,
-    algorithms::{IsizeOrInfinity, UsizeOrPositiveInfinity},
-    manager::ZddIndex,
-};
+use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfinity};
 
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
@@ -104,6 +100,8 @@ macro_rules! impl_temp_cache_item_copy {
     };
 }
 
+use ordered_float::{NotNan, OrderedFloat};
+
 impl_temp_cache_item_copy!(
     u8,
     u16,
@@ -117,12 +115,15 @@ impl_temp_cache_item_copy!(
     i64,
     i128,
     isize,
+    NotNan<f32>,
+    NotNan<f64>,
+    OrderedFloat<f32>,
+    OrderedFloat<f64>,
     f32,
     f64,
     bool,
     char,
     UsizeOrPositiveInfinity,
-    IsizeOrInfinity,
     (),
     std::cmp::Ordering,
     std::time::Duration,
