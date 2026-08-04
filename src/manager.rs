@@ -73,6 +73,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 ///Statistics about the current ZDD Manager.
 pub struct HolderStats {
     ///Number of possible slots.
