@@ -61,6 +61,28 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self.cache.clear();
         self.size_caches.clear();
     }
+
+    ///Returns a [`HolderStats`]
+    pub fn stats(&self) -> HolderStats {
+        HolderStats {
+            table_size: self.uniq_table.len(),
+            used_data: self.uniq_table.n_used(),
+            n_claimed_regions: self.uniq_table.n_claimed_regions(),
+            n_regions: self.uniq_table.n_regions(),
+        }
+    }
+}
+
+///Statistics about the current ZDD Manager.
+pub struct HolderStats {
+    ///Number of possible slots.
+    pub table_size: usize,
+    ///Number of occupied slots
+    pub used_data: usize,
+    ///Number of claimed regions
+    pub n_claimed_regions: usize,
+    ///Number of regions
+    pub n_regions: usize,
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {

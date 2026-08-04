@@ -137,6 +137,16 @@ impl Slots {
             .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
     }
 
+    pub(crate) fn n_claimed_regions(&self) -> usize {
+        let x = unsafe { self.claimed_regions.get().as_ref().unwrap() };
+        x.iter().map(|x| usize::from(x.load(Relaxed))).sum()
+    }
+    pub(crate) fn n_regions(&self) -> usize {
+        unsafe { self.claimed_regions.get().as_ref() }
+            .unwrap()
+            .len()
+    }
+
     fn claim_region(&self, thread_id: usize) -> bool {
         let current_region: usize = self.current_region()[thread_id].load(Relaxed);
         let n_regions = unsafe { (&*self.claimed_regions.get()).len() };

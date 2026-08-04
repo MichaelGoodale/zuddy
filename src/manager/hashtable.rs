@@ -157,6 +157,17 @@ impl<V: Hash + Eq> HashTable<V> {
     pub(super) fn n_used(&self) -> usize {
         self.slots.n_used()
     }
+
+    pub(super) fn n_claimed_regions(&self) -> usize {
+        self.slots.n_claimed_regions()
+    }
+    pub(super) fn n_regions(&self) -> usize {
+        self.slots.n_regions()
+    }
+
+    pub fn len(&self) -> usize {
+        unsafe { &*self.data.get() }.len()
+    }
 }
 
 #[derive(Debug, Error)]
