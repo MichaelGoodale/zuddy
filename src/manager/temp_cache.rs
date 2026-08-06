@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     hash::Hash,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -143,6 +144,46 @@ where
 
     fn from_gc(x: &Self::Output) -> Self {
         x.clone().map(|x| T::from_gc(&x))
+    }
+}
+
+impl<'a, V, T> TempCacheItem<'a, V> for Vec<T>
+where
+    V: Eq + Hash + 'a,
+    T: TempCacheItem<'a, V> + Clone,
+    T::Output: Clone,
+{
+    type Output = Vec<T::Output>;
+
+    fn to_gc(&self, holder: &'a ZddHolder<V>) -> Self::Output {
+        self.iter().map(|x| x.to_gc(holder)).collect()
+    }
+
+    fn from_gc(x: &Self::Output) -> Self {
+        x.iter().map(|x| T::from_gc(x)).collect()
+    }
+}
+
+impl<'a, V, T, K> TempCacheItem<'a, V> for BTreeMap<K, T>
+where
+    V: Eq + Hash + 'a,
+    T: TempCacheItem<'a, V> + Clone,
+    T::Output: Clone,
+    K: TempCacheItem<'a, V> + Clone + Ord,
+    K::Output: Clone + Ord,
+{
+    type Output = BTreeMap<K::Output, T::Output>;
+
+    fn to_gc(&self, holder: &'a ZddHolder<V>) -> Self::Output {
+        self.iter()
+            .map(|(k, v)| (k.to_gc(holder), v.to_gc(holder)))
+            .collect()
+    }
+
+    fn from_gc(x: &Self::Output) -> Self {
+        x.iter()
+            .map(|(k, v)| (K::from_gc(k), T::from_gc(v)))
+            .collect()
     }
 }
 

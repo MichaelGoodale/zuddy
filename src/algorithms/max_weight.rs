@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{collections::BTreeMap, hash::Hash};
 
 use num_traits::Num;
 
@@ -241,13 +241,72 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             ),
         )
     }
+
+    ///The histogram of the summed weights of the elements of sets.
+    ///How many sets are there of each summed weight?
+    ///# Panics
+    ///Will panic if passed the empty set.
+    #[must_use]
+    pub fn set_weights<F, T>(&self, f: F) -> BTreeMap<T, usize>
+    where
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync,
+    {
+        let cache: WeightCache<'a, V, BTreeMap<T, usize>> = self.manager().create_temporary_cache();
+        self.clone().set_weights_inner(&f, &cache)
+    }
+
+    #[must_use]
+    pub(crate) fn set_weights_inner<F, T>(
+        self,
+        f: &F,
+        cache: &WeightCache<'a, V, BTreeMap<T, usize>>,
+    ) -> BTreeMap<T, usize>
+    where
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync,
+    {
+        if self.is_zero() {
+            return BTreeMap::new();
+        } else if self.is_one() {
+            return BTreeMap::from([(T::zero(), 1)]);
+        }
+
+        if let Some(r) = cache.get(&self.as_raw()) {
+            return r;
+        }
+
+        let (value, lo, hi) = self.get().unwrap();
+
+        let (mut lo_hist, hi_hist) = self.manager().pools().join(
+            || lo.set_weights_inner(f, cache),
+            || hi.set_weights_inner(f, cache),
+        );
+
+        let w = f(&value);
+
+        for (k, v) in hi_hist {
+            let k = k + w.clone();
+            *lo_hist.entry(k).or_insert(0) += v;
+        }
+
+        cache.insert(self.as_raw(), lo_hist)
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    use crate::{SetFamily, ZddHolder, utils::UsizeOrPositiveInfinity, utils::test::str_to_sets};
+    use rand::{SeedableRng, rngs::SmallRng};
+
+    use crate::{
+        SetFamily, ZddHolder,
+        utils::{
+            UsizeOrPositiveInfinity,
+            test::{random_family, random_isize_weights, str_to_sets},
+        },
+    };
 
     #[test]
     fn test_max_weight() {
@@ -314,6 +373,34 @@ mod test {
                 s.bounds_cardinality(),
                 (UsizeOrPositiveInfinity::Size(min_card), max_card)
             );
+        }
+    }
+
+    #[test]
+    fn histogram_test() {
+        let universe = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+        let mut rng = SmallRng::seed_from_u64(3);
+        for _ in 0..200 {
+            let mut fam = random_family(&universe, &mut rng);
+            while fam.is_empty() {
+                fam = random_family(&universe, &mut rng);
+            }
+
+            let weights = random_isize_weights(&universe, &mut rng);
+
+            let f = |x: &char| *weights.get(x).unwrap();
+
+            let mut hist = BTreeMap::new();
+            for set in &fam {
+                let size = set.iter().map(f).sum::<isize>();
+                *hist.entry(size).or_insert(0) += 1;
+            }
+
+            let holder = ZddHolder::new();
+            let sets = SetFamily::from_sets(fam, &holder);
+            let calculated_hist = sets.set_weights(f);
+
+            assert_eq!(calculated_hist, hist);
         }
     }
 }

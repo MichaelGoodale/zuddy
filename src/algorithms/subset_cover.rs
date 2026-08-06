@@ -1,7 +1,12 @@
 use std::{
+    collections::BTreeMap,
     fmt::{Debug, Display},
     hash::Hash,
     ops::{Add, AddAssign, Sub},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -9,7 +14,8 @@ use crate::{
     algorithms::max_weight::WeightCache,
     manager::{TempCacheItem, ZddIndex},
 };
-use ahash::HashMap;
+use ahash::{HashSet, HashSetExt};
+use dashmap::DashMap;
 use indicatif::ProgressStyle;
 
 #[cfg(test)]
@@ -57,6 +63,156 @@ impl<T: Display> Display for Infinite<T> {
     }
 }
 
+fn discrete_convolution_size(
+    a: &BTreeMap<usize, usize>,
+    b: &BTreeMap<usize, usize>,
+    max: Option<usize>,
+) -> usize {
+    let mut size = 0;
+
+    for (&ka, &va) in a {
+        if va == 0 {
+            continue;
+        }
+
+        if let Some(max) = max
+            && ka > max
+        {
+            //we can break since any future ka will be greater than this one.
+            break;
+        }
+
+        for (&kb, &vb) in b {
+            if vb == 0 {
+                continue;
+            }
+            if let Some(max) = max
+                && ka + kb > max
+            {
+                continue;
+            }
+            size += va * vb;
+        }
+    }
+    size
+}
+
+struct ZDDStat<V> {
+    elements: HashSet<V>,
+    histogram: BTreeMap<usize, usize>,
+    set_size: usize,
+}
+
+impl<V: Eq + Hash + Clone + Send + Sync> ZDDStat<V> {
+    fn new<F>(s: &SetFamily<'_, V>, f: F) -> ZDDStat<V>
+    where
+        F: Fn(&V) -> usize + Send + Sync,
+    {
+        ZDDStat {
+            elements: s.universe(),
+            histogram: s.set_weights(f),
+            set_size: s.n_nodes(),
+        }
+    }
+
+    #[expect(clippy::cast_precision_loss)]
+    fn score(&self, other: &ZDDStat<V>, max: Option<usize>) -> Score {
+        let total_size = ln_to_zero((self.set_size * other.set_size) as f64);
+        let hist_size =
+            ln_to_zero(discrete_convolution_size(&self.histogram, &other.histogram, max) as f64);
+        let intersect_size = self.elements.intersection(&other.elements).count() as f64;
+        let union_size = self.elements.union(&other.elements).count() as f64;
+        let jaccard = intersect_size / union_size;
+
+        Score {
+            hist_size: NotNan::new(hist_size).unwrap(),
+            jaccard: NotNan::new(jaccard).unwrap(),
+            total_size: NotNan::new(total_size).unwrap(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Score {
+    hist_size: NotNan<f64>,
+    jaccard: NotNan<f64>,
+    total_size: NotNan<f64>,
+}
+
+impl Score {
+    fn score(&self) -> NotNan<f64> {
+        (self.jaccard + NotNan::new(0.1).unwrap()) * self.hist_size * self.total_size
+    }
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score().cmp(&other.score())
+    }
+}
+
+fn ln_to_zero(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { x.ln() }
+}
+
+fn choose_one<V>(stats: &[ZDDStat<V>], max: Option<usize>, anchor: usize) -> usize
+where
+    V: Eq + Hash + Clone + Send + Sync,
+{
+    let x = &stats[anchor];
+    let (_, i) = stats
+        .iter()
+        .enumerate()
+        .filter_map(|(i, y)| {
+            if i == anchor {
+                None
+            } else {
+                Some((x.score(y, max), i))
+            }
+        })
+        .min()
+        .unwrap();
+
+    i
+}
+
+fn choose_pair<V>(stats: &[ZDDStat<V>], max: Option<usize>) -> (usize, usize)
+where
+    V: Eq + Hash + Clone + Send + Sync,
+{
+    let mut best_pair: Option<(_, usize, usize)> = None;
+    for (i, x) in stats.iter().enumerate() {
+        let new_pair = stats
+            .iter()
+            .enumerate()
+            .filter_map(|(j, y)| {
+                if j == i {
+                    None
+                } else {
+                    Some((x.score(y, max), i, j))
+                }
+            })
+            .min()
+            .unwrap();
+
+        if let Some(old_pair) = best_pair {
+            best_pair = Some(old_pair.min(new_pair));
+        } else {
+            best_pair = Some(new_pair);
+        }
+    }
+
+    let (_, i, j) = best_pair.unwrap();
+
+    if i > j { (i, j) } else { (j, i) }
+}
+
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
 /// such that where $b$ is the budget:
 ///
@@ -86,13 +242,13 @@ where
     }
 
     let mut solution = holder.zero();
-    let mut budget = 0;
+    let mut budget = 20;
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
+
     'outer: while solution.is_zero() {
         if max_budget.is_some_and(|max_budget| budget > max_budget) {
             return None;
         }
-
         let style = ProgressStyle::default_bar()
             .template(
                 format!(
@@ -107,32 +263,58 @@ where
         bar.set_draw_target(ProgressDrawTarget::hidden());
 
         let mut sets = sets.to_vec();
+        let mut stats = sets.iter().map(|s| ZDDStat::new(s, &f)).collect::<Vec<_>>();
+
+        {
+            let (i, j) = choose_pair(&stats, Some(budget));
+            let first = sets.remove(i);
+            let first_stat = stats.remove(i);
+            let second = sets.remove(j);
+            let second_stat = stats.remove(j);
+            sets.extend([first, second]);
+            stats.extend([first_stat, second_stat]);
+        }
+
         while sets.len() >= 2 {
-            let a = sets.pop().unwrap();
-            let b = sets.pop().unwrap();
+            let (a, b) = if budget < 300 {
+                stats.pop();
+                stats.pop();
+                (sets.pop().unwrap(), sets.pop().unwrap())
+            } else {
+                let i = choose_one(&stats, Some(budget), sets.len() - 1);
+                stats.remove(i);
+                stats.pop();
+                (sets.remove(i), sets.pop().unwrap())
+            };
+            println!("{} {}", a.size(), b.size());
+            println!("{} {}", a.n_nodes(), b.n_nodes());
             let c = a.bounded_join(b, &f, budget);
+            let c_stat = ZDDStat::new(&c, &f);
             if c.is_zero() {
                 bar.finish_and_clear();
                 budget += 1;
                 continue 'outer;
             }
             sets.push(c);
+            stats.push(c_stat);
             bar.inc(1);
         }
         bar.finish_and_clear();
         budget += 1;
         solution = sets.pop().unwrap();
     }
+
     Some(solution)
 }
 
 type RawNodeInterval<V, T> = (ZddIndex<V>, Infinite<T>, Infinite<T>);
+type IntervalMap<V, T> = RangeMap<Infinite<T>, RawNodeInterval<V, T>>;
 
-#[derive(Debug, Clone)]
-struct IntervalCache<'a, K, V: Eq + Hash, T> {
-    map: HashMap<K, RangeMap<Infinite<T>, RawNodeInterval<V, T>>>,
+#[derive(Debug)]
+struct IntervalCache<'a, K: Eq + Hash, V: Eq + Hash, T> {
+    map: DashMap<K, Arc<Mutex<IntervalMap<V, T>>>>,
     holder: &'a ZddHolder<V>,
-    generation: u64,
+    generation: AtomicU64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,12 +329,14 @@ where
     T: Ord + Clone,
     K: TempCacheItem<'a, V>,
 {
-    fn get(&mut self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
+    fn get(&self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
         self.clear_if_not_current();
         self.map
             .get(node)
-            .and_then(|x| x.get(&Infinite::Finite(budget)))
-            .cloned()
+            .and_then(|x| {
+                let x = x.lock().unwrap();
+                x.get(&Infinite::Finite(budget)).cloned()
+            })
             .map(|(node, accepted_worst, rejected_best)| NodeInterval {
                 node: SetFamily::from_set_family(node, self.holder),
                 accepted_worst,
@@ -160,24 +344,32 @@ where
             })
     }
 
-    fn clear_if_not_current(&mut self) {
+    fn clear_if_not_current(&self) {
         let current = self.holder.current_generation();
-        if current != self.generation {
-            self.generation = current;
+        let our_gen = self.generation.load(Ordering::Acquire);
+
+        if current != our_gen
+            && self
+                .generation
+                .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+        {
             self.map.clear();
         }
     }
 
     #[expect(clippy::needless_pass_by_value)]
     fn insert(
-        &mut self,
+        &self,
         node: K,
         accepted_worst: Infinite<T>,
         rejected_best: Infinite<T>,
         r: SetFamily<'a, V>,
-    ) {
+    ) where
+        K: ToOwned<Owned = K>,
+    {
         self.clear_if_not_current();
-        self.map.entry(node).or_default().insert(
+        self.map.entry(node).or_default().lock().unwrap().insert(
             accepted_worst.clone()..rejected_best.clone(),
             (r.as_raw(), accepted_worst, rejected_best),
         );
@@ -224,7 +416,6 @@ pub trait PossiblyPointlessCheckedSub: Sized + Sub<Output = Self> {
     fn checked_sub(&self, v: &Self) -> Option<Self>;
 }
 
-/// For types with a native `checked_sub` inherent method (integers).
 macro_rules! impl_checked_sub_native {
     ($($t:ty),* $(,)?) => {
         $(
@@ -237,8 +428,6 @@ macro_rules! impl_checked_sub_native {
     };
 }
 
-/// For types with only a regular `Sub` impl (e.g. floats), so the
-/// subtraction is always "checked" successfully.
 macro_rules! impl_checked_sub_always {
     ($($t:ty),* $(,)?) => {
         $(
@@ -265,11 +454,11 @@ impl_checked_sub_always!(
     NotNan<f64>
 );
 
-impl<'a, K, V: Eq + Hash, T> IntervalCache<'a, K, V, T> {
+impl<'a, K: Eq + Hash, V: Eq + Hash, T> IntervalCache<'a, K, V, T> {
     fn new(holder: &'a ZddHolder<V>) -> Self {
         Self {
-            map: HashMap::default(),
-            generation: holder.current_generation(),
+            map: DashMap::new(),
+            generation: AtomicU64::new(holder.current_generation()),
             holder,
         }
     }
@@ -289,7 +478,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     {
         let cache = self.manager().create_temporary_cache();
         self.clone()
-            .clip_weight_inner(&f, budget, &mut IntervalCache::new(self.manager()), &cache)
+            .clip_weight_inner(&f, budget, &IntervalCache::new(self.manager()), &cache)
             .node
     }
 
@@ -299,7 +488,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         self,
         f: &F,
         budget: T,
-        cache: &mut IntervalCache<'a, ZddIndex<V>, V, T>,
+        cache: &IntervalCache<'a, ZddIndex<V>, V, T>,
         min_cache: &WeightCache<'a, V, Option<T>>,
     ) -> NodeInterval<'a, T, V>
     where
@@ -368,6 +557,21 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     }
 }
 
+struct BoundedJoinCache<'a, V: Eq + Hash, T> {
+    join: IntervalCache<'a, (ZddIndex<V>, ZddIndex<V>), V, T>,
+    clipping_cache: IntervalCache<'a, ZddIndex<V>, V, T>,
+    min_cache: WeightCache<'a, V, Option<T>>,
+}
+impl<'a, V: Eq + Hash, T> BoundedJoinCache<'a, V, T> {
+    fn new(holder: &'a ZddHolder<V>) -> BoundedJoinCache<'a, V, T> {
+        BoundedJoinCache {
+            join: IntervalCache::new(holder),
+            clipping_cache: IntervalCache::new(holder),
+            min_cache: holder.create_temporary_cache(),
+        }
+    }
+}
+
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets while capping the maximum size of output
@@ -375,24 +579,22 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///It is defined as join(f, g) = { α ∪ β | α ∈ f ∧ β ∈ g ∧ \sum_{x\in α ∪ β} f(x) <= budget }
     ///
     ///# Panics
-    ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
+    ///May panic if `self` or `other` are undefined in the [`ZddHolder`].
     #[must_use]
     pub fn bounded_join<F, T>(self, other: SetFamily<'a, V>, f: F, budget: T) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + Send
+            + Sync,
     {
         let holder = self.manager();
-        let min_cache = self.manager().create_temporary_cache();
-        self.inner_bounded_join(
-            other,
-            &f,
-            budget,
-            &mut IntervalCache::new(holder),
-            &mut IntervalCache::new(holder),
-            &min_cache,
-        )
-        .node
+        self.inner_bounded_join(other, &f, budget, &BoundedJoinCache::new(holder))
+            .node
     }
 
     fn inner_bounded_join<F, T>(
@@ -400,13 +602,17 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         mut other: SetFamily<'a, V>,
         f: &F,
         budget: T,
-        cache: &mut IntervalCache<'a, (ZddIndex<V>, ZddIndex<V>), V, T>,
-        clipping_cache: &mut IntervalCache<'a, ZddIndex<V>, V, T>,
-        min_cache: &WeightCache<'a, V, Option<T>>,
+        cache: &BoundedJoinCache<'a, V, T>,
     ) -> NodeInterval<'a, T, V>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + Send
+            + Sync,
     {
         if other.is_zero() || self.is_zero() {
             return NodeInterval {
@@ -414,14 +620,10 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
                 accepted_worst: Infinite::NegInf,
                 rejected_best: Infinite::PosInf,
             };
-        }
-
-        if other.is_one() {
-            return self.clip_weight_inner(f, budget, clipping_cache, min_cache);
-        }
-
-        if self.is_one() {
-            return other.clip_weight_inner(f, budget, clipping_cache, min_cache);
+        } else if other.is_one() {
+            return self.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+        } else if self.is_one() {
+            return other.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
         }
 
         let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
@@ -435,7 +637,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
 
         let holder = self.manager;
         let op = (self.as_raw(), other.as_raw());
-        if let Some(r) = cache.get(&op, budget.clone()) {
+        if let Some(r) = cache.join.get(&op, budget.clone()) {
             return r;
         }
 
@@ -447,32 +649,38 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         let w = f(&value);
 
         let his = if let Some(hi_budget) = budget.checked_sub(&w) {
-            let mut his = [
-                self_hi.clone().inner_bounded_join(
-                    other_hi.clone(),
-                    f,
-                    hi_budget.clone(),
-                    cache,
-                    clipping_cache,
-                    min_cache,
-                ),
-                self_hi.inner_bounded_join(
-                    other_lo.clone(),
-                    f,
-                    hi_budget.clone(),
-                    cache,
-                    clipping_cache,
-                    min_cache,
-                ),
-                self_lo.clone().inner_bounded_join(
-                    other_hi,
-                    f,
-                    hi_budget,
-                    cache,
-                    clipping_cache,
-                    min_cache,
-                ),
-            ];
+            let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
+                || {
+                    self_hi.clone().inner_bounded_join(
+                        other_hi.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                    )
+                },
+                || {
+                    holder.pools().join(
+                        || {
+                            self_hi.clone().inner_bounded_join(
+                                other_lo.clone(),
+                                f,
+                                hi_budget.clone(),
+                                cache,
+                            )
+                        },
+                        || {
+                            self_lo.clone().inner_bounded_join(
+                                other_hi.clone(),
+                                f,
+                                hi_budget.clone(),
+                                cache,
+                            )
+                        },
+                    )
+                },
+            );
+
+            let mut his = [hi_hi, hi_lo, lo_hi];
 
             for x in &mut his {
                 x.add_weight(w.clone());
@@ -486,20 +694,11 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
                 rejected_best: Infinite::Finite(budget.clone() + T::one()),
             })
         };
-        let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache, clipping_cache, min_cache);
-        let accepted_worst = his
-            .iter()
-            .chain(std::iter::once(&lo))
-            .map(|x| x.accepted_worst.clone())
-            .max()
-            .unwrap();
+        let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache);
 
-        let rejected_best = his
-            .iter()
-            .chain(std::iter::once(&lo))
-            .map(|x| x.rejected_best.clone())
-            .min()
-            .unwrap();
+        let nodes = [&his[0], &his[1], &his[2], &lo];
+        let accepted_worst = nodes.iter().map(|x| x.accepted_worst.clone()).max().clone();
+        let rejected_best = nodes.iter().map(|x| x.rejected_best.clone()).min().clone();
 
         let product = his
             .into_iter()
@@ -511,11 +710,11 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
 
         let joined = NodeInterval {
             node: v_product.union(lo.node),
-            accepted_worst,
-            rejected_best,
+            accepted_worst: accepted_worst.unwrap(),
+            rejected_best: rejected_best.unwrap(),
         };
 
-        cache.insert(
+        cache.join.insert(
             op,
             joined.accepted_worst.clone(),
             joined.rejected_best.clone(),
