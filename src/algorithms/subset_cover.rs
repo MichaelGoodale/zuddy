@@ -1,12 +1,16 @@
 use std::{
+    cmp::Reverse,
     collections::BTreeMap,
     fmt::{Debug, Display},
+    fs::{File, OpenOptions},
     hash::Hash,
     ops::{Add, AddAssign, Sub},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
@@ -14,7 +18,7 @@ use crate::{
     algorithms::max_weight::WeightCache,
     manager::{TempCacheItem, ZddIndex},
 };
-use ahash::{HashSet, HashSetExt};
+use ahash::RandomState;
 use dashmap::DashMap;
 use indicatif::ProgressStyle;
 
@@ -63,154 +67,39 @@ impl<T: Display> Display for Infinite<T> {
     }
 }
 
-fn discrete_convolution_size(
-    a: &BTreeMap<usize, usize>,
-    b: &BTreeMap<usize, usize>,
-    max: Option<usize>,
-) -> usize {
-    let mut size = 0;
+fn open_csv_writer(path: impl AsRef<Path>) -> Result<csv::Writer<File>, std::io::Error> {
+    let path = path.as_ref();
 
-    for (&ka, &va) in a {
-        if va == 0 {
-            continue;
-        }
+    let has_existing_data = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len() > 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
 
-        if let Some(max) = max
-            && ka > max
-        {
-            //we can break since any future ka will be greater than this one.
-            break;
-        }
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
 
-        for (&kb, &vb) in b {
-            if vb == 0 {
-                continue;
-            }
-            if let Some(max) = max
-                && ka + kb > max
-            {
-                continue;
-            }
-            size += va * vb;
-        }
-    }
-    size
+    let writer = csv::WriterBuilder::new()
+        .has_headers(!has_existing_data)
+        .from_writer(file);
+
+    Ok(writer)
 }
 
-struct ZDDStat<V> {
-    elements: HashSet<V>,
-    histogram: BTreeMap<usize, usize>,
-    set_size: usize,
-}
-
-impl<V: Eq + Hash + Clone + Send + Sync> ZDDStat<V> {
-    fn new<F>(s: &SetFamily<'_, V>, f: F) -> ZDDStat<V>
-    where
-        F: Fn(&V) -> usize + Send + Sync,
-    {
-        ZDDStat {
-            elements: s.universe(),
-            histogram: s.set_weights(f),
-            set_size: s.n_nodes(),
-        }
-    }
-
-    #[expect(clippy::cast_precision_loss)]
-    fn score(&self, other: &ZDDStat<V>, max: Option<usize>) -> Score {
-        let total_size = ln_to_zero((self.set_size * other.set_size) as f64);
-        let hist_size =
-            ln_to_zero(discrete_convolution_size(&self.histogram, &other.histogram, max) as f64);
-        let intersect_size = self.elements.intersection(&other.elements).count() as f64;
-        let union_size = self.elements.union(&other.elements).count() as f64;
-        let jaccard = intersect_size / union_size;
-
-        Score {
-            hist_size: NotNan::new(hist_size).unwrap(),
-            jaccard: NotNan::new(jaccard).unwrap(),
-            total_size: NotNan::new(total_size).unwrap(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Score {
-    hist_size: NotNan<f64>,
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Serialize)]
+struct Row {
+    a_n_nodes: usize,
+    a_size: usize,
+    b_n_nodes: usize,
+    b_size: usize,
+    a_min: usize,
+    a_max: usize,
+    b_min: usize,
+    b_max: usize,
+    predicted_combo: usize,
+    position: usize,
     jaccard: NotNan<f64>,
-    total_size: NotNan<f64>,
-}
-
-impl Score {
-    fn score(&self) -> NotNan<f64> {
-        (self.jaccard + NotNan::new(0.1).unwrap()) * self.hist_size * self.total_size
-    }
-}
-
-impl PartialOrd for Score {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Score {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.score().cmp(&other.score())
-    }
-}
-
-fn ln_to_zero(x: f64) -> f64 {
-    if x == 0.0 { 0.0 } else { x.ln() }
-}
-
-fn choose_one<V>(stats: &[ZDDStat<V>], max: Option<usize>, anchor: usize) -> usize
-where
-    V: Eq + Hash + Clone + Send + Sync,
-{
-    let x = &stats[anchor];
-    let (_, i) = stats
-        .iter()
-        .enumerate()
-        .filter_map(|(i, y)| {
-            if i == anchor {
-                None
-            } else {
-                Some((x.score(y, max), i))
-            }
-        })
-        .min()
-        .unwrap();
-
-    i
-}
-
-fn choose_pair<V>(stats: &[ZDDStat<V>], max: Option<usize>) -> (usize, usize)
-where
-    V: Eq + Hash + Clone + Send + Sync,
-{
-    let mut best_pair: Option<(_, usize, usize)> = None;
-    for (i, x) in stats.iter().enumerate() {
-        let new_pair = stats
-            .iter()
-            .enumerate()
-            .filter_map(|(j, y)| {
-                if j == i {
-                    None
-                } else {
-                    Some((x.score(y, max), i, j))
-                }
-            })
-            .min()
-            .unwrap();
-
-        if let Some(old_pair) = best_pair {
-            best_pair = Some(old_pair.min(new_pair));
-        } else {
-            best_pair = Some(new_pair);
-        }
-    }
-
-    let (_, i, j) = best_pair.unwrap();
-
-    if i > j { (i, j) } else { (j, i) }
+    budget: usize,
+    time: u128,
 }
 
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
@@ -244,7 +133,7 @@ where
     let mut solution = holder.zero();
     let mut budget = 20;
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
-
+    let mut writer = open_csv_writer("measurements.csv").unwrap();
     'outer: while solution.is_zero() {
         if max_budget.is_some_and(|max_budget| budget > max_budget) {
             return None;
@@ -263,42 +152,74 @@ where
         bar.set_draw_target(ProgressDrawTarget::hidden());
 
         let mut sets = sets.to_vec();
-        let mut stats = sets.iter().map(|s| ZDDStat::new(s, &f)).collect::<Vec<_>>();
+        sets.sort_by_key(|x| Reverse((x.n_nodes(), x.size())));
+        let mut elements = sets
+            .iter()
+            .map(SetFamily::universe::<RandomState>)
+            .collect::<Vec<_>>();
 
-        {
-            let (i, j) = choose_pair(&stats, Some(budget));
-            let first = sets.remove(i);
-            let first_stat = stats.remove(i);
-            let second = sets.remove(j);
-            let second_stat = stats.remove(j);
-            sets.extend([first, second]);
-            stats.extend([first_stat, second_stat]);
-        }
-
+        let mut position = 0;
         while sets.len() >= 2 {
-            let (a, b) = if budget < 300 {
-                stats.pop();
-                stats.pop();
-                (sets.pop().unwrap(), sets.pop().unwrap())
-            } else {
-                let i = choose_one(&stats, Some(budget), sets.len() - 1);
-                stats.remove(i);
-                stats.pop();
-                (sets.remove(i), sets.pop().unwrap())
+            let (a, b, jaccard) = {
+                let acc = sets.pop().unwrap();
+                let e = elements.pop().unwrap();
+                let (jaccard, i) = elements
+                    .iter()
+                    .zip(&sets)
+                    .enumerate()
+                    .map(|(i, (x, zdd))| {
+                        let e_u_x = e.union(x).count();
+                        let e_intersect_x = e.intersection(x).count();
+                        (
+                            (
+                                NotNan::new((e_intersect_x as f64) / (e_u_x as f64)).unwrap(),
+                                zdd.n_nodes(),
+                                zdd.size(),
+                            ),
+                            i,
+                        )
+                    })
+                    .min()
+                    .unwrap();
+                elements.remove(i);
+                (acc, sets.remove(i), jaccard)
             };
-            println!("{} {}", a.size(), b.size());
-            println!("{} {}", a.n_nodes(), b.n_nodes());
-            let c = a.bounded_join(b, &f, budget);
-            let c_stat = ZDDStat::new(&c, &f);
+            let start = Instant::now();
+            let c = a.clone().bounded_join(b.clone(), &f, budget);
+            elements.push(c.universe());
+            let time = start.elapsed().as_millis();
+
+            let a_bounds = a.bounds(&f);
+            let b_bounds = b.bounds(&f);
+
+            writer
+                .serialize(Row {
+                    predicted_combo: a.clone().number_of_recursive_calls(b.clone(), &f, budget),
+                    a_n_nodes: a.n_nodes(),
+                    a_size: a.size().unwrap(),
+                    b_n_nodes: b.n_nodes(),
+                    b_size: b.size().unwrap(),
+                    a_max: a_bounds.1,
+                    a_min: a_bounds.0,
+                    b_min: b_bounds.0,
+                    b_max: b_bounds.1,
+                    jaccard: jaccard.0,
+                    budget,
+                    position,
+                    time,
+                })
+                .unwrap();
             if c.is_zero() {
+                writer.flush().unwrap();
                 bar.finish_and_clear();
                 budget += 1;
                 continue 'outer;
             }
             sets.push(c);
-            stats.push(c_stat);
+            position += 1;
             bar.inc(1);
         }
+        writer.flush().unwrap();
         bar.finish_and_clear();
         budget += 1;
         solution = sets.pop().unwrap();
@@ -355,6 +276,9 @@ where
                 .is_ok()
         {
             self.map.clear();
+            if self.map.len() > 1_000_000 {
+                self.map.clear();
+            }
         }
     }
 
@@ -445,6 +369,7 @@ impl_checked_sub_native!(
 );
 
 use ordered_float::{NotNan, OrderedFloat};
+use serde::Serialize;
 impl_checked_sub_always!(
     f32,
     f64,
@@ -572,6 +497,13 @@ impl<'a, V: Eq + Hash, T> BoundedJoinCache<'a, V, T> {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+enum Stack<V, T> {
+    Search((ZddIndex<V>, ZddIndex<V>, T)),
+    Retrieve(ZddIndex<V>, ZddIndex<V>, T),
+    RetrieveLoOnly(ZddIndex<V>, ZddIndex<V>, T),
+}
+
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets while capping the maximum size of output
@@ -593,16 +525,184 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + Sync,
     {
         let holder = self.manager();
-        self.inner_bounded_join(other, &f, budget, &BoundedJoinCache::new(holder))
+        self.inner_bounded_join(other, &f, budget, &BoundedJoinCache::new(holder), 0)
             .node
     }
 
+    fn number_of_recursive_calls<F, T>(self, other: SetFamily<'a, V>, f: &F, budget: T) -> usize
+    where
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + Send
+            + Sync
+            + Debug,
+        V: Debug,
+    {
+        let holder = self.manager();
+        self.number_of_recursive_calls_inner(other, &f, budget, &BoundedJoinCache::new(holder), 0)
+            .0
+    }
+
+    #[recursive::recursive]
+    fn number_of_recursive_calls_inner<F, T>(
+        mut self,
+        mut other: SetFamily<'a, V>,
+        f: &F,
+        budget: T,
+
+        cache: &BoundedJoinCache<'a, V, T>,
+        depth: usize,
+    ) -> (usize, Infinite<T>, Infinite<T>)
+    where
+        F: Fn(&V) -> T + Send + Sync,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + Send
+            + Sync
+            + Debug,
+        V: Debug,
+    {
+        if other.is_zero() || self.is_zero() {
+            return (1, Infinite::NegInf, Infinite::PosInf);
+        } else if other.is_one() {
+            let x = self.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            return (1, x.accepted_worst, x.rejected_best);
+        } else if self.is_one() {
+            let x = other.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            return (1, x.accepted_worst, x.rejected_best);
+        }
+
+        let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
+        let (mut other_v, mut other_lo, mut other_hi) = other.get().expect("Invalid index!");
+        if value > other_v {
+            std::mem::swap(&mut value, &mut other_v);
+            std::mem::swap(&mut self_lo, &mut other_lo);
+            std::mem::swap(&mut self_hi, &mut other_hi);
+            std::mem::swap(&mut self, &mut other);
+        }
+
+        let holder = self.manager;
+        let op = (self.as_raw(), other.as_raw());
+        if let Some(r) = cache.join.get(&op, budget.clone()) {
+            return (1, r.accepted_worst, r.rejected_best);
+        }
+
+        if other_v > value {
+            other_lo = other;
+            other_hi = self.manager.zero();
+        }
+
+        let w = f(&value);
+
+        let his = if let Some(hi_budget) = budget.checked_sub(&w) {
+            let mut his = if false {
+                let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
+                    || {
+                        self_hi.clone().number_of_recursive_calls_inner(
+                            other_hi.clone(),
+                            f,
+                            hi_budget.clone(),
+                            cache,
+                            depth + 1,
+                        )
+                    },
+                    || {
+                        holder.pools().join(
+                            || {
+                                self_hi.clone().number_of_recursive_calls_inner(
+                                    other_lo.clone(),
+                                    f,
+                                    hi_budget.clone(),
+                                    cache,
+                                    depth + 1,
+                                )
+                            },
+                            || {
+                                self_lo.clone().number_of_recursive_calls_inner(
+                                    other_hi.clone(),
+                                    f,
+                                    hi_budget.clone(),
+                                    cache,
+                                    depth + 1,
+                                )
+                            },
+                        )
+                    },
+                );
+                [hi_hi, hi_lo, lo_hi]
+            } else {
+                [
+                    self_hi.clone().number_of_recursive_calls_inner(
+                        other_hi.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                        depth + 1,
+                    ),
+                    self_hi.clone().number_of_recursive_calls_inner(
+                        other_lo.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                        depth + 1,
+                    ),
+                    self_lo.clone().number_of_recursive_calls_inner(
+                        other_hi.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                        depth + 1,
+                    ),
+                ]
+            };
+
+            for x in &mut his {
+                x.1 += Infinite::Finite(w.clone());
+                x.2 += Infinite::Finite(w.clone());
+            }
+
+            his
+        } else {
+            [0; 3].map(|_| {
+                (
+                    0,
+                    Infinite::Finite(T::zero()),
+                    Infinite::Finite(budget.clone() + T::one()),
+                )
+            })
+        };
+        let lo = self_lo.number_of_recursive_calls_inner(other_lo, f, budget, cache, depth + 1);
+
+        let nodes = [&his[0], &his[1], &his[2], &lo];
+        let accepted_worst = nodes.iter().map(|x| x.1.clone()).max().clone();
+        let rejected_best = nodes.iter().map(|x| x.2.clone()).min().clone();
+
+        let n = nodes.iter().map(|x| x.0).sum();
+
+        cache.join.insert(
+            op,
+            accepted_worst.clone().unwrap(),
+            rejected_best.clone().unwrap(),
+            holder.zero(),
+        );
+        (n, accepted_worst.unwrap(), rejected_best.unwrap())
+    }
+
+    #[recursive::recursive]
     fn inner_bounded_join<F, T>(
         mut self,
         mut other: SetFamily<'a, V>,
         f: &F,
         budget: T,
         cache: &BoundedJoinCache<'a, V, T>,
+        depth: usize,
     ) -> NodeInterval<'a, T, V>
     where
         F: Fn(&V) -> T + Send + Sync,
@@ -649,38 +749,66 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         let w = f(&value);
 
         let his = if let Some(hi_budget) = budget.checked_sub(&w) {
-            let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
-                || {
+            let mut his = if false {
+                let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
+                    || {
+                        self_hi.clone().inner_bounded_join(
+                            other_hi.clone(),
+                            f,
+                            hi_budget.clone(),
+                            cache,
+                            depth + 1,
+                        )
+                    },
+                    || {
+                        holder.pools().join(
+                            || {
+                                self_hi.clone().inner_bounded_join(
+                                    other_lo.clone(),
+                                    f,
+                                    hi_budget.clone(),
+                                    cache,
+                                    depth + 1,
+                                )
+                            },
+                            || {
+                                self_lo.clone().inner_bounded_join(
+                                    other_hi.clone(),
+                                    f,
+                                    hi_budget.clone(),
+                                    cache,
+                                    depth + 1,
+                                )
+                            },
+                        )
+                    },
+                );
+                [hi_hi, hi_lo, lo_hi]
+            } else {
+                [
                     self_hi.clone().inner_bounded_join(
                         other_hi.clone(),
                         f,
                         hi_budget.clone(),
                         cache,
-                    )
-                },
-                || {
-                    holder.pools().join(
-                        || {
-                            self_hi.clone().inner_bounded_join(
-                                other_lo.clone(),
-                                f,
-                                hi_budget.clone(),
-                                cache,
-                            )
-                        },
-                        || {
-                            self_lo.clone().inner_bounded_join(
-                                other_hi.clone(),
-                                f,
-                                hi_budget.clone(),
-                                cache,
-                            )
-                        },
-                    )
-                },
-            );
-
-            let mut his = [hi_hi, hi_lo, lo_hi];
+                        depth + 1,
+                    ),
+                    self_hi.clone().inner_bounded_join(
+                        other_lo.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                        depth + 1,
+                    ),
+                    self_lo.clone().inner_bounded_join(
+                        other_hi.clone(),
+                        f,
+                        hi_budget.clone(),
+                        cache,
+                        depth + 1,
+                    ),
+                ]
+            };
 
             for x in &mut his {
                 x.add_weight(w.clone());
@@ -694,7 +822,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
                 rejected_best: Infinite::Finite(budget.clone() + T::one()),
             })
         };
-        let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache);
+        let lo = self_lo.inner_bounded_join(other_lo, f, budget, cache, depth + 1);
 
         let nodes = [&his[0], &his[1], &his[2], &lo];
         let accepted_worst = nodes.iter().map(|x| x.accepted_worst.clone()).max().clone();
