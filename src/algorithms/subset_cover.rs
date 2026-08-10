@@ -1,16 +1,9 @@
+use ordered_float::{NotNan, OrderedFloat};
 use std::{
     cmp::Reverse,
-    collections::BTreeMap,
     fmt::{Debug, Display},
-    fs::{File, OpenOptions},
     hash::Hash,
     ops::{Add, AddAssign, Sub},
-    path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
 };
 
 use crate::{
@@ -18,8 +11,7 @@ use crate::{
     algorithms::max_weight::WeightCache,
     manager::{TempCacheItem, ZddIndex},
 };
-use ahash::RandomState;
-use dashmap::DashMap;
+use ahash::{HashMap, RandomState};
 use indicatif::ProgressStyle;
 
 #[cfg(test)]
@@ -67,41 +59,6 @@ impl<T: Display> Display for Infinite<T> {
     }
 }
 
-fn open_csv_writer(path: impl AsRef<Path>) -> Result<csv::Writer<File>, std::io::Error> {
-    let path = path.as_ref();
-
-    let has_existing_data = match std::fs::metadata(path) {
-        Ok(metadata) => metadata.len() > 0,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error),
-    };
-
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-
-    let writer = csv::WriterBuilder::new()
-        .has_headers(!has_existing_data)
-        .from_writer(file);
-
-    Ok(writer)
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Serialize)]
-struct Row {
-    a_n_nodes: usize,
-    a_size: usize,
-    b_n_nodes: usize,
-    b_size: usize,
-    a_min: usize,
-    a_max: usize,
-    b_min: usize,
-    b_max: usize,
-    predicted_combo: usize,
-    position: usize,
-    jaccard: NotNan<f64>,
-    budget: usize,
-    time: u128,
-}
-
 /// Given sets $S$, with elements weighted by function $f$, returns the zdd
 /// such that where $b$ is the budget:
 ///
@@ -133,7 +90,6 @@ where
     let mut solution = holder.zero();
     let mut budget = 20;
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
-    let mut writer = open_csv_writer("measurements.csv").unwrap();
     'outer: while solution.is_zero() {
         if max_budget.is_some_and(|max_budget| budget > max_budget) {
             return None;
@@ -158,12 +114,11 @@ where
             .map(SetFamily::universe::<RandomState>)
             .collect::<Vec<_>>();
 
-        let mut position = 0;
         while sets.len() >= 2 {
-            let (a, b, jaccard) = {
+            let (a, b) = {
                 let acc = sets.pop().unwrap();
                 let e = elements.pop().unwrap();
-                let (jaccard, i) = elements
+                let (_, i) = elements
                     .iter()
                     .zip(&sets)
                     .enumerate()
@@ -171,9 +126,10 @@ where
                         let e_u_x = e.union(x).count();
                         let e_intersect_x = e.intersection(x).count();
                         (
+                            #[expect(clippy::cast_precision_loss)]
                             (
-                                NotNan::new((e_intersect_x as f64) / (e_u_x as f64)).unwrap(),
-                                zdd.n_nodes(),
+                                NotNan::new((e_intersect_x as f64) / (e_u_x as f64)).unwrap()
+                                    * NotNan::new(zdd.n_nodes() as f64).unwrap(),
                                 zdd.size(),
                             ),
                             i,
@@ -182,44 +138,18 @@ where
                     .min()
                     .unwrap();
                 elements.remove(i);
-                (acc, sets.remove(i), jaccard)
+                (acc, sets.remove(i))
             };
-            let start = Instant::now();
             let c = a.clone().bounded_join(b.clone(), &f, budget);
             elements.push(c.universe());
-            let time = start.elapsed().as_millis();
-
-            let a_bounds = a.bounds(&f);
-            let b_bounds = b.bounds(&f);
-
-            writer
-                .serialize(Row {
-                    predicted_combo: a.clone().number_of_recursive_calls(b.clone(), &f, budget),
-                    a_n_nodes: a.n_nodes(),
-                    a_size: a.size().unwrap(),
-                    b_n_nodes: b.n_nodes(),
-                    b_size: b.size().unwrap(),
-                    a_max: a_bounds.1,
-                    a_min: a_bounds.0,
-                    b_min: b_bounds.0,
-                    b_max: b_bounds.1,
-                    jaccard: jaccard.0,
-                    budget,
-                    position,
-                    time,
-                })
-                .unwrap();
             if c.is_zero() {
-                writer.flush().unwrap();
                 bar.finish_and_clear();
                 budget += 1;
                 continue 'outer;
             }
             sets.push(c);
-            position += 1;
             bar.inc(1);
         }
-        writer.flush().unwrap();
         bar.finish_and_clear();
         budget += 1;
         solution = sets.pop().unwrap();
@@ -233,9 +163,9 @@ type IntervalMap<V, T> = RangeMap<Infinite<T>, RawNodeInterval<V, T>>;
 
 #[derive(Debug)]
 struct IntervalCache<'a, K: Eq + Hash, V: Eq + Hash, T> {
-    map: DashMap<K, Arc<Mutex<IntervalMap<V, T>>>>,
+    map: HashMap<K, IntervalMap<V, T>>,
     holder: &'a ZddHolder<V>,
-    generation: AtomicU64,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,14 +180,11 @@ where
     T: Ord + Clone,
     K: TempCacheItem<'a, V>,
 {
-    fn get(&self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
+    fn get(&mut self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
         self.clear_if_not_current();
         self.map
             .get(node)
-            .and_then(|x| {
-                let x = x.lock().unwrap();
-                x.get(&Infinite::Finite(budget)).cloned()
-            })
+            .and_then(|x| x.get(&Infinite::Finite(budget)).cloned())
             .map(|(node, accepted_worst, rejected_best)| NodeInterval {
                 node: SetFamily::from_set_family(node, self.holder),
                 accepted_worst,
@@ -265,26 +192,18 @@ where
             })
     }
 
-    fn clear_if_not_current(&self) {
+    fn clear_if_not_current(&mut self) {
         let current = self.holder.current_generation();
-        let our_gen = self.generation.load(Ordering::Acquire);
 
-        if current != our_gen
-            && self
-                .generation
-                .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-        {
+        if current != self.generation {
+            self.generation = current;
             self.map.clear();
-            if self.map.len() > 1_000_000 {
-                self.map.clear();
-            }
         }
     }
 
     #[expect(clippy::needless_pass_by_value)]
     fn insert(
-        &self,
+        &mut self,
         node: K,
         accepted_worst: Infinite<T>,
         rejected_best: Infinite<T>,
@@ -293,7 +212,7 @@ where
         K: ToOwned<Owned = K>,
     {
         self.clear_if_not_current();
-        self.map.entry(node).or_default().lock().unwrap().insert(
+        self.map.entry(node).or_default().insert(
             accepted_worst.clone()..rejected_best.clone(),
             (r.as_raw(), accepted_worst, rejected_best),
         );
@@ -368,8 +287,6 @@ impl_checked_sub_native!(
     u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
 );
 
-use ordered_float::{NotNan, OrderedFloat};
-use serde::Serialize;
 impl_checked_sub_always!(
     f32,
     f64,
@@ -382,8 +299,8 @@ impl_checked_sub_always!(
 impl<'a, K: Eq + Hash, V: Eq + Hash, T> IntervalCache<'a, K, V, T> {
     fn new(holder: &'a ZddHolder<V>) -> Self {
         Self {
-            map: DashMap::new(),
-            generation: AtomicU64::new(holder.current_generation()),
+            map: HashMap::default(),
+            generation: holder.current_generation(),
             holder,
         }
     }
@@ -403,7 +320,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     {
         let cache = self.manager().create_temporary_cache();
         self.clone()
-            .clip_weight_inner(&f, budget, &IntervalCache::new(self.manager()), &cache)
+            .clip_weight_inner(&f, budget, &mut IntervalCache::new(self.manager()), &cache)
             .node
     }
 
@@ -413,7 +330,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         self,
         f: &F,
         budget: T,
-        cache: &IntervalCache<'a, ZddIndex<V>, V, T>,
+        cache: &mut IntervalCache<'a, ZddIndex<V>, V, T>,
         min_cache: &WeightCache<'a, V, Option<T>>,
     ) -> NodeInterval<'a, T, V>
     where
@@ -497,13 +414,6 @@ impl<'a, V: Eq + Hash, T> BoundedJoinCache<'a, V, T> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-enum Stack<V, T> {
-    Search((ZddIndex<V>, ZddIndex<V>, T)),
-    Retrieve(ZddIndex<V>, ZddIndex<V>, T),
-    RetrieveLoOnly(ZddIndex<V>, ZddIndex<V>, T),
-}
-
 impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
     ///Performs join (Minato, 1994 refers to this as "product") over two family
     ///subsets while capping the maximum size of output
@@ -525,7 +435,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + Sync,
     {
         let holder = self.manager();
-        self.inner_bounded_join(other, &f, budget, &BoundedJoinCache::new(holder), 0)
+        self.inner_bounded_join(other, &f, budget, &mut BoundedJoinCache::new(holder), 0)
             .node
     }
 
@@ -543,8 +453,14 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         V: Debug,
     {
         let holder = self.manager();
-        self.number_of_recursive_calls_inner(other, &f, budget, &BoundedJoinCache::new(holder), 0)
-            .0
+        self.number_of_recursive_calls_inner(
+            other,
+            &f,
+            budget,
+            &mut BoundedJoinCache::new(holder),
+            0,
+        )
+        .0
     }
 
     #[recursive::recursive]
@@ -554,7 +470,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         f: &F,
         budget: T,
 
-        cache: &BoundedJoinCache<'a, V, T>,
+        cache: &mut BoundedJoinCache<'a, V, T>,
         depth: usize,
     ) -> (usize, Infinite<T>, Infinite<T>)
     where
@@ -572,10 +488,10 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         if other.is_zero() || self.is_zero() {
             return (1, Infinite::NegInf, Infinite::PosInf);
         } else if other.is_one() {
-            let x = self.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            let x = self.clip_weight_inner(f, budget, &mut cache.clipping_cache, &cache.min_cache);
             return (1, x.accepted_worst, x.rejected_best);
         } else if self.is_one() {
-            let x = other.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            let x = other.clip_weight_inner(f, budget, &mut cache.clipping_cache, &cache.min_cache);
             return (1, x.accepted_worst, x.rejected_best);
         }
 
@@ -602,66 +518,29 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         let w = f(&value);
 
         let his = if let Some(hi_budget) = budget.checked_sub(&w) {
-            let mut his = if false {
-                let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
-                    || {
-                        self_hi.clone().number_of_recursive_calls_inner(
-                            other_hi.clone(),
-                            f,
-                            hi_budget.clone(),
-                            cache,
-                            depth + 1,
-                        )
-                    },
-                    || {
-                        holder.pools().join(
-                            || {
-                                self_hi.clone().number_of_recursive_calls_inner(
-                                    other_lo.clone(),
-                                    f,
-                                    hi_budget.clone(),
-                                    cache,
-                                    depth + 1,
-                                )
-                            },
-                            || {
-                                self_lo.clone().number_of_recursive_calls_inner(
-                                    other_hi.clone(),
-                                    f,
-                                    hi_budget.clone(),
-                                    cache,
-                                    depth + 1,
-                                )
-                            },
-                        )
-                    },
-                );
-                [hi_hi, hi_lo, lo_hi]
-            } else {
-                [
-                    self_hi.clone().number_of_recursive_calls_inner(
-                        other_hi.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                    self_hi.clone().number_of_recursive_calls_inner(
-                        other_lo.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                    self_lo.clone().number_of_recursive_calls_inner(
-                        other_hi.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                ]
-            };
+            let mut his = [
+                self_hi.clone().number_of_recursive_calls_inner(
+                    other_hi.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+                self_hi.clone().number_of_recursive_calls_inner(
+                    other_lo.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+                self_lo.clone().number_of_recursive_calls_inner(
+                    other_hi.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+            ];
 
             for x in &mut his {
                 x.1 += Infinite::Finite(w.clone());
@@ -701,7 +580,7 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         mut other: SetFamily<'a, V>,
         f: &F,
         budget: T,
-        cache: &BoundedJoinCache<'a, V, T>,
+        cache: &mut BoundedJoinCache<'a, V, T>,
         depth: usize,
     ) -> NodeInterval<'a, T, V>
     where
@@ -721,9 +600,9 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
                 rejected_best: Infinite::PosInf,
             };
         } else if other.is_one() {
-            return self.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            return self.clip_weight_inner(f, budget, &mut cache.clipping_cache, &cache.min_cache);
         } else if self.is_one() {
-            return other.clip_weight_inner(f, budget, &cache.clipping_cache, &cache.min_cache);
+            return other.clip_weight_inner(f, budget, &mut cache.clipping_cache, &cache.min_cache);
         }
 
         let (mut value, mut self_lo, mut self_hi) = self.get().expect("Invalid index!");
@@ -749,66 +628,29 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         let w = f(&value);
 
         let his = if let Some(hi_budget) = budget.checked_sub(&w) {
-            let mut his = if false {
-                let (hi_hi, (hi_lo, lo_hi)) = holder.pools().join(
-                    || {
-                        self_hi.clone().inner_bounded_join(
-                            other_hi.clone(),
-                            f,
-                            hi_budget.clone(),
-                            cache,
-                            depth + 1,
-                        )
-                    },
-                    || {
-                        holder.pools().join(
-                            || {
-                                self_hi.clone().inner_bounded_join(
-                                    other_lo.clone(),
-                                    f,
-                                    hi_budget.clone(),
-                                    cache,
-                                    depth + 1,
-                                )
-                            },
-                            || {
-                                self_lo.clone().inner_bounded_join(
-                                    other_hi.clone(),
-                                    f,
-                                    hi_budget.clone(),
-                                    cache,
-                                    depth + 1,
-                                )
-                            },
-                        )
-                    },
-                );
-                [hi_hi, hi_lo, lo_hi]
-            } else {
-                [
-                    self_hi.clone().inner_bounded_join(
-                        other_hi.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                    self_hi.clone().inner_bounded_join(
-                        other_lo.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                    self_lo.clone().inner_bounded_join(
-                        other_hi.clone(),
-                        f,
-                        hi_budget.clone(),
-                        cache,
-                        depth + 1,
-                    ),
-                ]
-            };
+            let mut his = [
+                self_hi.clone().inner_bounded_join(
+                    other_hi.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+                self_hi.clone().inner_bounded_join(
+                    other_lo.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+                self_lo.clone().inner_bounded_join(
+                    other_hi.clone(),
+                    f,
+                    hi_budget.clone(),
+                    cache,
+                    depth + 1,
+                ),
+            ];
 
             for x in &mut his {
                 x.add_weight(w.clone());
