@@ -144,6 +144,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub(crate) enum SizeKey<V> {
     Size(ZddIndex<V>),
+    NNodes(ZddIndex<V>),
     Min(ZddIndex<V>),
     Max(ZddIndex<V>),
     Bounds(ZddIndex<V>),
@@ -154,6 +155,7 @@ pub(crate) enum SizeKey<V> {
 pub(crate) enum SizeValue {
     Size(UsizeOrPositiveInfinity),
     Min(UsizeOrPositiveInfinity),
+    NNodes(usize),
     Max(usize),
     Bounds(UsizeOrPositiveInfinity, usize),
     EmptySet(bool),
@@ -166,6 +168,14 @@ impl SizeValue {
         };
         x
     }
+
+    pub fn unwrap_n_nodes(self) -> usize {
+        let SizeValue::NNodes(x) = self else {
+            panic!("Not a SizeValue::NNodes!")
+        };
+        x
+    }
+
     pub fn unwrap_min(self) -> UsizeOrPositiveInfinity {
         let SizeValue::Min(x) = self else {
             panic!("Not a SizeValue::Size!")
@@ -198,6 +208,7 @@ impl<V> SizeKey<V> {
                 | (SizeKey::Max(_), SizeValue::Max(_))
                 | (SizeKey::Bounds(..), SizeValue::Bounds(..))
                 | (SizeKey::EmptySet(_), SizeValue::EmptySet(_))
+                | (SizeKey::NNodes(_), SizeValue::NNodes(_))
         )
     }
 }

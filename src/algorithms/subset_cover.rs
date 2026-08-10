@@ -88,7 +88,10 @@ where
     }
 
     let mut solution = holder.zero();
-    let mut budget = 20;
+
+    //Set the initial budget to the smallest one that is possible.
+    let mut budget = sets.iter().map(|x| x.min_weight(&f)).max().unwrap();
+
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
     'outer: while solution.is_zero() {
         if max_budget.is_some_and(|max_budget| budget > max_budget) {

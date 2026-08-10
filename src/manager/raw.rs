@@ -1,6 +1,10 @@
-use crate::{ONE_IDX, SetFamily, ZERO_IDX, manager::ZddHolder};
-use ahash::RandomState;
-use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
+use ahash::{HashSet, HashSetExt};
+
+use crate::{
+    ONE_IDX, SetFamily, ZERO_IDX,
+    manager::{SizeKey, SizeValue, ZddHolder},
+};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData};
 
 ///A raw ZDD index without memory management for GC.
 #[derive(Debug)]
@@ -76,20 +80,32 @@ impl<V: Eq + Hash + Clone> ZddIndex<V> {
         holder.uniq_table.get(self.0).map(|x| (x.lo, x.hi))
     }
 
-    fn n_nodes_inner(
-        self,
-        count_cache: &mut HashSet<ZddIndex<V>, RandomState>,
-        holder: &ZddHolder<V>,
-    ) {
-        if !count_cache.contains(&self) {
-            if self.is_zero() || self.is_one() {
-                count_cache.insert(self);
-            } else {
-                let (lo, hi) = self.children(holder).unwrap();
-                lo.n_nodes_inner(count_cache, holder);
-                hi.n_nodes_inner(count_cache, holder);
-                count_cache.insert(self);
+    fn n_nodes(self, holder: &ZddHolder<V>) -> usize {
+        let op = SizeKey::NNodes(self);
+        if self.is_zero() || self.is_one() {
+            1
+        } else if let Some(r) = holder.size_cache_get(&op) {
+            r.unwrap_n_nodes()
+        } else {
+            let mut stack = vec![self];
+            let mut visited = HashSet::new();
+            while let Some(x) = stack.pop() {
+                if x.is_zero() || x.is_one() {
+                    visited.insert(x);
+                } else if !visited.contains(&x) {
+                    visited.insert(x);
+                    let (lo, hi) = self.children(holder).unwrap();
+                    if !visited.contains(&lo) {
+                        stack.push(lo);
+                    }
+                    if !visited.contains(&hi) {
+                        stack.push(hi);
+                    }
+                }
             }
+            holder
+                .size_cache_insert(op, SizeValue::NNodes(visited.len()))
+                .unwrap_n_nodes()
         }
     }
 }
@@ -111,12 +127,6 @@ impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///Will panic if `self` is not defined in `holder`.
     #[must_use]
     pub fn n_nodes(&self) -> usize {
-        if self.is_zero() || self.is_one() {
-            1
-        } else {
-            let mut edge_cache = HashSet::<_, RandomState>::default();
-            self.as_raw().n_nodes_inner(&mut edge_cache, self.manager);
-            edge_cache.len()
-        }
+        self.as_raw().n_nodes(self.manager)
     }
 }
