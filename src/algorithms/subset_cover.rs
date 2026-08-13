@@ -94,6 +94,8 @@ where
 
     let n_chars = (sets.len() - 1).checked_ilog10().unwrap_or(0) + 1;
     'outer: while solution.is_zero() {
+        holder.gc(false);
+        println!("Doing budget = {budget}");
         if max_budget.is_some_and(|max_budget| budget > max_budget) {
             return None;
         }

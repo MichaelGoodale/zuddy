@@ -94,7 +94,7 @@ impl<V: Eq + Hash + Clone> ZddIndex<V> {
                     visited.insert(x);
                 } else if !visited.contains(&x) {
                     visited.insert(x);
-                    let (lo, hi) = self.children(holder).unwrap();
+                    let (lo, hi) = x.children(holder).unwrap();
                     if !visited.contains(&lo) {
                         stack.push(lo);
                     }
