@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, hash::Hash};
 
+use mem_dbg::{FlatType, MemSize};
 use num_traits::Num;
 
 use crate::{
@@ -25,7 +26,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn max_weight<F, Int>(&self, f: F) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
+        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
     {
         let cache: WeightCache<'a, V, Int> = self.manager().create_temporary_cache();
         self.clone().max_weight_inner(&f, &cache)
@@ -35,7 +36,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub(crate) fn max_weight_inner<F, Int>(self, f: &F, cache: &WeightCache<'a, V, Int>) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord,
+        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
     {
         if self.is_zero() || self.is_one() {
             return Int::zero();
@@ -151,7 +152,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn min_weight<F, Int>(&self, f: F) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int>,
+        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int> + MemSize,
     {
         let cache: WeightCache<'a, V, Option<Int>> = self.manager().create_temporary_cache();
         self.clone().min_weight_inner(&f, &cache).unwrap()
@@ -165,7 +166,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ) -> Option<Int>
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int>,
+        Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int> + MemSize,
     {
         if self.is_zero() {
             return None;
@@ -196,7 +197,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn bounds<F, T>(&self, f: F) -> (T, T)
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T>,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + MemSize,
     {
         let cache: BoundsWeightCache<'a, V, T> = self.manager().create_temporary_cache();
         let (min, max) = self.clone().bounds_inner(&f, &cache);
@@ -211,7 +212,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ) -> (Option<T>, T)
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T>,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + MemSize,
     {
         if self.is_zero() {
             return (None, T::zero());
@@ -250,7 +251,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn set_weights<F, T>(&self, f: F) -> BTreeMap<T, usize>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync + MemSize + FlatType,
     {
         let cache: WeightCache<'a, V, BTreeMap<T, usize>> = self.manager().create_temporary_cache();
         self.clone().set_weights_inner(&f, &cache)
@@ -264,7 +265,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     ) -> BTreeMap<T, usize>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync,
+        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync + MemSize + FlatType,
     {
         if self.is_zero() {
             return BTreeMap::new();

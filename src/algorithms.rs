@@ -9,6 +9,7 @@ mod minimum_cutoff;
 mod subset_cover;
 use std::hash::Hash;
 
+use mem_dbg::MemSize;
 use num_traits::Num;
 pub use subset_cover::subset_cover;
 
@@ -25,7 +26,12 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     pub fn minimal_sets<F, T>(&self, f: F) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + PossiblyPointlessCheckedSub,
+        T: Num
+            + Clone
+            + Ord
+            + TempCacheItem<'a, V, Output = T>
+            + PossiblyPointlessCheckedSub
+            + MemSize,
     {
         let budget = self.min_weight(&f);
 

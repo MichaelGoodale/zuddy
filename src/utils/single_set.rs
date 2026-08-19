@@ -2,6 +2,8 @@
 
 use std::{collections::BTreeSet, fmt::Display, hash::Hash};
 
+use mem_dbg::{FlatType, MemSize};
+
 use crate::{SetFamily, ZddHolder, manager::ZddIndex};
 
 ///A representation of a single set, backed by a ZDD.
@@ -11,6 +13,20 @@ use crate::{SetFamily, ZddHolder, manager::ZddIndex};
 pub struct SingleSet<'a, V: Eq + Hash> {
     set: SetFamily<'a, V>,
     last: Option<V>,
+}
+
+impl<V: Eq + Hash> MemSize for SingleSet<'_, V> {
+    fn mem_size_rec(
+        &self,
+        _flags: mem_dbg::SizeFlags,
+        _refs: &mut mem_dbg::HashMap<usize, usize>,
+    ) -> usize {
+        core::mem::size_of::<Self>()
+    }
+}
+
+impl<V: Eq + Hash> FlatType for SingleSet<'_, V> {
+    type Flat = mem_dbg::True;
 }
 
 ///Two sets where all values higher or equal to a value are in `higher_or_equal` and those lower in

@@ -1,4 +1,5 @@
 use ahash::{HashSet, HashSetExt};
+use mem_dbg::MemSize;
 
 use crate::{
     ONE_IDX, SetFamily, ZERO_IDX,
@@ -7,7 +8,8 @@ use crate::{
 use std::{fmt::Debug, hash::Hash, marker::PhantomData};
 
 ///A raw ZDD index without memory management for GC.
-#[derive(Debug)]
+#[derive(Debug, MemSize)]
+#[mem_size(flat)]
 pub(crate) struct ZddIndex<V>(usize, PhantomData<V>);
 
 impl<V> From<usize> for ZddIndex<V> {

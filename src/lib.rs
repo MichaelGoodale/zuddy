@@ -16,6 +16,7 @@ pub mod utils;
 #[cfg(feature = "sampling")]
 mod sampling;
 use algebra::Operations;
+use mem_dbg::{FlatType, MemSize};
 
 pub mod serialize;
 
@@ -29,6 +30,21 @@ pub struct SetFamily<'a, V: Eq + Hash> {
     phantom: PhantomData<V>,
     manager: &'a ZddHolder<V>,
 }
+
+impl<V: Eq + Hash> MemSize for SetFamily<'_, V> {
+    fn mem_size_rec(
+        &self,
+        _flags: mem_dbg::SizeFlags,
+        _refs: &mut mem_dbg::HashMap<usize, usize>,
+    ) -> usize {
+        core::mem::size_of::<Self>()
+    }
+}
+
+impl<V: Eq + Hash> FlatType for SetFamily<'_, V> {
+    type Flat = mem_dbg::True;
+}
+
 impl<V: Eq + Hash> Debug for SetFamily<'_, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SetFamily").field("id", &self.id).finish()

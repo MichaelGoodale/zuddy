@@ -27,6 +27,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     uniq_table: HashTable<V>,
     cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: DashMap<SizeKey<V>, SizeValue, RandomState>,
+    temp_cache_max: Option<u64>,
     id: Uuid,
 }
 
@@ -50,9 +51,27 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             generation: AtomicU64::new(0),
             uniq_table: HashTable::new(n, n_pools),
             size_caches: DashMap::default(),
+            temp_cache_max: None,
             cache: DashMap::default(),
             id,
         }
+    }
+
+    ///The current maximum size of temporary caches
+    pub fn temp_cache_size(&self) -> Option<u64> {
+        self.temp_cache_max
+    }
+
+    ///Changes the maximum size of temporary cache. If `None`, there is no size limit.
+    pub fn set_temp_cache_size(&mut self, size_in_bytes: Option<u64>) {
+        self.temp_cache_max = size_in_bytes;
+    }
+
+    ///Builder style function to set the maximum size of the temporary cache.
+    #[must_use]
+    pub fn with_temp_cache_size(mut self, size_in_bytes: u64) -> Self {
+        self.temp_cache_max = Some(size_in_bytes);
+        self
     }
 
     ///Clears the cache (i.e. for profiling code)

@@ -5,6 +5,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use mem_dbg::{MemSize, SizeFlags};
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfinity};
 
@@ -13,6 +14,7 @@ pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
     holder: &'a ZddHolder<V>,
     cache: DashMap<K, T>,
     generation: AtomicU64,
+    size: AtomicU64,
 }
 
 pub trait TempCacheItem<'a, V: Eq + Hash> {
@@ -35,12 +37,13 @@ impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for ZddIndex<V> {
 impl<'a, V, K, T> TempCache<'a, V, K, T>
 where
     V: Eq + Hash,
-    K: Eq + Hash,
-    T: TempCacheItem<'a, V>,
+    K: Eq + Hash + MemSize,
+    T: TempCacheItem<'a, V> + MemSize,
 {
     fn clear_if_not_current(&self) {
         let current = self.holder.current_generation();
         let our_gen = self.generation.load(Ordering::Acquire);
+        let current_size = self.size.load(Ordering::Acquire);
 
         if current != our_gen
             && self
@@ -49,6 +52,17 @@ where
                 .is_ok()
         {
             self.cache.clear();
+            self.size.store(0, Ordering::Release);
+        }
+
+        if self.holder.temp_cache_max.is_some_and(|x| current_size > x)
+            && self
+                .size
+                .compare_exchange(current_size, 0, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.cache.clear();
+            self.size.store(0, Ordering::Release);
         }
     }
 
@@ -61,7 +75,24 @@ where
     ///Insert a value to the cache.
     pub fn insert(&self, key: K, value: T::Output) -> T::Output {
         self.clear_if_not_current();
-        self.cache.insert(key, T::from_gc(&value));
+        let inner_value = T::from_gc(&value);
+        let key_size = key.mem_size(SizeFlags::default()) as u64;
+        let value_size = inner_value.mem_size(SizeFlags::default()) as u64;
+
+        let old_value = self.cache.insert(key, inner_value);
+
+        match old_value {
+            Some(old_value) => {
+                self.size.fetch_add(value_size, Ordering::Relaxed);
+                let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
+                self.size.fetch_sub(old_value_size, Ordering::Relaxed);
+            }
+            None => {
+                self.size
+                    .fetch_add(key_size + value_size, Ordering::Relaxed);
+            }
+        }
+
         value
     }
 }
@@ -79,6 +110,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
             holder: self,
             cache: DashMap::new(),
             generation: AtomicU64::from(self.current_generation()),
+            size: AtomicU64::from(0),
         }
     }
 }

@@ -1,9 +1,11 @@
+use mem_dbg::MemSize;
 use ordered_float::{NotNan, OrderedFloat};
 use std::{
     cmp::Reverse,
+    collections::BTreeMap,
     fmt::{Debug, Display},
     hash::Hash,
-    ops::{Add, AddAssign, Sub},
+    ops::{Add, AddAssign, Range, Sub},
 };
 
 use crate::{
@@ -171,6 +173,7 @@ struct IntervalCache<'a, K: Eq + Hash, V: Eq + Hash, T> {
     map: HashMap<K, IntervalMap<V, T>>,
     holder: &'a ZddHolder<V>,
     generation: u64,
+    mem_usage: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +181,27 @@ struct NodeInterval<'a, T, V: Eq + Hash> {
     node: SetFamily<'a, V>,
     accepted_worst: Infinite<T>,
     rejected_best: Infinite<T>,
+}
+
+//size estimation adapted from [size_of crate](https://crates.io/crates/size-of) .
+const B: usize = 6;
+pub(super) const CAPACITY: usize = 2 * B - 1;
+pub(super) const MIN_LEN_AFTER_SPLIT: usize = B - 1;
+
+#[allow(dead_code)]
+struct BTreeNodeSize<K, V> {
+    parent: *const (),
+    parent_idx: u16,
+    len: u16,
+    keys: [K; CAPACITY],
+    values: [V; CAPACITY],
+}
+
+pub(crate) const fn btree_size<K, V>(length: usize) -> usize {
+    size_of::<BTreeMap<K, V>>()+size_of::<BTreeNodeSize<K, V>>()
+        //Otherwise, any length below 8 would get rounded to 0!
+        + 1
+        + (length.saturating_sub(1) * 2 / (CAPACITY + MIN_LEN_AFTER_SPLIT))
 }
 
 impl<'a, K: Hash + Eq, V: Eq + Hash + Clone, T> IntervalCache<'a, K, V, T>
@@ -202,8 +226,20 @@ where
 
         if current != self.generation {
             self.generation = current;
-            self.map.clear();
+            self.clear();
         }
+        if self
+            .holder
+            .temp_cache_size()
+            .is_some_and(|x| self.mem_usage as u64 > x)
+        {
+            self.clear();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.mem_usage = 0;
     }
 
     #[expect(clippy::needless_pass_by_value)]
@@ -217,10 +253,20 @@ where
         K: ToOwned<Owned = K>,
     {
         self.clear_if_not_current();
-        self.map.entry(node).or_default().insert(
+
+        let entry = self.map.entry(node).or_default();
+        if !entry.is_empty() {
+            self.mem_usage -= size_of::<K>()
+                + btree_size::<Range<Infinite<T>>, RawNodeInterval<V, T>>(entry.len());
+        }
+
+        entry.insert(
             accepted_worst.clone()..rejected_best.clone(),
             (r.as_raw(), accepted_worst, rejected_best),
         );
+
+        self.mem_usage +=
+            size_of::<K>() + btree_size::<Range<Infinite<T>>, RawNodeInterval<V, T>>(entry.len());
     }
 }
 
@@ -307,6 +353,7 @@ impl<'a, K: Eq + Hash, V: Eq + Hash, T> IntervalCache<'a, K, V, T> {
             map: HashMap::default(),
             generation: holder.current_generation(),
             holder,
+            mem_usage: 0,
         }
     }
 }
@@ -321,7 +368,12 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     pub fn clip_weight<F, T>(&self, budget: T, f: F) -> SetFamily<'a, V>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + MemSize,
     {
         let cache = self.manager().create_temporary_cache();
         self.clone()
@@ -340,7 +392,12 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
     ) -> NodeInterval<'a, T, V>
     where
         F: Fn(&V) -> T + Send + Sync,
-        T: Num + TempCacheItem<'a, V, Output = T> + Ord + Clone + PossiblyPointlessCheckedSub,
+        T: Num
+            + TempCacheItem<'a, V, Output = T>
+            + Ord
+            + Clone
+            + PossiblyPointlessCheckedSub
+            + MemSize,
     {
         if self.is_zero() {
             return NodeInterval {
@@ -437,7 +494,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + Clone
             + PossiblyPointlessCheckedSub
             + Send
-            + Sync,
+            + Sync
+            + MemSize,
     {
         let holder = self.manager();
         self.inner_bounded_join(other, &f, budget, &mut BoundedJoinCache::new(holder), 0)
@@ -454,7 +512,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + PossiblyPointlessCheckedSub
             + Send
             + Sync
-            + Debug,
+            + Debug
+            + MemSize,
         V: Debug,
     {
         let holder = self.manager();
@@ -487,7 +546,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + PossiblyPointlessCheckedSub
             + Send
             + Sync
-            + Debug,
+            + Debug
+            + MemSize,
         V: Debug,
     {
         if other.is_zero() || self.is_zero() {
@@ -596,7 +656,8 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + Clone
             + PossiblyPointlessCheckedSub
             + Send
-            + Sync,
+            + Sync
+            + MemSize,
     {
         if other.is_zero() || self.is_zero() {
             return NodeInterval {
