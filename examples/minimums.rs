@@ -23,11 +23,10 @@ fn main() -> anyhow::Result<()> {
     let mut rng = SmallRng::seed_from_u64(32);
 
     let mut times = vec![];
-    for file in ["more_difficult"] {
-        //, "test", "complicated_trees", "ten_big"] {
+    for file in ["test", "more_difficult", "complicated_trees", "ten_big"] {
         println!("Doing {file}");
         let big_zdds = Path::new(base).join(format!("examples/resources/{file}.ron"));
-        let holder = ZddHolder::new().with_temp_cache_size(2_500_000_000);
+        let holder = ZddHolder::new().with_temp_cache_size(10_000_000_000);
         let zdd: MultipleOwnedZdd<WeightedId> =
             ron::from_str(fs::read_to_string(big_zdds)?.as_str())?;
         let mut zdd = zdd.to_set_families(&holder).into_iter().collect::<Vec<_>>();
