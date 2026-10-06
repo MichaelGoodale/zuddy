@@ -6,14 +6,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};
 
-pub fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
+fn random_weights(universe: &[char], rng: &mut impl Rng) -> HashMap<char, usize> {
     universe
         .iter()
         .map(|x| (*x, rng.random_range(0..3)))
         .collect()
 }
 
-pub fn random_family(universe: &[char], rng: &mut impl Rng) -> BTreeSet<BTreeSet<char>> {
+fn random_family(universe: &[char], rng: &mut impl Rng) -> BTreeSet<BTreeSet<char>> {
     let n_sets = rng.random_range(0..30);
     let mut sets = BTreeSet::new();
     for _ in 0..n_sets {
@@ -74,10 +74,10 @@ fn clip(bencher: Bencher) {
 
     let sets = clip_sets(&holder, &universe, &mut rng);
     let weights = random_weights(&universe, &mut rng);
-    let f = |c: &char| *weights.get(c).unwrap() as isize;
+    let f = |c: &char| weights.get(c).unwrap().cast_signed();
     bencher.bench_local(|| {
         for (a, budget) in sets.iter().cloned() {
-            a.clip_weight(budget as isize, f);
+            let _ = a.clip_weight(budget.cast_signed(), f);
             holder.clear_cache();
         }
     });
@@ -96,7 +96,7 @@ fn clip_usize(bencher: Bencher) {
     let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
         for (a, budget) in sets.iter().cloned() {
-            a.clip_weight(budget, f);
+            let _ = a.clip_weight(budget, f);
             holder.clear_cache();
         }
     });
@@ -111,10 +111,10 @@ fn join(bencher: Bencher) {
     let mut rng = rngs::SmallRng::seed_from_u64(32);
 
     let sets = sets(&holder, &universe, &mut rng);
-    let weights = random_weights(&universe, &mut rng);
+    let _weights = random_weights(&universe, &mut rng);
     bencher.bench_local(|| {
         for (a, b, _) in sets.iter().cloned() {
-            let c = a.join(b);
+            let _ = a.join(b);
             holder.clear_cache();
         }
     });
@@ -133,7 +133,7 @@ fn join_and_clip(bencher: Bencher) {
     let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
         for (a, b, budget) in sets.iter().cloned() {
-            let c = a.join(b).clip_weight(budget, f);
+            let _ = a.join(b).clip_weight(budget, f);
             holder.clear_cache();
         }
     });
@@ -152,7 +152,7 @@ fn join_clip_fused(bencher: Bencher) {
     let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
         for (a, b, budget) in sets.iter().cloned() {
-            let c = a.bounded_join(b, f, budget);
+            let _ = a.bounded_join(b, f, budget);
             holder.clear_cache();
         }
     });

@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     let g = to_owned_zdds(zdds.clone());
     let holder = ZddHolder::new();
     let mut zdds = g.to_set_families(&holder).into_iter().collect::<Vec<_>>();
-    zdds.sort_by(|(a, _), (b, _)| a.cmp(b));
+    zdds.sort_by_key(|(a, _)| *a);
     let zdds = zdds.into_iter().map(|(_, x)| x).collect::<Vec<_>>();
     println!("{:?}", holder.stats());
 
