@@ -39,7 +39,7 @@ impl<T: Add<T, Output = T>> Add for Infinite<T> {
             (Infinite::Finite(_) | Infinite::PosInf, Infinite::PosInf)
             | (Infinite::PosInf, Infinite::Finite(_)) => Infinite::PosInf,
             (Infinite::NegInf, Infinite::PosInf) | (Infinite::PosInf, Infinite::NegInf) => {
-                panic!("Addining positive and negative infinity is undefined!")
+                panic!("Adding positive and negative infinity is undefined!")
             }
         }
     }
@@ -67,7 +67,7 @@ impl<T: Display> Display for Infinite<T> {
 /// x = { x | ∀s∈S s⊆x ∧ ∑e∈x f(e) ≤ b }
 ///
 /// # Panics
-/// Will panic if `sets` is empty or if the sets don't all share the same manager.
+/// Will panic if `sets` is empty or if not all sets belong to the same [`ZddHolder`].
 pub fn subset_cover<'a, V, F>(
     sets: &[SetFamily<'a, V>],
     f: F,

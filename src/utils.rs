@@ -165,7 +165,7 @@ impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 }
 
 impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
-    ///Count the number of possible comibinations.
+    ///Count the number of possible combinations.
     ///
     ///Due to the combinatorial nature of ZDDs, if you have a sufficiently big ZDD, there will be
     ///too many combinations. In this case, the function will return [`UsizeOrPositiveInfinity::PositiveInfinity`]

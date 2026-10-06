@@ -12,7 +12,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Does `self` % {`v`} in the unate cube set algebra of Minato, 1994.
     ///Identical to [`SetFamily::offset`]
     ///
-    ///It is defined as f % x = { α | α ∉ f}
+    ///It is defined as f % x = { α | α ∈ f ∧ x ∉ α}
     #[must_use]
     pub fn element_remainder(self, value: V) -> SetFamily<'a, V> {
         self.offset(value)
@@ -54,11 +54,22 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Divides `self` by `other` according to the unate cube set algebra
     ///of Minato,
     ///
-    /// This is defined by the quality:  f = g * (f/g) + (f%g) where * is [`SetFamily::join`]
+    /// This is defined by the identity:  f = g * (f/g) + (f%g) where * is [`SetFamily::join`]
     ///
     /// It can also be understood as: f / g = ⋂{ { α - β | α ∈ f ∧  β ⊆ α} | β ∈ g }
     ///
     /// For example, {abc,bc,ac}/{bc} = {a, {}} and {abd,abe,abg,cd,ce,ch}/{ab,c} = {d,e}
+    ///
+    ///```
+    ///# use std::collections::BTreeSet;
+    ///# use zuddy::{ZddHolder, SetFamily};
+    /// let holder = ZddHolder::<char>::new();
+    /// let sets: BTreeSet<BTreeSet<char>> = ["abc", "bc", "ac"]
+    ///     .iter().map(|x| x.chars().collect()).collect();
+    /// let f = SetFamily::from_sets(sets, &holder);
+    /// let bc = SetFamily::from_sets(BTreeSet::from([BTreeSet::from(['b', 'c'])]), &holder);
+    /// assert_eq!(f.divide(bc).to_string(), "{{}, {a}}");
+    ///```
     ///
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder) or **if `other` is
@@ -166,10 +177,21 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         holder.put_into_cache(op, joined)
     }
 
-    /// The remainder of `self` divided by `other` according to the unate cub set algebra.
+    /// The remainder of `self` divided by `other` according to the unate cube set algebra.
     ///
     /// For example, {abc,bc,ac}/{bc} = {a, {}}, so the remainder is {ac}. See [`SetFamily::divide`]
     /// for more details.
+    ///
+    ///```
+    ///# use std::collections::BTreeSet;
+    ///# use zuddy::{ZddHolder, SetFamily};
+    /// let holder = ZddHolder::<char>::new();
+    /// let sets: BTreeSet<BTreeSet<char>> = ["abc", "bc", "ac"]
+    ///     .iter().map(|x| x.chars().collect()).collect();
+    /// let f = SetFamily::from_sets(sets, &holder);
+    /// let bc = SetFamily::from_sets(BTreeSet::from([BTreeSet::from(['b', 'c'])]), &holder);
+    /// assert_eq!(f.remainder(bc).to_string(), "{{a, c}}");
+    ///```
     ///
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder) or **if `other` is

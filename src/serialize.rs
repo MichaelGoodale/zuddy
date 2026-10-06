@@ -45,7 +45,7 @@ pub struct MultipleOwnedZdd<T> {
 }
 
 impl<T> MultipleOwnedZdd<T> {
-    ///Retuns a [`BTreeSet`] with the indices of all ZDD roots.
+    ///Returns a [`BTreeSet`] with the indices of all ZDD roots.
     ///May be useful in combination with [`MultipleOwnedZdd::to_set_families`]'s returned
     ///[`HashMap`].
     ///
@@ -126,7 +126,8 @@ impl<'a, V: Eq + Hash> AsRef<SetFamily<'a, V>> for SetFamily<'a, V> {
 
 ///Converts a collection that implements [`IntoIterator`] to a [`MultipleOwnedZdd`].
 ///
-///If you need to record info about each ZDD beyond having a set of ZDDs, see: [`MultipleOwnedZdd`].
+///If you need to record info about each ZDD beyond having a set of ZDDs, see:
+///[`to_owned_zdds_with_mapping`].
 #[must_use]
 pub fn to_owned_zdds<'a, V, T, X>(zdds: T) -> MultipleOwnedZdd<V>
 where
