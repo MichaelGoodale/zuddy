@@ -79,7 +79,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///```
     ///
     ///# Panics
-    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
@@ -132,7 +132,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///```
     ///
     ///# Panics
-    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn onset(self, value: V) -> SetFamily<'a, V> {
         let holder = self.manager;
@@ -236,7 +236,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///Takes the set union of two families of sets.
     ///
     ///```
-    ///use zuddy::{ZddHolder, SetFamily};
+    ///# use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
     ///
     /// let a = SetFamily::singleton('a', & holder);
@@ -246,7 +246,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     /// assert_eq!(a.union(b).union(c).size().unwrap(), 3);
     ///```
     ///# Panics
-    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn union(self, other: Self) -> Self {
         if self.is_zero() {
@@ -367,9 +367,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///Inverts whether a value is included or not included on each combination in the family.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f ∧ x ∉ α} ∪ { α - {x} | α ∈ f}
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f ∧ x ∉ α} ∪ { α - {x} | α ∈ f ∧ x ∈ α}
     ///```
-    ///use zuddy::{ZddHolder, SetFamily};
+    ///# use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
     ///
     ///let a = SetFamily::singleton('a', &holder);
@@ -377,14 +377,11 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///let c = SetFamily::singleton('c', &holder);
     ///let a_b_c = a.union(b).union(c);
     ///assert_eq!(a_b_c.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec![ "a", "b", "c",]);
-    ///println!("{}", a_b_c.graphviz());
     ///let changed = a_b_c.change('c');
-    ///println!("{}", changed.graphviz());
     ///assert_eq!(changed.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec!["ac", "bc", ""]);
-    ///
     ///```
     ///# Panics
-    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn change(&self, value: V) -> Self {
         if self.is_zero() {
@@ -423,7 +420,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///
     ///It is defined as `f.insert(x)` = { α ∪ {x} | α ∈ f}
     ///# Panics
-    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn insert(&self, value: V) -> Self {
         if self.is_zero() {
@@ -460,7 +457,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///
     ///It is defined as `f.insert_as_superset(x)` = { α ∪ {x} | α ∈ f} ∪ f
     ///# Panics
-    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn insert_as_superset(&self, value: V) -> Self {
         if self.is_zero() {
@@ -498,7 +495,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///in a loop.
     ///
     ///# Panics
-    ///May panic if the self or other value is not a valid index in the [`ZddHolder`]
+    ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn extend_as_superset(&self, values: impl IntoIterator<Item = V>) -> Self {
         if self.is_zero() {

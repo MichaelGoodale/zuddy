@@ -112,7 +112,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
             .unwrap_min()
     }
 
-    ///The size of the smallest possible set.
+    ///The lower and upper bound on the size of any set in the ZDD.
+    ///For the empty family (zero), the lower bound is [`UsizeOrPositiveInfinity::PositiveInfinity`].
     #[must_use]
     pub fn bounds_cardinality(&self) -> (UsizeOrPositiveInfinity, usize) {
         if self.is_zero() {
@@ -190,9 +191,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         cache.insert(self.as_raw(), min_none_first(lo, hi))
     }
 
-    ///The upper and lower bound of size of any set in the ZDD.
-    ///# Panics
-    ///Will panic if passed the empty set.
+    ///The upper and lower bound of summed weight of any set in the ZDD.
+    ///For the empty family (zero), the lower bound is `T::zero()`.
     #[must_use]
     pub fn bounds<F, T>(&self, f: F) -> (T, T)
     where
@@ -245,8 +245,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///The histogram of the summed weights of the elements of sets.
     ///How many sets are there of each summed weight?
-    ///# Panics
-    ///Will panic if passed the empty set.
+    ///Returns an empty map for the empty family (zero).
     #[must_use]
     pub fn set_weights<F, T>(&self, f: F) -> BTreeMap<T, usize>
     where

@@ -118,7 +118,15 @@ impl<V: Eq + Hash + Clone> Default for ZddHolder<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
-    ///Create a new `[SetFamily]` representing the empty set ({}).
+    ///Create a new [`SetFamily`] representing the empty family of sets ({}).
+    ///
+    ///```
+    ///# use zuddy::ZddHolder;
+    /// let holder = ZddHolder::<char>::new();
+    /// let zero = holder.zero();
+    /// assert!(zero.is_zero());
+    /// assert_eq!(zero.members().count(), 0);
+    ///```
     #[must_use]
     pub fn zero(&self) -> SetFamily<'_, V> {
         SetFamily {
@@ -128,7 +136,15 @@ impl<V: Eq + Hash> ZddHolder<V> {
         }
     }
 
-    ///Create a new `[SetFamily]` representing the set containing only the empty set ({{}}).
+    ///Create a new [`SetFamily`] representing the family containing only the empty set ({{}}).
+    ///
+    ///```
+    ///# use zuddy::ZddHolder;
+    /// let holder = ZddHolder::<char>::new();
+    /// let one = holder.one();
+    /// assert!(one.is_one());
+    /// assert_eq!(one.members().collect::<Vec<_>>(), vec![vec![]]);
+    ///```
     #[must_use]
     pub fn one(&self) -> SetFamily<'_, V> {
         SetFamily {
