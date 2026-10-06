@@ -96,7 +96,7 @@ fn clip_usize(bencher: Bencher) {
     let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
         for (a, budget) in sets.iter().cloned() {
-            a.clip_weight_usize(budget, f);
+            a.clip_weight(budget, f);
             holder.clear_cache();
         }
     });
@@ -133,7 +133,7 @@ fn join_and_clip(bencher: Bencher) {
     let f = |c: &char| *weights.get(c).unwrap();
     bencher.bench_local(|| {
         for (a, b, budget) in sets.iter().cloned() {
-            let c = a.join(b).clip_weight_usize(budget, f);
+            let c = a.join(b).clip_weight(budget, f);
             holder.clear_cache();
         }
     });
