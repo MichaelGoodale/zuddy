@@ -367,7 +367,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     ///Inverts whether a value is included or not included on each combination in the family.
     ///
-    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f ∧ x ∉ α} ∪ { α - {x} | α ∈ f ∧ x ∈ α}
+    ///It is defined as `f.change(x)` = { α ∪ {x} | α ∈ f ∧ x ∉ α} ∪ { α - {x} | α ∈ f}
     ///```
     ///# use zuddy::{ZddHolder, SetFamily};
     ///let mut holder = ZddHolder::<char>::new();
@@ -377,7 +377,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///let c = SetFamily::singleton('c', &holder);
     ///let a_b_c = a.union(b).union(c);
     ///assert_eq!(a_b_c.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec![ "a", "b", "c",]);
+    ///println!("{}", a_b_c.graphviz());
     ///let changed = a_b_c.change('c');
+    ///println!("{}", changed.graphviz());
     ///assert_eq!(changed.members().map(|x| x.into_iter().collect::<String>()).collect::<Vec<_>>(), vec!["ac", "bc", ""]);
     ///```
     ///# Panics
