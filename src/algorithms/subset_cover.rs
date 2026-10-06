@@ -67,7 +67,7 @@ impl<T: Display> Display for Infinite<T> {
 /// x = { x | ∀s∈S s⊆x ∧ ∑e∈x f(e) ≤ b }
 ///
 /// # Panics
-/// Will panic if `sets` is empty. All sets must belong to the same [`ZddHolder`].
+/// Will panic if `sets` is empty or if not all sets belong to the same [`ZddHolder`].
 pub fn subset_cover<'a, V, F>(
     sets: &[SetFamily<'a, V>],
     f: F,
