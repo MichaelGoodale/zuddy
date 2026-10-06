@@ -192,7 +192,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     }
 
     ///The upper and lower bound of summed weight of any set in the ZDD.
-    ///For the empty family (zero), the lower bound is `T::zero()`.
+    ///
+    ///# Panics
+    /// Will panic if passed an empty set, as the lower bound is undefined.
     #[must_use]
     pub fn bounds<F, T>(&self, f: F) -> (T, T)
     where
