@@ -170,14 +170,15 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///
     ///```rust
     ///# use zuddy::{ZddHolder, SetFamily};
-    ///# use std::collections::BTreeSet;
+    ///# use std::collections::{BTreeSet, HashMap};
+    ///let f: HashMap<_, _> = [('a', 3), ('b', 1), ('c', 2)].into();
     ///let holder = ZddHolder::<char>::new();
-    ///let target = ZddHolder::<std::cmp::Reverse<char>>::new();
+    ///let target = ZddHolder::<usize>::new();
     ///let sets = ["abc", "c"].into_iter().map(|x| x.chars().collect::<BTreeSet<_>>()).collect::<BTreeSet<_>>();
     ///let zdd = SetFamily::from_sets(sets, &holder);
-    ///let mapped = zdd.map(std::cmp::Reverse, &target);
-    ///let actual: BTreeSet<BTreeSet<std::cmp::Reverse<char>>> = mapped.members().map(BTreeSet::from_iter).collect();
-    ///let expected: BTreeSet<BTreeSet<std::cmp::Reverse<char>>> = ["cba", "c"].into_iter().map(|x| x.chars().map(std::cmp::Reverse).collect()).collect();
+    ///let mapped = zdd.map(|c| f[&c], &target);
+    ///let actual: BTreeSet<BTreeSet<usize>> = mapped.members().map(BTreeSet::from_iter).collect();
+    ///let expected: BTreeSet<BTreeSet<usize>> = ["312", "2"].into_iter().map(|x| x.chars().map(|c| c.to_digit(10).unwrap() as usize).collect()).collect();
     ///assert_eq!(actual, expected);
     ///```
     #[must_use]
@@ -488,50 +489,41 @@ pub mod test {
     fn map_with_non_injective_map_deduplicates() {
         let holder = ZddHolder::<char>::new();
         let target = ZddHolder::<char>::new();
-        let sets = ["ab", "b"];
-        let x = sets
+        let sets = ["ab", "b"]
             .iter()
             .map(|x| x.chars().collect::<BTreeSet<_>>())
             .collect::<BTreeSet<_>>();
-        let zdd = SetFamily::from_sets(x, &holder);
-        let converted = zdd.map(|_| 'x', &target);
-        let actual: Vec<String> = converted
+        let zdd = SetFamily::from_sets(sets, &holder);
+        let mapped = zdd.map(|_| 'x', &target);
+        let actual: BTreeSet<String> = mapped
             .members()
             .map(|x| x.into_iter().collect())
             .collect();
-        assert_eq!(actual, ["x"]);
+        assert_eq!(actual, BTreeSet::from(["x".to_string()]));
     }
     #[test]
     fn map_with_order_reversing_map() {
         let holder = ZddHolder::<char>::new();
         let target = ZddHolder::<std::cmp::Reverse<char>>::new();
-        let sets = ["abc", "c"];
-        let x = sets
+        let sets = ["abc", "c"]
             .iter()
             .map(|x| x.chars().collect::<BTreeSet<_>>())
             .collect::<BTreeSet<_>>();
-        let zdd = SetFamily::from_sets(x, &holder);
-        let converted = zdd.map(std::cmp::Reverse, &target);
-        let mut actual: Vec<BTreeSet<std::cmp::Reverse<char>>> =
-            converted.members().map(BTreeSet::from_iter).collect();
-        actual.sort();
-        assert_eq!(
-            actual,
-            [
-                BTreeSet::from_iter([std::cmp::Reverse('c')]),
-                BTreeSet::from_iter([
-                    std::cmp::Reverse('c'),
-                    std::cmp::Reverse('b'),
-                    std::cmp::Reverse('a')
-                ])
-            ]
-        );
+        let zdd = SetFamily::from_sets(sets, &holder);
+        let mapped = zdd.map(std::cmp::Reverse, &target);
+        let actual: BTreeSet<BTreeSet<std::cmp::Reverse<char>>> =
+            mapped.members().map(BTreeSet::from_iter).collect();
+        let expected: BTreeSet<_> = ["cba", "c"]
+            .iter()
+            .map(|x| x.chars().map(std::cmp::Reverse).collect())
+            .collect();
+        assert_eq!(actual, expected);
     }
     #[test]
     fn map_random_families_with_random_mappings() {
+        let universe: Vec<char> = "abcdef".chars().collect();
         let mut rng = rand::rng();
         for _ in 0..100 {
-            let universe: Vec<char> = "abcdef".chars().collect();
             let sets = random_family(&universe, &mut rng);
             let holder = ZddHolder::<char>::new();
             let target = ZddHolder::<u8>::new();
@@ -540,9 +532,9 @@ pub mod test {
                 .iter()
                 .map(|x| (*x, rng.random_range(0..4)))
                 .collect();
-            let converted = zdd.map(|c| weights[&c], &target);
+            let mapped = zdd.map(|c| weights[&c], &target);
             let actual: BTreeSet<BTreeSet<u8>> =
-                converted.members().map(BTreeSet::from_iter).collect();
+                mapped.members().map(BTreeSet::from_iter).collect();
             let expected: BTreeSet<BTreeSet<u8>> = sets
                 .iter()
                 .map(|x| x.iter().map(|c| weights[c]).collect())
