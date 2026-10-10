@@ -205,15 +205,8 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
             let Some((value, lo, hi)) = x.get(self.manager()) else {
                 continue;
             };
-            if !mapping.contains_key(&lo) {
-                stack.push(x);
-                stack.push(lo);
-                stack.push(hi);
-                continue;
-            }
-            if !mapping.contains_key(&hi) {
-                stack.push(x);
-                stack.push(hi);
+            if !mapping.contains_key(&lo) || !mapping.contains_key(&hi) {
+                stack.extend([x, lo, hi]);
                 continue;
             }
             let new = holder.zdd_node(f(value), mapping[&lo].clone(), mapping[&hi].clone());
