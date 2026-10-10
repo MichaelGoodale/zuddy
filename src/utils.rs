@@ -168,9 +168,6 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///Remap a [`SetFamily<X>`] to a [`SetFamily<Y>`] using `f`, a function which maps values of `X`
     ///to `Y`. `f` can be any function, it needn't be injective.
     ///
-    ///# Panics
-    ///Will panic if `self` is not a valid ZDD in its [`ZddHolder`]
-    ///
     ///```rust
     ///# use zuddy::{ZddHolder, SetFamily};
     ///# use std::collections::{BTreeSet, HashMap};
@@ -184,6 +181,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///let expected: BTreeSet<BTreeSet<usize>> = [vec![3, 1, 2], vec![2]].into_iter().map(BTreeSet::from_iter).collect();
     ///assert_eq!(actual, expected);
     ///```
+    #[expect(clippy::missing_panics_doc)]
     #[must_use]
     pub fn map<Y: Eq + Hash + Clone + Ord + Send + Sync>(
         self,
