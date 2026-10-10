@@ -168,7 +168,9 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///Remap a [`SetFamily<X>`] to a [`SetFamily<Y>`] using `f`, a function which maps values of `X`
     ///to `Y`. `f` can be any function, it needn't be injective.
     ///
-    ///```rust
+    ///# Panics
+    ///Will panic if `self` is not a valid ZDD in its [`ZddHolder`]
+    ///    ///```rust
     ///# use zuddy::{ZddHolder, SetFamily};
     ///# use std::collections::{BTreeSet, HashMap};
     ///let f: HashMap<_, _> = [('a', 3), ('b', 1), ('c', 2)].into();
@@ -195,9 +197,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
             if mapping.contains_key(&x) {
                 continue;
             }
-            let Some((value, lo, hi)) = x.get(self.manager()) else {
-                continue;
-            };
+            let (value, lo, hi) = x.get(self.manager()).expect("Invalid index");
             if !mapping.contains_key(&lo) || !mapping.contains_key(&hi) {
                 stack.extend([x, lo, hi]);
                 continue;
