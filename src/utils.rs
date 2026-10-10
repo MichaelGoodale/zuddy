@@ -7,7 +7,7 @@ use std::{
     ops::{Add, AddAssign},
 };
 
-use ahash::HashSetExt;
+use ahash::{HashMapExt, HashSetExt};
 pub mod single_set;
 use crate::SetFamily;
 use crate::manager::{SizeKey, SizeValue, ZddHolder, ZddIndex};
@@ -161,6 +161,65 @@ impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
         writeln!(s, "}}").unwrap();
         s
+    }
+}
+
+impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+    ///Converts this [`SetFamily`] into a [`SetFamily`] of `Y`s associated with `holder`, by applying
+    ///`f` to every value.
+    ///
+    ///This is a structural conversion: the shape of the underlying ZDD is preserved, so no sets
+    ///are materialised.
+    ///
+    ///`f` must be injective and preserve the ordering of the ZDD's values (i.e. whenever a value
+    ///`v` appears strictly below another value `w` in the ZDD, `f(v) < f(w)`).
+    ///
+    ///# Panics
+    ///Will panic if `f` breaks the ordering of the ZDD (i.e. if a parent's mapped value is not
+    ///strictly greater than its children's mapped values).
+    ///
+    ///```rust
+    ///# use zuddy::{ZddHolder, SetFamily, utils::UsizeOrPositiveInfinity};
+    ///# use std::collections::BTreeSet;
+    ///let holder = ZddHolder::<char>::new();
+    ///let target = ZddHolder::<u8>::new();
+    ///let sets = ["ab", "b"].into_iter().map(|x| x.chars().collect::<BTreeSet<_>>()).collect::<BTreeSet<_>>();
+    ///let zdd = SetFamily::from_sets(sets, &holder);
+    ///let converted = zdd.convert(|c| c as u8, &target);
+    ///assert_eq!(converted.size(), UsizeOrPositiveInfinity::Size(2));
+    ///```
+    #[must_use]
+    pub fn convert<Y: Eq + Hash + Clone + Ord + Send + Sync>(
+        self,
+        f: impl Fn(V) -> Y,
+        holder: &'a ZddHolder<Y>,
+    ) -> SetFamily<'a, Y> {
+        let mut mapping = ahash::HashMap::<ZddIndex<V>, SetFamily<Y>>::new();
+        mapping.insert(ZddIndex::ZERO, holder.zero());
+        mapping.insert(ZddIndex::ONE, holder.one());
+        let mut stack = vec![self.as_raw()];
+        while let Some(x) = stack.pop() {
+            if mapping.contains_key(&x) {
+                continue;
+            }
+            let Some((value, lo, hi)) = x.get(self.manager()) else {
+                continue;
+            };
+            if !mapping.contains_key(&lo) {
+                stack.push(x);
+                stack.push(lo);
+                stack.push(hi);
+                continue;
+            }
+            if !mapping.contains_key(&hi) {
+                stack.push(x);
+                stack.push(hi);
+                continue;
+            }
+            let new = holder.zdd_node(f(value), mapping[&lo].clone(), mapping[&hi].clone());
+            mapping.insert(x, new);
+        }
+        mapping[&self.as_raw()].clone()
     }
 }
 
@@ -438,5 +497,38 @@ pub mod test {
             UsizeOrPositiveInfinity::Size(0),
             UsizeOrPositiveInfinity::Size(0)
         );
+    }
+    #[test]
+    fn convert_matches_btreeset_roundtrip() {
+        let holder = ZddHolder::<char>::new();
+        let target = ZddHolder::<u8>::new();
+        let sets = ["abcd", "ac", "a", "bc", "b", "c"];
+        let x = sets
+            .iter()
+            .map(|x| x.chars().collect::<BTreeSet<_>>())
+            .collect::<BTreeSet<_>>();
+        let zdd = SetFamily::from_sets(x.clone(), &holder);
+        let converted = zdd.convert(|c| c as u8, &target);
+        let mut actual: Vec<Vec<u8>> = converted.members().map(|x| x).collect();
+        actual.sort();
+        let mut expected: Vec<Vec<u8>> = sets
+            .iter()
+            .map(|x| x.chars().map(|c| c as u8).collect::<Vec<u8>>())
+            .collect();
+        expected.sort();
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    #[should_panic(expected = "violating the ZDD definition")]
+    fn convert_with_order_breaking_map_panics() {
+        let holder = ZddHolder::<char>::new();
+        let target = ZddHolder::<char>::new();
+        let sets = ["ab", "b"];
+        let x = sets
+            .iter()
+            .map(|x| x.chars().collect::<BTreeSet<_>>())
+            .collect::<BTreeSet<_>>();
+        let zdd = SetFamily::from_sets(x, &holder);
+        let _converted = zdd.convert(|_| 'x', &target);
     }
 }
