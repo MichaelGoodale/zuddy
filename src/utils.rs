@@ -526,26 +526,53 @@ pub mod test {
     #[test]
     fn convert_with_order_reversing_map() {
         let holder = ZddHolder::<char>::new();
-        let target = ZddHolder::<char>::new();
+        let target = ZddHolder::<std::cmp::Reverse<char>>::new();
         let sets = ["abc", "c"];
         let x = sets
             .iter()
             .map(|x| x.chars().collect::<BTreeSet<_>>())
             .collect::<BTreeSet<_>>();
         let zdd = SetFamily::from_sets(x, &holder);
-        let converted = zdd.convert(
-            |c| match c {
-                'a' => 'z',
-                'b' => 'y',
-                _ => 'x',
-            },
-            &target,
-        );
-        let mut actual: Vec<String> = converted
-            .members()
-            .map(|x| x.into_iter().collect())
-            .collect();
+        let converted = zdd.convert(std::cmp::Reverse, &target);
+        let mut actual: Vec<Vec<std::cmp::Reverse<char>>> =
+            converted.members().collect();
         actual.sort();
-        assert_eq!(actual, ["x", "xyz"]);
+        assert_eq!(
+            actual,
+            [
+                vec![std::cmp::Reverse('c')],
+                vec![
+                    std::cmp::Reverse('c'),
+                    std::cmp::Reverse('b'),
+                    std::cmp::Reverse('a')
+                ]
+            ]
+        );
+    }
+    #[test]
+    fn convert_random_families_with_random_mappings() {
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let universe: Vec<char> = "abcdef".chars().collect();
+            let sets = random_family(&universe, &mut rng);
+            let holder = ZddHolder::<char>::new();
+            let target = ZddHolder::<u8>::new();
+            let zdd = SetFamily::from_sets(sets.clone(), &holder);
+            let weights: HashMap<char, u8> = universe
+                .iter()
+                .map(|x| (*x, rng.random_range(0..4)))
+                .collect();
+            let converted = zdd.convert(|c| weights[&c], &target);
+            let mut actual: Vec<BTreeSet<u8>> =
+                converted.members().map(BTreeSet::from_iter).collect();
+            actual.sort();
+            let mut expected: Vec<BTreeSet<u8>> = sets
+                .iter()
+                .map(|x| x.iter().map(|c| weights[c]).collect())
+                .collect();
+            expected.sort();
+            expected.dedup();
+            assert_eq!(actual, expected);
+        }
     }
 }
