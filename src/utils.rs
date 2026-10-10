@@ -164,7 +164,7 @@ impl<'a, V: Display + Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     }
 }
 
-impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
+impl<V: Eq + Hash + Clone> SetFamily<'_, V> {
     ///Remap a [`SetFamily<X>`] to a [`SetFamily<Y>`] using `f`, a function which maps values of `X`
     ///to `Y`. `f` can be any function, it needn't be injective.
     ///
@@ -185,8 +185,8 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     pub fn map<Y: Eq + Hash + Clone + Ord + Send + Sync>(
         self,
         f: impl Fn(V) -> Y,
-        holder: &'a ZddHolder<Y>,
-    ) -> SetFamily<'a, Y> {
+        holder: &ZddHolder<Y>,
+    ) -> SetFamily<'_, Y> {
         let mut mapping = ahash::HashMap::<ZddIndex<V>, SetFamily<Y>>::new();
         mapping.insert(ZddIndex::ZERO, holder.zero());
         mapping.insert(ZddIndex::ONE, holder.one());
