@@ -170,7 +170,8 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///
     ///# Panics
     ///Will panic if `self` is not a valid ZDD in its [`ZddHolder`]
-    ///    ///```rust
+    ///
+    ///```rust
     ///# use zuddy::{ZddHolder, SetFamily};
     ///# use std::collections::{BTreeSet, HashMap};
     ///let f: HashMap<_, _> = [('a', 3), ('b', 1), ('c', 2)].into();
