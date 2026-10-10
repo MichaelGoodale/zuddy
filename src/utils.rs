@@ -509,7 +509,7 @@ pub mod test {
             .collect::<BTreeSet<_>>();
         let zdd = SetFamily::from_sets(x.clone(), &holder);
         let converted = zdd.convert(|c| c as u8, &target);
-        let mut actual: Vec<Vec<u8>> = converted.members().map(|x| x).collect();
+        let mut actual: Vec<Vec<u8>> = converted.members().collect();
         actual.sort();
         let mut expected: Vec<Vec<u8>> = sets
             .iter()
