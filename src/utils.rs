@@ -181,7 +181,6 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///let expected: BTreeSet<BTreeSet<usize>> = [vec![3, 1, 2], vec![2]].into_iter().map(BTreeSet::from_iter).collect();
     ///assert_eq!(actual, expected);
     ///```
-    #[expect(clippy::missing_panics_doc)]
     #[must_use]
     pub fn map<Y: Eq + Hash + Clone + Ord + Send + Sync>(
         self,
@@ -196,6 +195,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
             if mapping.contains_key(&x) {
                 continue;
             }
+            #[expect(clippy::missing_panics_doc)]
             let (value, lo, hi) = x.get(self.manager()).expect("Invalid index");
             if !mapping.contains_key(&lo) || !mapping.contains_key(&hi) {
                 stack.extend([x, lo, hi]);
