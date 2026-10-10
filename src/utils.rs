@@ -168,15 +168,9 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///Converts this [`SetFamily`] into a [`SetFamily`] of `Y`s associated with `holder`, by applying
     ///`f` to every value.
     ///
-    ///This is a structural conversion: the shape of the underlying ZDD is preserved, so no sets
-    ///are materialised.
-    ///
-    ///`f` must be injective and preserve the ordering of the ZDD's values (i.e. whenever a value
-    ///`v` appears strictly below another value `w` in the ZDD, `f(v) < f(w)`).
-    ///
-    ///# Panics
-    ///Will panic if `f` breaks the ordering of the ZDD (i.e. if a parent's mapped value is not
-    ///strictly greater than its children's mapped values).
+    ///This is a structural conversion built from the Shannon expansion
+    ///`convert(x) = convert(lo) ∪ insert(f(v), convert(hi))`, so no sets are materialised and
+    ///nodes are memoized. `f` does not need to be injective or preserve the ordering of values.
     ///
     ///```rust
     ///# use zuddy::{ZddHolder, SetFamily, utils::UsizeOrPositiveInfinity};
@@ -209,7 +203,8 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
                 stack.extend([x, lo, hi]);
                 continue;
             }
-            let new = holder.zdd_node(f(value), mapping[&lo].clone(), mapping[&hi].clone());
+            let with_value = mapping[&hi].clone().insert(f(value));
+            let new = mapping[&lo].clone().union(with_value);
             mapping.insert(x, new);
         }
         mapping[&self.as_raw()].clone()
@@ -512,8 +507,7 @@ pub mod test {
         assert_eq!(actual, expected);
     }
     #[test]
-    #[should_panic(expected = "violating the ZDD definition")]
-    fn convert_with_order_breaking_map_panics() {
+    fn convert_with_non_injective_map_deduplicates() {
         let holder = ZddHolder::<char>::new();
         let target = ZddHolder::<char>::new();
         let sets = ["ab", "b"];
@@ -522,6 +516,36 @@ pub mod test {
             .map(|x| x.chars().collect::<BTreeSet<_>>())
             .collect::<BTreeSet<_>>();
         let zdd = SetFamily::from_sets(x, &holder);
-        let _converted = zdd.convert(|_| 'x', &target);
+        let converted = zdd.convert(|_| 'x', &target);
+        let actual: Vec<String> = converted
+            .members()
+            .map(|x| x.into_iter().collect())
+            .collect();
+        assert_eq!(actual, ["x"]);
+    }
+    #[test]
+    fn convert_with_order_reversing_map() {
+        let holder = ZddHolder::<char>::new();
+        let target = ZddHolder::<char>::new();
+        let sets = ["abc", "c"];
+        let x = sets
+            .iter()
+            .map(|x| x.chars().collect::<BTreeSet<_>>())
+            .collect::<BTreeSet<_>>();
+        let zdd = SetFamily::from_sets(x, &holder);
+        let converted = zdd.convert(
+            |c| match c {
+                'a' => 'z',
+                'b' => 'y',
+                _ => 'x',
+            },
+            &target,
+        );
+        let mut actual: Vec<String> = converted
+            .members()
+            .map(|x| x.into_iter().collect())
+            .collect();
+        actual.sort();
+        assert_eq!(actual, ["x", "xyz"]);
     }
 }
