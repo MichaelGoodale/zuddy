@@ -178,7 +178,7 @@ impl<'a, V: Eq + Hash + Clone> SetFamily<'a, V> {
     ///let zdd = SetFamily::from_sets(sets, &holder);
     ///let mapped = zdd.map(|c| f[&c], &target);
     ///let actual: BTreeSet<BTreeSet<usize>> = mapped.members().map(BTreeSet::from_iter).collect();
-    ///let expected: BTreeSet<BTreeSet<usize>> = ["312", "2"].into_iter().map(|x| x.chars().map(|c| c.to_digit(10).unwrap() as usize).collect()).collect();
+    ///let expected: BTreeSet<BTreeSet<usize>> = [vec![3, 1, 2], vec![2]].into_iter().map(BTreeSet::from_iter).collect();
     ///assert_eq!(actual, expected);
     ///```
     #[must_use]
