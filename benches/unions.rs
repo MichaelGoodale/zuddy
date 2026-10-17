@@ -40,7 +40,7 @@ fn pairs<'a>(
     v
 }
 
-///Pairs of (OwnedZdd, OwnedZdd) so unions on serialized ZDDs can be benchmarked.
+///Pairs of (`OwnedZdd`, `OwnedZdd`) so unions on serialized ZDDs can be benchmarked.
 fn owned_pairs(universe: &[char], rng: &mut impl Rng) -> Vec<(OwnedZdd<char>, OwnedZdd<char>)> {
     let holder = ZddHolder::new();
     let mut v = vec![];
