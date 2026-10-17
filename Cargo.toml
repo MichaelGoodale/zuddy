@@ -38,6 +38,10 @@ harness = false
 name = "joins"
 harness = false
 
+[[bench]]
+name = "unions"
+harness = false
+
 [features]
 default = ["sampling"]
 sampling = ["dep:rand"]
