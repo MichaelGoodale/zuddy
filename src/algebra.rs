@@ -248,6 +248,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive::recursive]
     pub fn union(self, other: Self) -> Self {
         if self.is_zero() {
             return other;
