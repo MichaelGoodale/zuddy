@@ -375,7 +375,9 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
             + PossiblyPointlessCheckedSub
             + MemSize,
     {
-        let cache = self.manager().create_temporary_cache();
+        let cache = self
+            .manager()
+            .create_temporary_cache(std::slice::from_ref(self));
         self.clone()
             .clip_weight_inner(&f, budget, &mut IntervalCache::new(self.manager()), &cache)
             .node
@@ -466,12 +468,12 @@ struct BoundedJoinCache<'a, V: Eq + Hash, T> {
     clipping_cache: IntervalCache<'a, ZddIndex<V>, V, T>,
     min_cache: WeightCache<'a, V, Option<T>>,
 }
-impl<'a, V: Eq + Hash, T> BoundedJoinCache<'a, V, T> {
-    fn new(holder: &'a ZddHolder<V>) -> BoundedJoinCache<'a, V, T> {
+impl<'a, V: Eq + Hash + Clone, T> BoundedJoinCache<'a, V, T> {
+    fn new(holder: &'a ZddHolder<V>, zdds: &[SetFamily<'a, V>]) -> BoundedJoinCache<'a, V, T> {
         BoundedJoinCache {
             join: IntervalCache::new(holder),
             clipping_cache: IntervalCache::new(holder),
-            min_cache: holder.create_temporary_cache(),
+            min_cache: holder.create_temporary_cache(zdds),
         }
     }
 }
@@ -498,8 +500,15 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
             + MemSize,
     {
         let holder = self.manager();
-        self.inner_bounded_join(other, &f, budget, &mut BoundedJoinCache::new(holder), 0)
-            .node
+        let zdds = [self.clone(), other.clone()];
+        self.inner_bounded_join(
+            other,
+            &f,
+            budget,
+            &mut BoundedJoinCache::new(holder, &zdds),
+            0,
+        )
+        .node
     }
 
     fn number_of_recursive_calls<F, T>(self, other: SetFamily<'a, V>, f: &F, budget: T) -> usize
@@ -517,11 +526,12 @@ impl<'a, V: Eq + Hash + Ord + Clone + Send + Sync> SetFamily<'a, V> {
         V: Debug,
     {
         let holder = self.manager();
+        let zdds = [self.clone(), other.clone()];
         self.number_of_recursive_calls_inner(
             other,
             &f,
             budget,
-            &mut BoundedJoinCache::new(holder),
+            &mut BoundedJoinCache::new(holder, &zdds),
             0,
         )
         .0

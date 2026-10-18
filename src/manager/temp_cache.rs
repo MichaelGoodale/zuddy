@@ -106,10 +106,29 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Create a [`TempCache`] which allows for the construction of algorithms that require hashing
     ///of partial results. Crucially, this hashmap will empty if garbage collection is triggered,
     ///allowing for caching without requiring all partial values to be held indefinitely.
-    pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(&self) -> TempCache<'_, V, K, T> {
+    ///
+    ///The cache is sized so that memoizing one entry per node of `zdds` keeps
+    ///the load factor at or below half the slots.
+    pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(
+        &self,
+        zdds: &[SetFamily<'_, V>],
+    ) -> TempCache<'_, V, K, T>
+    where
+        V: Clone,
+    {
+        let n_nodes: usize = zdds.iter().map(SetFamily::n_nodes).sum();
+        self.create_temporary_cache_with_capacity(n_nodes.saturating_mul(2))
+    }
+
+    ///Like [`create_temporary_cache`](ZddHolder::create_temporary_cache), but
+    ///with an explicit capacity in number of entries to support.
+    pub(crate) fn create_temporary_cache_with_capacity<K: Eq + Hash, T>(
+        &self,
+        capacity: usize,
+    ) -> TempCache<'_, V, K, T> {
         TempCache {
             holder: self,
-            cache: OpCache::with_hasher_and_capacity(1024, RandomState::default()),
+            cache: OpCache::with_hasher_and_capacity(capacity, RandomState::default()),
             generation: AtomicU64::from(self.current_generation()),
             size: AtomicU64::new(0),
         }
