@@ -279,19 +279,20 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if the internal task accounting is inconsistent (it never is).
     #[must_use]
-    pub fn from_sets(
-        sets: BTreeSet<BTreeSet<V>>,
-        holder: &'a ZddHolder<V>,
-    ) -> SetFamily<'a, V> {
-        //Iterative version: an explicit stack of pending subproblems, processed
-        //children-first, so no stack overflow regardless of universe size.
-        enum Task<V: Ord> {
+    pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+        enum Task<V> {
             Split(BTreeSet<BTreeSet<V>>),
             Build { value: V },
         }
 
+        if sets.is_empty() {
+            return holder.zero();
+        }
+        if sets.len() == 1 && sets.first().unwrap().is_empty() {
+            return holder.one();
+        }
+
         let mut stack = vec![Task::Split(sets)];
-        //Results of the two children of each pending Build task.
         let mut results = vec![];
 
         while let Some(task) = stack.pop() {
@@ -305,6 +306,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         results.push(holder.one());
                         continue;
                     }
+
                     //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
                     let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
 
@@ -316,9 +318,11 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         })
                         .collect::<BTreeSet<_>>();
 
-                    stack.push(Task::Build { value });
-                    stack.push(Task::Split(with_min_val));
-                    stack.push(Task::Split(sets));
+                    stack.extend([
+                        Task::Build { value },
+                        Task::Split(with_min_val),
+                        Task::Split(sets),
+                    ]);
                 }
                 Task::Build { value } => {
                     let hi = results.pop().unwrap();
