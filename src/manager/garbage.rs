@@ -7,33 +7,15 @@ use rayon::prelude::*;
 use std::{hash::Hash, sync::atomic::Ordering};
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
-    ///Ensure the unique table has room for at least `additional` more nodes
-    ///without needing to resize. Resizing mid-construction is expensive since
-    ///every live node must be marked and rehashed, so calling this before
-    ///building large ZDDs (e.g. via [`SetFamily::from_sets`](crate::SetFamily::from_sets))
-    /// avoids repeated stop-the-world grows.
-    pub fn reserve(&self, additional: usize) {
-        if self.uniq_table.capacity() - self.uniq_table.n_used() < additional {
-            self.gc_with_resize((self.uniq_table.n_used() + additional).next_power_of_two());
-        }
-    }
-
     ///Clean up unused nodes!
     pub fn gc(&self, force_resize: bool) {
-        if force_resize || self.uniq_table.usage() > 0.5 {
-            self.gc_with_resize(self.uniq_table.capacity() * 2);
-        } else {
-            self.gc_inner(None);
-        }
-    }
-
-    fn gc_with_resize(&self, resize_to: usize) {
-        self.gc_inner(Some(resize_to.max(self.uniq_table.capacity())));
-    }
-
-    fn gc_inner(&self, resize_to: Option<usize>) {
         if self.uniq_table.start_gc() {
             self.generation.fetch_add(1, Ordering::Relaxed);
+            let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
+                Some(self.uniq_table.capacity() * 2)
+            } else {
+                None
+            };
             self.cache.clear();
             self.size_caches.clear();
 
