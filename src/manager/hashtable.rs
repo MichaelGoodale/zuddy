@@ -7,7 +7,7 @@ use std::{
         Arc, Condvar, Mutex,
         atomic::{
             AtomicBool, AtomicU64,
-            Ordering::{Acquire, Relaxed, Release},
+            Ordering::{Acquire, Relaxed, Release, SeqCst},
         },
     },
 };
@@ -195,24 +195,24 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     pub(super) fn start_gc(&self) -> bool {
-        if self
-            .pause
-            .compare_exchange(false, true, Acquire, Relaxed)
-            .is_ok()
-        {
-            while self.reading.iter().any(|x| x.load(Acquire) != 0) {
-                std::hint::spin_loop();
-            }
-            *self.pause_mutex.lock().unwrap() = false;
-            true
-        } else {
-            false
+        let mut paused = self.pause_mutex.lock().unwrap();
+        if !*paused {
+            return false;
         }
+        *paused = false;
+        self.pause.store(true, SeqCst);
+        drop(paused);
+        while self.reading.iter().any(|x| x.load(Acquire) != 0) {
+            std::hint::spin_loop();
+        }
+        true
     }
 
     pub fn end_gc(&self) {
-        self.pause.store(false, Release);
-        *self.pause_mutex.lock().unwrap() = true;
+        let mut paused = self.pause_mutex.lock().unwrap();
+        *paused = true;
+        self.pause.store(false, SeqCst);
+        drop(paused);
         self.pause_cond_var.notify_all();
     }
 
@@ -379,14 +379,20 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     fn read_table(&self) -> ReadingTheTable<'_> {
-        if self.pause.load(Acquire) {
+        let thread_id = self.slots.thread_id();
+        let reading_num = &self.reading[thread_id];
+        loop {
+            if self.pause.load(SeqCst) {
+                self.wait_until_unpaused();
+                continue;
+            }
+            reading_num.fetch_add(1, Release);
+            if !self.pause.load(SeqCst) {
+                return ReadingTheTable(reading_num);
+            }
+            reading_num.fetch_sub(1, Release);
             self.wait_until_unpaused();
         }
-        let thread_id = self.slots.thread_id();
-
-        let reading_num = &self.reading[thread_id];
-        reading_num.fetch_add(1, Release);
-        ReadingTheTable(reading_num)
     }
 }
 
@@ -400,10 +406,128 @@ impl Drop for ReadingTheTable<'_> {
 
 #[cfg(test)]
 mod test {
-    use std::collections::{HashMap, HashSet};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::atomic::Ordering::Release,
+        time::Duration,
+    };
 
     use super::*;
     use rayon::ThreadPoolBuilder;
+
+    ///Diagnostic test for the pause/GC handshake.
+    ///
+    ///`start_gc` used to announce the pause in two steps: first the `pause` atomic was
+    ///set, then (after the reader drain) the `pause_mutex` bool. A thread calling
+    ///`wait_until_unpaused` in between those steps saw the stale mutex value and
+    ///returned while the table was paused, i.e. it went on to read/insert into the
+    ///table concurrently with the GC. This test pins `start_gc` inside that window
+    ///by holding a read (so the drain cannot complete) and asserts that a waiter
+    ///stays blocked for as long as the table is paused.
+    #[test]
+    fn wait_until_unpaused_blocks_while_paused() {
+        let table = Arc::new(HashTable::<char>::new(100, 2));
+
+        let read = table.read_table();
+
+        let gc_table = Arc::clone(&table);
+        let gc = std::thread::spawn(move || {
+            assert!(gc_table.start_gc());
+        });
+
+        while !table.pause.load(Acquire) {
+            std::hint::spin_loop();
+        }
+
+        let returned = Arc::new(AtomicBool::new(false));
+        let waiter_table = Arc::clone(&table);
+        let waiter_returned = Arc::clone(&returned);
+        let waiter = std::thread::spawn(move || {
+            waiter_table.wait_until_unpaused();
+            waiter_returned.store(true, Release);
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !returned.load(std::sync::atomic::Ordering::Acquire),
+            "wait_until_unpaused returned while the table was paused!"
+        );
+
+        drop(read);
+        gc.join().unwrap();
+        table.end_gc();
+        waiter.join().unwrap();
+        assert!(returned.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    ///Diagnostic test for the reader/GC handshake.
+    ///
+    ///`read_table` used to check `pause` *before* incrementing the reader count, so a
+    ///reader could pass the check, and then increment after the GC'er's drain loop
+    ///had already observed zero readers. Such a reader inserts into the table while
+    ///it is being cleared, which loses hash entries and lets two different indices
+    ///end up holding equal data. Readers here hammer `find_or_insert` while a GC
+    ///thread repeatedly pauses, clears, and unpauses the table; afterwards no two
+    ///committed hash entries may hold equal data.
+    #[test]
+    fn no_reader_slips_past_gc_pause() {
+        let table = Arc::new(HashTable::<char>::new(1 << 12, 2));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let gc_table = Arc::clone(&table);
+        let gc_stop = Arc::clone(&stop);
+        let gc = std::thread::spawn(move || {
+            while !gc_stop.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+                if gc_table.start_gc() {
+                    gc_table.clear(&[], None);
+                    gc_table.end_gc();
+                } else {
+                    gc_table.wait_until_unpaused();
+                }
+            }
+        });
+
+        let vals: Vec<_> = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
+            .chars()
+            .collect();
+        table.slots.pools.install(|| {
+            (0..4).into_par_iter().for_each(|_| {
+                for _ in 0..2_000 {
+                    for &k in &vals {
+                        table
+                            .find_or_insert(RawZddData {
+                                value: k,
+                                lo: ZddIndex::from(k as usize),
+                                hi: ZddIndex::from(0),
+                            })
+                            .expect("Table should not be full!");
+                    }
+                }
+            });
+        });
+
+        stop.store(true, Relaxed);
+        gc.join().unwrap();
+
+        let mut seen: HashMap<RawZddData<char>, usize> = HashMap::new();
+        for (s, h) in table.hashes().iter().enumerate() {
+            let entry = HashEntry::from_atomic_u64(h);
+            if entry.is_empty() {
+                continue;
+            }
+            let data = table
+                .get(entry.index())
+                .expect("Hash entry points at missing data!");
+            if let Some(old) = seen.insert(data.clone(), entry.index()) {
+                assert!(
+                    old != entry.index() && s != old,
+                    "Two hash entries hold equal data: {old} and {}",
+                    entry.index()
+                );
+            }
+        }
+    }
 
     #[test]
     fn hash_table_with_other_pool() -> Result<(), FullTable<char>> {
