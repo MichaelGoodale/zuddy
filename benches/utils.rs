@@ -1,4 +1,5 @@
-//! Benchmarks for constructing ZDDs from families of sets via `SetFamily::from_sets`.
+//! Benchmarks for various utility operations in Zuddy (e.g. constructing ZDDs
+//! from families of sets via `SetFamily::from_sets`).
 
 use divan::Bencher;
 use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};

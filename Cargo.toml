@@ -43,7 +43,7 @@ name = "unions"
 harness = false
 
 [[bench]]
-name = "construction"
+name = "utils"
 harness = false
 
 [features]
