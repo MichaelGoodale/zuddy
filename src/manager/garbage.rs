@@ -2,9 +2,49 @@ use crate::{
     ZddHolder,
     manager::{RawZddData, ZddIndex},
 };
-use dashmap::DashSet;
 use rayon::prelude::*;
-use std::{hash::Hash, sync::atomic::Ordering};
+use std::{
+    hash::Hash,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+///A bitset of marked node indices, replacing a `DashSet` during garbage collection.
+struct MarkBits {
+    bits: Vec<AtomicU64>,
+}
+
+impl MarkBits {
+    fn new(len: usize) -> Self {
+        Self {
+            bits: (0..len.div_ceil(u64::BITS as usize))
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+        }
+    }
+
+    ///Marks `i`, returning true if it was previously unmarked.
+    fn try_mark(&self, i: usize) -> bool {
+        let word = &self.bits[i / 64];
+        let mask = 1_u64 << (i % 64);
+        word.fetch_or(mask, Ordering::Relaxed) & mask == 0
+    }
+
+    fn into_marked(self) -> Vec<usize> {
+        self.bits
+            .into_par_iter()
+            .enumerate()
+            .flat_map_iter(|(i, word)| {
+                let mut word = word.into_inner();
+                let base = i * 64;
+                (0..64).filter_map(move |b| {
+                    let found = word & 1 != 0;
+                    word >>= 1;
+                    found.then_some(base + b)
+                })
+            })
+            .collect()
+    }
+}
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     ///Clean up unused nodes!
@@ -19,9 +59,9 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.cache.clear();
             self.size_caches.clear();
 
-            let marked = DashSet::new();
+            let marked = MarkBits::new(self.uniq_table.len());
             self.used_variables().for_each(|g| mark(g, &marked, self));
-            let marked = marked.into_iter().map(usize::from).collect::<Vec<_>>();
+            let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
             self.uniq_table.end_gc();
         } else {
@@ -44,7 +84,7 @@ impl<V: Eq + Hash + Hash + Clone> ZddIndex<V> {
 
 fn mark<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
-    marked: &DashSet<ZddIndex<V>>,
+    marked: &MarkBits,
     holder: &ZddHolder<V>,
 ) {
     mark_inner(to_mark, marked, holder, 0);
@@ -53,12 +93,11 @@ const PAR_DEPTH_LIMIT: usize = 12;
 
 fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
-    marked: &DashSet<ZddIndex<V>>,
+    marked: &MarkBits,
     holder: &ZddHolder<V>,
     depth: usize,
 ) {
-    if !marked.contains(&to_mark) {
-        marked.insert(to_mark);
+    if marked.try_mark(usize::from(to_mark)) {
         if let Some((hi, lo)) = to_mark.raw_children(holder) {
             if depth < PAR_DEPTH_LIMIT {
                 rayon::join(
@@ -68,8 +107,7 @@ fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
             } else {
                 let mut stack = vec![hi, lo];
                 while let Some(x) = stack.pop() {
-                    if !marked.contains(&x) {
-                        marked.insert(x);
+                    if marked.try_mark(usize::from(x)) {
                         if let Some((lo, hi)) = x.raw_children(holder) {
                             stack.extend([lo, hi]);
                         }
