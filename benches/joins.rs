@@ -1,4 +1,4 @@
-//! Benchmarks for zuddy using 8-queens as an example problem
+//! Benchmarks for joins in Zuddy.
 use divan::Bencher;
 use zuddy::{SetFamily, ZddHolder};
 

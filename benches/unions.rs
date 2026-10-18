@@ -1,16 +1,15 @@
-//! Benchmarks for ZDD unions, in the style of `bench/joins.rs`.
-//!
-//! `slow_unions` uses large random families which currently take a long time to union.
-//! `owned_slow_unions` builds the same large families via [`OwnedZdd`] so specific
-//! slow unions found elsewhere can be dropped in as serialized input.
+//! Benchmarks for unions of ZDDs in Zuddy
 
 use divan::Bencher;
 use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};
-use std::collections::BTreeSet;
-use zuddy::serialize::OwnedZdd;
+use std::{collections::BTreeSet, hash::Hash};
 use zuddy::{SetFamily, ZddHolder};
 
-fn random_family(universe: &[char], rng: &mut impl Rng, n_sets: std::ops::Range<usize>) -> BTreeSet<BTreeSet<char>> {
+fn random_family<T: Copy + Ord>(
+    universe: &[T],
+    rng: &mut impl Rng,
+    n_sets: std::ops::Range<usize>,
+) -> BTreeSet<BTreeSet<T>> {
     let n_sets = rng.random_range(n_sets);
     let mut sets = BTreeSet::new();
     for _ in 0..n_sets {
@@ -21,13 +20,17 @@ fn random_family(universe: &[char], rng: &mut impl Rng, n_sets: std::ops::Range<
     sets
 }
 
-fn pairs<'a>(
-    holder: &'a ZddHolder<char>,
-    universe: &[char],
+fn main() {
+    divan::main();
+}
+
+fn pairs<'a, T: Eq + Copy + Ord + Hash + Send + Sync>(
+    holder: &'a ZddHolder<T>,
+    universe: &[T],
     rng: &mut impl Rng,
     n_pairs: usize,
     n_sets: std::ops::Range<usize>,
-) -> Vec<(SetFamily<'a, char>, SetFamily<'a, char>)> {
+) -> Vec<(SetFamily<'a, T>, SetFamily<'a, T>)> {
     let mut v = vec![];
     for _ in 0..n_pairs {
         let family_a = random_family(universe, rng, n_sets.clone());
@@ -38,25 +41,6 @@ fn pairs<'a>(
         ));
     }
     v
-}
-
-///Pairs of (`OwnedZdd`, `OwnedZdd`) so unions on serialized ZDDs can be benchmarked.
-fn owned_pairs(universe: &[char], rng: &mut impl Rng) -> Vec<(OwnedZdd<char>, OwnedZdd<char>)> {
-    let holder = ZddHolder::new();
-    let mut v = vec![];
-    for _ in 0..20 {
-        let family_a = random_family(universe, rng, 40..200);
-        let family_b = random_family(universe, rng, 40..200);
-        v.push((
-            SetFamily::from_sets(family_a, &holder).to_owned_zdd(),
-            SetFamily::from_sets(family_b, &holder).to_owned_zdd(),
-        ));
-    }
-    v
-}
-
-fn main() {
-    divan::main();
 }
 
 #[divan::bench()]
@@ -79,35 +63,11 @@ fn union(bencher: Bencher) {
 #[divan::bench()]
 fn slow_unions(bencher: Bencher) {
     let holder = ZddHolder::new();
-    let universe = [
-        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q',
-        'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    ];
+    let universe = (0..1000).collect::<Vec<_>>();
     let mut rng = rngs::SmallRng::seed_from_u64(32);
-    let sets = pairs(&holder, &universe, &mut rng, 20, 40..200);
+    let sets = pairs(&holder, &universe, &mut rng, 20, 1000..2000);
     bencher.bench_local(|| {
         for (a, b) in sets.iter().cloned() {
-            let _ = a.union(b);
-            holder.clear_cache();
-        }
-    });
-}
-
-///Same as `slow_unions`, but the ZDDs are provided as [`OwnedZdd`]s, matching how
-/// specific slow unions found elsewhere can be loaded into the benchmark.
-#[divan::bench()]
-fn owned_slow_unions(bencher: Bencher) {
-    let holder = ZddHolder::new();
-    let universe = [
-        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q',
-        'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    ];
-    let mut rng = rngs::SmallRng::seed_from_u64(32);
-    let pairs = owned_pairs(&universe, &mut rng);
-    bencher.bench_local(|| {
-        for (a, b) in pairs.iter().cloned() {
-            let a = a.to_set_family(&holder);
-            let b = b.to_set_family(&holder);
             let _ = a.union(b);
             holder.clear_cache();
         }
