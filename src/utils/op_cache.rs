@@ -1,7 +1,6 @@
-//! A simple parallel hashmap used for caching results of operations.
+//! A simple parallel hashmap used as a cache.
 //!
-//! Hash collisions are resolved by overwriting the old value, trading accuracy
-//! for simplicity and speed.
+//! Hash collisions are just overwritten
 
 use std::{
     collections::hash_map::RandomState,
@@ -29,12 +28,6 @@ impl<K, V> Default for Slot<K, V> {
 }
 ///A simple parallel hashmap.
 ///
-///Hash collisions overwrite the old value, so this is only appropriate for
-///caches where recomputation is cheap.
-///
-///Each slot is guarded by its own lock, so operations on different keys
-///proceed in parallel.
-///
 ///# Examples
 ///```
 ///# use zuddy::utils::op_cache::OpCache;
@@ -42,7 +35,7 @@ impl<K, V> Default for Slot<K, V> {
 ///cache.insert(1, 10);
 ///assert_eq!(cache.get(&1), Some(10));
 ///```
-pub struct OpCache<K, V, S = RandomState> {
+pub(crate) struct OpCache<K, V, S = RandomState> {
     slots: Vec<RwLock<Slot<K, V>>>,
     mask: usize,
     hasher: S,
@@ -115,6 +108,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    #[cfg(test)]
     ///Returns true if the cache contains no entries.
     ///
     ///# Panics
@@ -124,12 +118,6 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.slots
             .iter()
             .all(|s| s.read().unwrap().generation != generation)
-    }
-
-    ///The number of slots in the cache.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.slots.len()
     }
 
     ///Creates a new [`OpCache`] with at least `capacity` slots.
@@ -144,16 +132,6 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             hasher,
             generation: AtomicU64::new(1),
         }
-    }
-}
-
-impl<K: Hash + Eq, V> OpCache<K, V> {
-    ///Creates a new [`OpCache`] with at least `capacity` slots.
-    ///
-    ///The capacity is rounded up to a power of two.
-    #[must_use]
-    pub fn new(capacity: usize) -> Self {
-        Self::with_hasher_and_capacity(capacity, RandomState::default())
     }
 }
 
@@ -207,9 +185,9 @@ mod tests {
 
     #[test]
     fn capacity_rounds_up_to_power_of_two() {
-        assert_eq!(cache(1).capacity(), 2);
-        assert_eq!(cache(5).capacity(), 8);
-        assert_eq!(cache(16).capacity(), 16);
+        assert_eq!(cache(1).slots.len(), 2);
+        assert_eq!(cache(5).slots.len(), 8);
+        assert_eq!(cache(16).slots.len(), 16);
     }
 
     #[test]
@@ -223,18 +201,15 @@ mod tests {
 
     #[test]
     fn colliding_keys_overwrite() {
-        //Keys which land in the same slot overwrite each other.
-        let cache = cache(2);
+        let cache = cache(1);
         cache.insert(1, 10);
         cache.insert(2, 20);
-        //Both keys hash to slot 0 or 1; at most one survives.
         let results = [cache.get(&1), cache.get(&2)];
         assert!(results.contains(&Some(10)) || results.contains(&Some(20)));
     }
 
     #[test]
     fn parallel_inserts_and_gets() {
-        //All threads insert the same pairs, so any survivor is correct.
         let cache = Arc::new(cache(256));
         let mut handles = vec![];
         for _ in 0..8 {
@@ -256,8 +231,6 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
-        //Stale entries from before a clear are dropped when overwritten or
-        //when the cache is dropped.
         let cache: OpCache<usize, Arc<()>, BuildHasherDefault<FxHasher>> =
             OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());

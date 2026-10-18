@@ -8,12 +8,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-///A bitset of marked node indices, replacing a `DashSet` during garbage collection.
-struct MarkBits {
+///Keeps track if a node is being used somewhere.
+struct MarkedNodes {
     bits: Vec<AtomicU64>,
 }
 
-impl MarkBits {
+impl MarkedNodes {
     fn new(len: usize) -> Self {
         Self {
             bits: (0..len.div_ceil(u64::BITS as usize))
@@ -22,7 +22,7 @@ impl MarkBits {
         }
     }
 
-    ///Marks `i`, returning true if it was previously unmarked.
+    ///Marks `i` and returns true if it wasn't marked yet.
     fn try_mark(&self, i: usize) -> bool {
         let word = &self.bits[i / 64];
         let mask = 1_u64 << (i % 64);
@@ -59,7 +59,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.cache.clear();
             self.size_caches.clear();
 
-            let marked = MarkBits::new(self.uniq_table.len());
+            let marked = MarkedNodes::new(self.uniq_table.len());
             self.used_variables().for_each(|g| mark(g, &marked, self));
             let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
@@ -84,7 +84,7 @@ impl<V: Eq + Hash + Hash + Clone> ZddIndex<V> {
 
 fn mark<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
-    marked: &MarkBits,
+    marked: &MarkedNodes,
     holder: &ZddHolder<V>,
 ) {
     mark_inner(to_mark, marked, holder, 0);
@@ -93,7 +93,7 @@ const PAR_DEPTH_LIMIT: usize = 12;
 
 fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
-    marked: &MarkBits,
+    marked: &MarkedNodes,
     holder: &ZddHolder<V>,
     depth: usize,
 ) {
