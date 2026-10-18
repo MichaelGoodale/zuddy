@@ -281,7 +281,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
         enum Task<V> {
-            Split(BTreeSet<BTreeSet<V>>),
+            Split { start: usize, end: usize, skip: usize, empty: bool },
             Build { value: V },
         }
 
@@ -292,36 +292,50 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
             return holder.one();
         }
 
-        let mut stack = vec![Task::Split(sets)];
+        //Flatten the family into one sorted slice of sets. Since a `BTreeSet`
+        //iterates in sorted order and deduplicates, the result is sorted
+        //lexicographically with no duplicate sets.
+        let flat: Vec<Vec<V>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
+
+        //A subfamily is the range `flat[start..end]`, where the first `skip`
+        //elements of each set have already been consumed by ancestor splits.
+        //Every set in a subfamily followed the same branch decisions, so they
+        //consumed the same values, which are exactly their smallest `skip`
+        //elements: the remaining (logical) content of each set is `x[skip..]`,
+        //and the range stays sorted by that remaining content. `empty` tracks
+        //membership of the (at most one, deduplicated) logically-empty set,
+        //which would otherwise sort first in the range and break the prefix
+        //invariant below.
+        let mut stack = vec![Task::Split { start: 0, end: flat.len(), skip: 0, empty: false }];
         let mut results = vec![];
 
         while let Some(task) = stack.pop() {
             match task {
-                Task::Split(mut sets) => {
-                    if sets.is_empty() {
-                        results.push(holder.zero());
+                Task::Split { mut start, end, skip, mut empty } => {
+                    //The logically-empty set, if any, sorts first in the range.
+                    if start < end && flat[start].len() == skip {
+                        empty = true;
+                        start += 1;
+                    }
+                    if start == end {
+                        results.push(if empty { holder.one() } else { holder.zero() });
                         continue;
                     }
-                    if sets.len() == 1 && sets.first().unwrap().is_empty() {
-                        results.push(holder.one());
-                        continue;
-                    }
+                    //fine since every remaining set in the range has more than
+                    //`skip` elements, so the first set's next element exists and
+                    //is the minimum value in the subfamily.
+                    let value = flat[start][skip].clone();
 
-                    //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
-                    let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
-
-                    let with_min_val = sets
-                        .extract_if(.., |v| v.contains(&value))
-                        .map(|mut x| {
-                            x.remove(&value);
-                            x
-                        })
-                        .collect::<BTreeSet<_>>();
+                    //The sets containing `value` are exactly those whose
+                    //logical first element is `value`, and they form a prefix
+                    //of the range.
+                    let split = flat[start..end]
+                        .partition_point(|x| x.get(skip) == Some(&value));
 
                     stack.extend([
                         Task::Build { value },
-                        Task::Split(with_min_val),
-                        Task::Split(sets),
+                        Task::Split { start, end: start + split, skip: skip + 1, empty: false },
+                        Task::Split { start: start + split, end, skip, empty },
                     ]);
                 }
                 Task::Build { value } => {
