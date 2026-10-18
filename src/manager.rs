@@ -276,8 +276,6 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///let members: Vec<String> = z.members().map(|x| x.into_iter().collect()).collect();
     ///assert_eq!(members, sets);
     ///```
-    ///# Panics
-    ///May panic if the internal task accounting is inconsistent (it never is).
     #[must_use]
     pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
         enum Task<V> {
@@ -295,12 +293,14 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
         if sets.is_empty() {
             return holder.zero();
         }
+
+        //We know that sets isn't empty because of previous checks.
+        #[expect(clippy::missing_panics_doc)]
         if sets.len() == 1 && sets.first().unwrap().is_empty() {
             return holder.one();
         }
 
-        let total: usize = sets.iter().map(BTreeSet::len).sum();
-        let mut elems = Vec::with_capacity(total);
+        let mut elems = Vec::with_capacity(sets.iter().map(BTreeSet::len).sum());
         let mut descriptors = Vec::with_capacity(sets.len());
         for set in sets {
             descriptors.push((elems.len(), set.len()));
@@ -382,6 +382,8 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         },
                     ]);
                 }
+                #[expect(clippy::missing_panics_doc)]
+                // each new build has two splits which add one value to results before.
                 Task::Build { value } => {
                     let hi = results.pop().unwrap();
                     let lo = results.pop().unwrap();
@@ -389,7 +391,8 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                 }
             }
         }
-
+        //The initial split will add to results
+        #[expect(clippy::missing_panics_doc)]
         results.pop().unwrap()
     }
 }
