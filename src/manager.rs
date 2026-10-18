@@ -342,6 +342,27 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         continue;
                     }
 
+                    //A single remaining set is a chain of nodes, one per
+                    //element: no stack tasks or partition scans needed. The
+                    //chain bottoms out at `one` (the set itself), and the
+                    //empty set, if present, is the `lo` of the smallest
+                    //value's node.
+                    if set_end - set_start == 1 {
+                        let (offset, len) = descriptors[set_start];
+                        let remaining = &elems[offset + skip..offset + len];
+                        let mut node = holder.one();
+                        for (i, value) in remaining.iter().enumerate().rev() {
+                            let lo = if i == 0 && contains_empty_set {
+                                holder.one()
+                            } else {
+                                holder.zero()
+                            };
+                            node = holder.get_node(value.clone(), lo, node);
+                        }
+                        results.push(node);
+                        continue;
+                    }
+
                     let value = set_position(set_start, skip)[0].clone();
 
                     //Find the first set that doesn't have the value.
