@@ -334,9 +334,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
 
                     let value = flat[set_start][skip].clone();
 
-                    //The sets containing `value` are exactly those whose
-                    //logical first element is `value`, and they form a prefix
-                    //of the range.
+                    //Find the first set that doesn't have the value.
                     let split =
                         flat[set_start..set_end].partition_point(|x| x.get(skip) == Some(&value));
 
