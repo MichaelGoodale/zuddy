@@ -342,11 +342,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         continue;
                     }
 
-                    //A single remaining set is a chain of nodes, one per
-                    //element: no stack tasks or partition scans needed. The
-                    //chain bottoms out at `one` (the set itself), and the
-                    //empty set, if present, is the `lo` of the smallest
-                    //value's node.
+                    //If there's only single set left, we can do it directly.
                     if set_end - set_start == 1 {
                         let (offset, len) = descriptors[set_start];
                         let remaining = &elems[offset + skip..offset + len];
