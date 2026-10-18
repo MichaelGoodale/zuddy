@@ -134,18 +134,45 @@ impl<K: Hash + Eq, V> OpCache<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::{hash::BuildHasherDefault, sync::Arc};
+
+    ///A deterministic hasher so tests don't depend on [`RandomState`] seeding.
+    #[derive(Default)]
+    struct IdentityHasher(u64);
+
+    impl std::hash::Hasher for IdentityHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for &b in bytes {
+                self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(b));
+            }
+        }
+        fn write_u64(&mut self, i: u64) {
+            self.0 = i;
+        }
+        fn write_usize(&mut self, i: usize) {
+            self.0 = i as u64;
+        }
+    }
+
+    type DeterministicCache = OpCache<usize, usize, BuildHasherDefault<IdentityHasher>>;
+
+    fn cache(capacity: usize) -> DeterministicCache {
+        OpCache::with_hasher_and_capacity(capacity, BuildHasherDefault::default())
+    }
 
     #[test]
     fn new_cache_is_empty() {
-        let cache = OpCache::<usize, usize>::new(8);
+        let cache = cache(8);
         assert!(cache.is_empty());
         assert_eq!(cache.get(&1), None);
     }
 
     #[test]
     fn insert_then_get() {
-        let cache = OpCache::new(8);
+        let cache = cache(8);
         cache.insert(1, 10);
         cache.insert(2, 20);
         assert_eq!(cache.get(&1), Some(10));
@@ -156,7 +183,7 @@ mod tests {
 
     #[test]
     fn overwrite_same_key() {
-        let cache = OpCache::new(8);
+        let cache = cache(8);
         cache.insert(1, 10);
         cache.insert(1, 999);
         assert_eq!(cache.get(&1), Some(999));
@@ -164,7 +191,7 @@ mod tests {
 
     #[test]
     fn clear_empties_cache() {
-        let cache = OpCache::new(8);
+        let cache = cache(8);
         cache.insert(1, 10);
         cache.insert(2, 20);
         cache.clear();
@@ -174,15 +201,15 @@ mod tests {
 
     #[test]
     fn capacity_rounds_up_to_power_of_two() {
-        assert_eq!(OpCache::<usize, usize>::new(1).capacity(), 2);
-        assert_eq!(OpCache::<usize, usize>::new(5).capacity(), 8);
-        assert_eq!(OpCache::<usize, usize>::new(16).capacity(), 16);
+        assert_eq!(cache(1).capacity(), 2);
+        assert_eq!(cache(5).capacity(), 8);
+        assert_eq!(cache(16).capacity(), 16);
     }
 
     #[test]
     fn many_sequential_inserts_and_gets() {
-        let cache = OpCache::new(1024);
-        for i in 0..1000_u64 {
+        let cache = cache(1024);
+        for i in 0..1000_usize {
             cache.insert(i, i * 2);
             assert_eq!(cache.get(&i), Some(i * 2));
         }
@@ -191,7 +218,7 @@ mod tests {
     #[test]
     fn colliding_keys_overwrite() {
         //Keys which land in the same slot overwrite each other.
-        let cache = OpCache::new(2);
+        let cache = cache(2);
         cache.insert(1, 10);
         cache.insert(2, 20);
         //Both keys hash to slot 0 or 1; at most one survives.
@@ -202,12 +229,12 @@ mod tests {
     #[test]
     fn parallel_inserts_and_gets() {
         //All threads insert the same pairs, so any survivor is correct.
-        let cache = Arc::new(OpCache::new(256));
+        let cache = Arc::new(cache(256));
         let mut handles = vec![];
         for _ in 0..8 {
             let cache = Arc::clone(&cache);
             handles.push(std::thread::spawn(move || {
-                for i in 0..1000_u64 {
+                for i in 0..1000_usize {
                     cache.insert(i, i * 2);
                 }
             }));
@@ -215,7 +242,7 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        for i in 0..1000_u64 {
+        for i in 0..1000_usize {
             let r = cache.get(&i);
             assert!(r.is_none() || r == Some(i * 2));
         }
@@ -223,7 +250,8 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
-        let cache = OpCache::new(8);
+        let cache: OpCache<usize, Arc<()>, BuildHasherDefault<IdentityHasher>> =
+            OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());
         cache.insert(1, Arc::clone(&value));
         assert_eq!(Arc::strong_count(&value), 2);
