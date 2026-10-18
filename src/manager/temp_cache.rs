@@ -106,9 +106,6 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Create a [`TempCache`] which allows for the construction of algorithms that require hashing
     ///of partial results. Crucially, this hashmap will empty if garbage collection is triggered,
     ///allowing for caching without requiring all partial values to be held indefinitely.
-    ///
-    ///The capacity is a hint for the number of entries the cache is expected
-    ///to hold; it is rounded up to a power of two.
     pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(
         &self,
         capacity: usize,
