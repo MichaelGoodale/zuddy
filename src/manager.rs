@@ -277,6 +277,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///assert_eq!(members, sets);
     ///```
     #[must_use]
+    #[recursive::recursive]
     pub fn from_sets(
         mut sets: BTreeSet<BTreeSet<V>>,
         holder: &'a ZddHolder<V>,

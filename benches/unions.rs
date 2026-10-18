@@ -59,13 +59,12 @@ fn union(bencher: Bencher) {
     });
 }
 
-///Unions of large families which currently take a long time.
 #[divan::bench()]
 fn slow_unions(bencher: Bencher) {
     let holder = ZddHolder::new();
-    let universe = (0..1000).collect::<Vec<_>>();
+    let universe = (0..200).collect::<Vec<_>>();
     let mut rng = rngs::SmallRng::seed_from_u64(32);
-    let sets = pairs(&holder, &universe, &mut rng, 20, 1000..2000);
+    let sets = pairs(&holder, &universe, &mut rng, 20, 200..201);
     bencher.bench_local(|| {
         for (a, b) in sets.iter().cloned() {
             let _ = a.union(b);

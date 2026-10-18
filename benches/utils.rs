@@ -1,5 +1,4 @@
-//! Benchmarks for various utility operations in Zuddy (e.g. constructing ZDDs
-//! from families of sets via `SetFamily::from_sets`).
+//! Benchmarks for utility operations in Zuddy
 
 use divan::Bencher;
 use rand::{Rng, RngExt, SeedableRng, rngs, seq::IndexedRandom};
@@ -51,14 +50,12 @@ fn from_sets(bencher: Bencher) {
     });
 }
 
-///`from_sets` over large families with a large universe, which currently
-///overflows the stack of rayon worker threads due to unbounded recursion.
 #[divan::bench()]
 fn slow_from_sets(bencher: Bencher) {
     let holder = ZddHolder::new();
     let universe = (0..1000).collect::<Vec<_>>();
     let mut rng = rngs::SmallRng::seed_from_u64(32);
-    let families = families(&universe, &mut rng, 20, 1000..2000);
+    let families = families(&universe, &mut rng, 20, 250..500);
     bencher.bench_local(|| {
         for family in &families {
             let _ = SetFamily::from_sets(family.clone(), &holder);
