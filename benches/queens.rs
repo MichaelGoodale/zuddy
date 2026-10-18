@@ -40,7 +40,7 @@ fn main() {
     divan::main();
 }
 
-#[divan::bench(args = [1,4,8,10])]
+#[divan::bench(args = [1,4,8])]
 fn n_queens(arg: u8) -> usize {
     let board_size = arg;
     let holder = ZddHolder::<QueenPosition>::new();

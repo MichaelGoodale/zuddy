@@ -277,38 +277,122 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///assert_eq!(members, sets);
     ///```
     #[must_use]
-    pub fn from_sets(
-        mut sets: BTreeSet<BTreeSet<V>>,
-        holder: &'a ZddHolder<V>,
-    ) -> SetFamily<'a, V> {
+    pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
+        enum Task<V> {
+            Split {
+                set_start: usize,
+                set_end: usize,
+                skip: usize,
+                contains_empty_set: bool,
+            },
+            Build {
+                value: V,
+            },
+        }
+
         if sets.is_empty() {
             return holder.zero();
         }
 
+        //We know that sets isn't empty because of previous checks.
         #[expect(clippy::missing_panics_doc)]
         if sets.len() == 1 && sets.first().unwrap().is_empty() {
             return holder.one();
         }
 
-        //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
+        let mut elems = Vec::with_capacity(sets.iter().map(BTreeSet::len).sum());
+        let mut descriptors = Vec::with_capacity(sets.len());
+        for set in sets {
+            descriptors.push((elems.len(), set.len()));
+            elems.extend(set);
+        }
+        let set_position = |i: usize, skip: usize| {
+            let (offset, len) = descriptors[i];
+            &elems[offset + skip..offset + len]
+        };
+
+        let mut stack = vec![Task::Split {
+            set_start: 0,
+            set_end: descriptors.len(),
+            skip: 0,
+            contains_empty_set: false,
+        }];
+        let mut results = vec![];
+
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::Split {
+                    mut set_start,
+                    set_end,
+                    skip,
+                    mut contains_empty_set,
+                } => {
+                    //We need to remove any empty sets since they come first in ordering.
+                    if set_start < set_end && descriptors[set_start].1 == skip {
+                        contains_empty_set = true;
+                        set_start += 1;
+                    }
+
+                    if set_start == set_end {
+                        results.push(if contains_empty_set {
+                            holder.one()
+                        } else {
+                            holder.zero()
+                        });
+                        continue;
+                    }
+
+                    //If there's only single set left, we can do it directly.
+                    if set_end - set_start == 1 {
+                        let (offset, len) = descriptors[set_start];
+                        let remaining = &elems[offset + skip..offset + len];
+                        let mut node = holder.one();
+                        for (i, value) in remaining.iter().enumerate().rev() {
+                            let lo = if i == 0 && contains_empty_set {
+                                holder.one()
+                            } else {
+                                holder.zero()
+                            };
+                            node = holder.get_node(value.clone(), lo, node);
+                        }
+                        results.push(node);
+                        continue;
+                    }
+
+                    let value = set_position(set_start, skip)[0].clone();
+
+                    //Find the first set that doesn't have the value.
+                    let split = descriptors[set_start..set_end].partition_point(|(offset, len)| {
+                        *len > skip && elems.get(offset + skip) == Some(&value)
+                    });
+
+                    stack.extend([
+                        Task::Build { value },
+                        Task::Split {
+                            set_start,
+                            set_end: set_start + split,
+                            skip: skip + 1,
+                            contains_empty_set: false,
+                        },
+                        Task::Split {
+                            set_start: set_start + split,
+                            set_end,
+                            skip,
+                            contains_empty_set,
+                        },
+                    ]);
+                }
+                #[expect(clippy::missing_panics_doc)]
+                // each new build has two splits which add one value to results before.
+                Task::Build { value } => {
+                    let hi = results.pop().unwrap();
+                    let lo = results.pop().unwrap();
+                    results.push(holder.get_node(value, lo, hi));
+                }
+            }
+        }
+        //The initial split will add to results
         #[expect(clippy::missing_panics_doc)]
-        let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
-
-        let with_min_val = sets
-            .extract_if(.., |v| v.contains(&value))
-            .map(|mut x| {
-                x.remove(&value);
-                x
-            })
-            .collect::<BTreeSet<_>>();
-
-        let without_min_val = sets;
-
-        let (lo, hi) = holder.pools().join(
-            || SetFamily::from_sets(without_min_val, holder),
-            || SetFamily::from_sets(with_min_val, holder),
-        );
-
-        holder.get_node(value, lo, hi)
+        results.pop().unwrap()
     }
 }

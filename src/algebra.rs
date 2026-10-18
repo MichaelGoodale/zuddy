@@ -629,15 +629,30 @@ mod test {
 
     #[test]
     fn test_from_sets_basic() {
-        let holder = ZddHolder::<char>::new();
+        let cases = [
+            "ab a b",
+            "abcdef",
+            "abc ab a",
+            " ab a",
+            " ",
+            "ab ab a",
+            "a b c d e f",
+            "a ab abc abcd abcde",
+            "ae bf cg",
+            "a ab ac ad ae",
+            "abcd abce abcdf abcdg",
+            "a b ab abc",
+        ];
+        for case in cases {
+            let holder = ZddHolder::<char>::new();
 
-        let sets = str_to_sets("ab a b");
-
-        let z = SetFamily::from_sets(sets.clone(), &holder);
-        let members: BTreeSet<Vec<char>> = z.members().collect();
-
-        let sets: BTreeSet<Vec<_>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
-        assert_eq!(members, sets);
+            let sets = str_to_sets(case);
+            let z = SetFamily::from_sets(sets.clone(), &holder);
+            let members: BTreeSet<Vec<char>> = z.members().collect();
+            let sets: BTreeSet<Vec<_>> =
+                sets.into_iter().map(|x| x.into_iter().collect()).collect();
+            assert_eq!(members, sets, "case: {case:?}");
+        }
     }
 
     #[test]
