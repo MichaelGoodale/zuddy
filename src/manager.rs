@@ -276,40 +276,58 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///let members: Vec<String> = z.members().map(|x| x.into_iter().collect()).collect();
     ///assert_eq!(members, sets);
     ///```
+    ///# Panics
+    ///May panic if the internal task accounting is inconsistent (it never is).
     #[must_use]
-    #[recursive::recursive]
     pub fn from_sets(
-        mut sets: BTreeSet<BTreeSet<V>>,
+        sets: BTreeSet<BTreeSet<V>>,
         holder: &'a ZddHolder<V>,
     ) -> SetFamily<'a, V> {
-        if sets.is_empty() {
-            return holder.zero();
+        //Iterative version: an explicit stack of pending subproblems, processed
+        //children-first, so no stack overflow regardless of universe size.
+        enum Task<V: Ord> {
+            Split(BTreeSet<BTreeSet<V>>),
+            Build { value: V },
         }
 
-        #[expect(clippy::missing_panics_doc)]
-        if sets.len() == 1 && sets.first().unwrap().is_empty() {
-            return holder.one();
+        let mut stack = vec![Task::Split(sets)];
+        //Results of the two children of each pending Build task.
+        let mut results = vec![];
+
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::Split(mut sets) => {
+                    if sets.is_empty() {
+                        results.push(holder.zero());
+                        continue;
+                    }
+                    if sets.len() == 1 && sets.first().unwrap().is_empty() {
+                        results.push(holder.one());
+                        continue;
+                    }
+                    //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
+                    let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
+
+                    let with_min_val = sets
+                        .extract_if(.., |v| v.contains(&value))
+                        .map(|mut x| {
+                            x.remove(&value);
+                            x
+                        })
+                        .collect::<BTreeSet<_>>();
+
+                    stack.push(Task::Build { value });
+                    stack.push(Task::Split(with_min_val));
+                    stack.push(Task::Split(sets));
+                }
+                Task::Build { value } => {
+                    let hi = results.pop().unwrap();
+                    let lo = results.pop().unwrap();
+                    results.push(holder.get_node(value, lo, hi));
+                }
+            }
         }
 
-        //fine since at least one set will be non-empty since if it was only the empty set it would have been caught before.
-        #[expect(clippy::missing_panics_doc)]
-        let value = sets.iter().filter_map(|x| x.first()).min().unwrap().clone();
-
-        let with_min_val = sets
-            .extract_if(.., |v| v.contains(&value))
-            .map(|mut x| {
-                x.remove(&value);
-                x
-            })
-            .collect::<BTreeSet<_>>();
-
-        let without_min_val = sets;
-
-        let (lo, hi) = holder.pools().join(
-            || SetFamily::from_sets(without_min_val, holder),
-            || SetFamily::from_sets(with_min_val, holder),
-        );
-
-        holder.get_node(value, lo, hi)
+        results.pop().unwrap()
     }
 }
