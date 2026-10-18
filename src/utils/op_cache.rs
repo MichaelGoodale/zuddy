@@ -134,30 +134,10 @@ impl<K: Hash + Eq, V> OpCache<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustc_hash::FxHasher;
     use std::{hash::BuildHasherDefault, sync::Arc};
 
-    ///A deterministic hasher so tests don't depend on [`RandomState`] seeding.
-    #[derive(Default)]
-    struct IdentityHasher(u64);
-
-    impl std::hash::Hasher for IdentityHasher {
-        fn finish(&self) -> u64 {
-            self.0
-        }
-        fn write(&mut self, bytes: &[u8]) {
-            for &b in bytes {
-                self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(b));
-            }
-        }
-        fn write_u64(&mut self, i: u64) {
-            self.0 = i;
-        }
-        fn write_usize(&mut self, i: usize) {
-            self.0 = i as u64;
-        }
-    }
-
-    type DeterministicCache = OpCache<usize, usize, BuildHasherDefault<IdentityHasher>>;
+    type DeterministicCache = OpCache<usize, usize, BuildHasherDefault<FxHasher>>;
 
     fn cache(capacity: usize) -> DeterministicCache {
         OpCache::with_hasher_and_capacity(capacity, BuildHasherDefault::default())
@@ -250,7 +230,7 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
-        let cache: OpCache<usize, Arc<()>, BuildHasherDefault<IdentityHasher>> =
+        let cache: OpCache<usize, Arc<()>, BuildHasherDefault<FxHasher>> =
             OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());
         cache.insert(1, Arc::clone(&value));
