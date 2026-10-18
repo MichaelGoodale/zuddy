@@ -5,6 +5,8 @@ use std::{
 
 use ahash::RandomState;
 use dashmap::DashMap;
+
+use crate::utils::op_cache::OpCache;
 mod garbage;
 mod hashtable;
 mod parallelism;
@@ -25,7 +27,7 @@ use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 pub struct ZddHolder<V: Eq + Hash> {
     generation: AtomicU64,
     uniq_table: HashTable<V>,
-    cache: DashMap<Operations<V>, ZddIndex<V>, RandomState>,
+    cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: DashMap<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
     id: Uuid,
@@ -52,7 +54,10 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
             uniq_table: HashTable::new(n, n_pools),
             size_caches: DashMap::default(),
             temp_cache_max: None,
-            cache: DashMap::default(),
+            cache: OpCache::with_hasher_and_capacity(
+                n.saturating_mul(64).next_power_of_two(),
+                RandomState::default(),
+            ),
             id,
         }
     }
@@ -157,7 +162,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     pub(crate) fn get_from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
         self.cache
             .get(op)
-            .map(|s| SetFamily::from_set_family(*s, self))
+            .map(|s| SetFamily::from_set_family(s, self))
     }
 
     pub(crate) fn put_into_cache<'a>(

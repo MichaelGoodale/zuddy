@@ -31,6 +31,7 @@ divan = "0.1.21"
 anyhow = "1.0.103"
 rustc-hash = "2.1.0"
 
+
 [[bench]]
 name = "queens"
 harness = false

@@ -5,25 +5,28 @@
 
 use std::{
     collections::hash_map::RandomState,
+    fmt::Debug,
     hash::{BuildHasher, Hash},
-    sync::RwLock,
+    sync::{
+        RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 ///A single slot of an [`OpCache`].
 struct Slot<K, V> {
-    hash: u64,
+    generation: u64,
     entry: Option<(K, V)>,
 }
 
 impl<K, V> Default for Slot<K, V> {
     fn default() -> Self {
         Self {
-            hash: 0,
+            generation: 0,
             entry: None,
         }
     }
 }
-
 ///A simple parallel hashmap.
 ///
 ///Hash collisions overwrite the old value, so this is only appropriate for
@@ -43,6 +46,16 @@ pub struct OpCache<K, V, S = RandomState> {
     slots: Vec<RwLock<Slot<K, V>>>,
     mask: usize,
     hasher: S,
+    generation: AtomicU64,
+}
+
+impl<K, V, S> OpCache<K, V, S> {
+    ///The current generation of the cache.
+    ///
+    ///Entries from a previous generation are logically cleared.
+    fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
 }
 
 impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
@@ -53,10 +66,13 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     pub fn get(&self, key: &K) -> Option<V> {
         let slot = &self.slots[self.index(key)];
         let guard = slot.read().unwrap();
-        match &guard.entry {
-            Some((k, v)) if k == key => Some(v.clone()),
-            _ => None,
+        if guard.generation == self.current_generation() {
+            match &guard.entry {
+                Some((k, v)) if k == key => return Some(v.clone()),
+                _ => (),
+            }
         }
+        None
     }
 
     ///Inserts a key value pair into the cache, overwriting any hash collisions.
@@ -64,11 +80,19 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if the internal lock is poisoned.
     pub fn insert(&self, key: K, value: V) {
-        let hash = self.hash_one(&key);
         let slot = &self.slots[self.index(&key)];
         let mut guard = slot.write().unwrap();
-        guard.hash = hash;
+        guard.generation = self.current_generation();
         guard.entry = Some((key, value));
+    }
+}
+
+#[expect(clippy::missing_fields_in_debug)]
+impl<K: Debug, V, S> Debug for OpCache<K, V, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpCache")
+            .field("n_slots", &self.slots.len())
+            .finish()
     }
 }
 
@@ -80,17 +104,15 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     fn index(&self, key: &K) -> usize {
         usize::try_from(self.hash_one(key)).unwrap_or(usize::MAX) & self.mask
     }
+}
 
-    ///Removes all entries from the cache.
+impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
+    ///Logically removes all entries from the cache in constant time.
     ///
-    ///# Panics
-    ///May panic if an internal lock is poisoned.
+    ///Existing entries are left in place but become invisible to [`get`].
+    ///They are physically overwritten by later inserts.
     pub fn clear(&self) {
-        for slot in &self.slots {
-            let mut guard = slot.write().unwrap();
-            guard.hash = 0;
-            guard.entry = None;
-        }
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     ///Returns true if the cache contains no entries.
@@ -98,7 +120,10 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn is_empty(&self) -> bool {
-        self.slots.iter().all(|s| s.read().unwrap().entry.is_none())
+        let generation = self.current_generation();
+        self.slots
+            .iter()
+            .all(|s| s.read().unwrap().generation != generation)
     }
 
     ///The number of slots in the cache.
@@ -117,6 +142,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             slots: (0..n_slots).map(|_| RwLock::default()).collect(),
             mask: n_slots - 1,
             hasher,
+            generation: AtomicU64::new(1),
         }
     }
 }
@@ -230,13 +256,17 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
+        //Stale entries from before a clear are dropped when overwritten or
+        //when the cache is dropped.
         let cache: OpCache<usize, Arc<()>, BuildHasherDefault<FxHasher>> =
             OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());
         cache.insert(1, Arc::clone(&value));
         assert_eq!(Arc::strong_count(&value), 2);
-        cache.insert(2, Arc::clone(&value));
-        cache.clear();
+        cache.insert(1, Arc::new(()));
+        assert_eq!(Arc::strong_count(&value), 1);
+        cache.insert(1, Arc::clone(&value));
+        drop(cache);
         assert_eq!(Arc::strong_count(&value), 1);
     }
 }
