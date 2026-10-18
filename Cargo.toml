@@ -42,6 +42,10 @@ harness = false
 name = "unions"
 harness = false
 
+[[bench]]
+name = "construction"
+harness = false
+
 [features]
 default = ["sampling"]
 sampling = ["dep:rand"]
