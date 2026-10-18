@@ -98,9 +98,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn is_empty(&self) -> bool {
-        self.slots
-            .iter()
-            .all(|s| s.read().unwrap().entry.is_none())
+        self.slots.iter().all(|s| s.read().unwrap().entry.is_none())
     }
 
     ///The number of slots in the cache.

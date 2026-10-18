@@ -8,8 +8,8 @@ use std::{
 };
 
 use ahash::{HashMapExt, HashSetExt};
-pub mod single_set;
 pub mod op_cache;
+pub mod single_set;
 use crate::SetFamily;
 use crate::manager::{SizeKey, SizeValue, ZddHolder, ZddIndex};
 use single_set::SingleSet;
