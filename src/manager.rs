@@ -281,8 +281,15 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     pub fn from_sets(sets: BTreeSet<BTreeSet<V>>, holder: &'a ZddHolder<V>) -> SetFamily<'a, V> {
         enum Task<V> {
-            Split { start: usize, end: usize, skip: usize, empty: bool },
-            Build { value: V },
+            Split {
+                set_start: usize,
+                set_end: usize,
+                skip: usize,
+                contains_empty_set: bool,
+            },
+            Build {
+                value: V,
+            },
         }
 
         if sets.is_empty() {
@@ -292,50 +299,61 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
             return holder.one();
         }
 
-        //Flatten the family into one sorted slice of sets. Since a `BTreeSet`
-        //iterates in sorted order and deduplicates, the result is sorted
-        //lexicographically with no duplicate sets.
         let flat: Vec<Vec<V>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
 
-        //A subfamily is the range `flat[start..end]`, where the first `skip`
-        //elements of each set have already been consumed by ancestor splits.
-        //Every set in a subfamily followed the same branch decisions, so they
-        //consumed the same values, which are exactly their smallest `skip`
-        //elements: the remaining (logical) content of each set is `x[skip..]`,
-        //and the range stays sorted by that remaining content. `empty` tracks
-        //membership of the (at most one, deduplicated) logically-empty set,
-        //which would otherwise sort first in the range and break the prefix
-        //invariant below.
-        let mut stack = vec![Task::Split { start: 0, end: flat.len(), skip: 0, empty: false }];
+        let mut stack = vec![Task::Split {
+            set_start: 0,
+            set_end: flat.len(),
+            skip: 0,
+            contains_empty_set: false,
+        }];
         let mut results = vec![];
 
         while let Some(task) = stack.pop() {
             match task {
-                Task::Split { mut start, end, skip, mut empty } => {
-                    //The logically-empty set, if any, sorts first in the range.
-                    if start < end && flat[start].len() == skip {
-                        empty = true;
-                        start += 1;
+                Task::Split {
+                    mut set_start,
+                    set_end,
+                    skip,
+                    mut contains_empty_set,
+                } => {
+                    //We need to remove any empty sets since they come first in ordering.
+                    if set_start < set_end && flat[set_start].len() == skip {
+                        contains_empty_set = true;
+                        set_start += 1;
                     }
-                    if start == end {
-                        results.push(if empty { holder.one() } else { holder.zero() });
+
+                    if set_start == set_end {
+                        results.push(if contains_empty_set {
+                            holder.one()
+                        } else {
+                            holder.zero()
+                        });
                         continue;
                     }
-                    //fine since every remaining set in the range has more than
-                    //`skip` elements, so the first set's next element exists and
-                    //is the minimum value in the subfamily.
-                    let value = flat[start][skip].clone();
+
+                    let value = flat[set_start][skip].clone();
 
                     //The sets containing `value` are exactly those whose
                     //logical first element is `value`, and they form a prefix
                     //of the range.
-                    let split = flat[start..end]
-                        .partition_point(|x| x.get(skip) == Some(&value));
+                    let split =
+                        flat[set_start..set_end].partition_point(|x| x.get(skip) == Some(&value));
 
                     stack.extend([
                         Task::Build { value },
-                        Task::Split { start, end: start + split, skip: skip + 1, empty: false },
-                        Task::Split { start: start + split, end, skip, empty },
+                        Task::Split {
+                            set_start,
+                            set_end: set_start + split,
+                            skip: skip + 1,
+                            contains_empty_set: false,
+                        },
+                        Task::Split {
+                            set_start: set_start + split,
+                            set_end,
+                            skip,
+                            contains_empty_set,
+                        },
                     ]);
                 }
                 Task::Build { value } => {
