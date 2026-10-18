@@ -4,7 +4,6 @@ use std::{
 };
 
 use ahash::RandomState;
-use dashmap::DashMap;
 
 use crate::utils::op_cache::OpCache;
 mod garbage;
@@ -28,7 +27,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     generation: AtomicU64,
     uniq_table: HashTable<V>,
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
-    size_caches: DashMap<SizeKey<V>, SizeValue, RandomState>,
+    size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
     id: Uuid,
 }
@@ -52,7 +51,10 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         Self {
             generation: AtomicU64::new(0),
             uniq_table: HashTable::new(n, n_pools),
-            size_caches: DashMap::default(),
+            size_caches: OpCache::with_hasher_and_capacity(
+                n.saturating_mul(16).next_power_of_two(),
+                RandomState::default(),
+            ),
             temp_cache_max: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
@@ -255,7 +257,7 @@ impl<V> SizeKey<V> {
 
 impl<V: Eq + Hash> ZddHolder<V> {
     pub(crate) fn size_cache_get(&self, op: &SizeKey<V>) -> Option<SizeValue> {
-        self.size_caches.get(op).map(|x| x.value().clone())
+        self.size_caches.get(op)
     }
 
     pub(crate) fn size_cache_insert(&self, key: SizeKey<V>, value: SizeValue) -> SizeValue {

@@ -12,8 +12,18 @@ use std::{
     },
 };
 
+///The current table of an [`OpCache`]: its slots and the mask for indexing them.
+struct Table<K, V> {
+    slots: Vec<RwLock<Slot<K, V>>>,
+    mask: usize,
+}
+
 ///A single slot of an [`OpCache`].
 struct Slot<K, V> {
+    ///The generation this slot was last written in.
+    ///
+    ///A slot only holds a visible entry if this matches the cache's current
+    ///generation.
     generation: u64,
     entry: Option<(K, V)>,
 }
@@ -26,7 +36,17 @@ impl<K, V> Default for Slot<K, V> {
         }
     }
 }
+
 ///A simple parallel hashmap.
+///
+///Hash collisions are just overwritten, so this is only appropriate for
+///caches where recomputation is cheap.
+///
+///The table does not grow by itself; it is sized by
+///[`resize`](OpCache::resize), which is cheap when called after
+///[`clear`](OpCache::clear) since no entries need to be rehashed.
+///[`clear`] is constant time: entries become invisible and are physically
+///dropped when overwritten or when the cache is dropped.
 ///
 ///```ignore
 ///let cache = OpCache::new(4);
@@ -34,8 +54,7 @@ impl<K, V> Default for Slot<K, V> {
 ///assert_eq!(cache.get(&1), Some(10));
 ///```
 pub(crate) struct OpCache<K, V, S = RandomState> {
-    slots: Vec<RwLock<Slot<K, V>>>,
-    mask: usize,
+    table: RwLock<Table<K, V>>,
     hasher: S,
     generation: AtomicU64,
 }
@@ -53,9 +72,10 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     ///Returns the value stored for `key`, or `None` if it is not cached.
     ///
     ///# Panics
-    ///May panic if the internal lock is poisoned.
+    ///May panic if an internal lock is poisoned.
     pub fn get(&self, key: &K) -> Option<V> {
-        let slot = &self.slots[self.index(key)];
+        let table = self.table.read().unwrap();
+        let slot = &table.slots[self.index(table.mask, key)];
         let guard = slot.read().unwrap();
         if guard.generation == self.current_generation() {
             match &guard.entry {
@@ -69,21 +89,20 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     ///Inserts a key value pair into the cache, overwriting any hash collisions.
     ///
     ///# Panics
-    ///May panic if the internal lock is poisoned.
+    ///May panic if an internal lock is poisoned.
     pub fn insert(&self, key: K, value: V) {
-        let slot = &self.slots[self.index(&key)];
+        let table = self.table.read().unwrap();
+        let slot = &table.slots[self.index(table.mask, &key)];
+        let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
-        guard.generation = self.current_generation();
+        guard.generation = generation;
         guard.entry = Some((key, value));
     }
 }
 
-#[expect(clippy::missing_fields_in_debug)]
 impl<K: Debug, V, S> Debug for OpCache<K, V, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpCache")
-            .field("n_slots", &self.slots.len())
-            .finish()
+        f.debug_struct("OpCache").finish()
     }
 }
 
@@ -92,18 +111,39 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.hasher.hash_one(key)
     }
 
-    fn index(&self, key: &K) -> usize {
-        usize::try_from(self.hash_one(key)).unwrap_or(usize::MAX) & self.mask
+    fn index(&self, mask: usize, key: &K) -> usize {
+        usize::try_from(self.hash_one(key)).unwrap_or(usize::MAX) & mask
     }
 }
 
 impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///Logically removes all entries from the cache in constant time.
     ///
-    ///Existing entries are left in place but become invisible to [`get`].
-    ///They are physically overwritten by later inserts.
+    ///Existing entries are left in place but become invisible to
+    ///[`get`](OpCache::get). They are physically dropped when overwritten or
+    ///when the cache is dropped.
     pub fn clear(&self) {
         self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    ///Resizes the cache to have at least `capacity` slots.
+    ///
+    ///Since this is a cache, existing entries are discarded rather than
+    ///rehashed; prefer calling this right after [`clear`](OpCache::clear),
+    ///where no entries need to survive anyway. The capacity is rounded up to
+    ///a power of two.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn resize(&self, capacity: usize) {
+        let n_slots = capacity.max(2).next_power_of_two();
+        let mut table = self.table.write().unwrap();
+        if table.slots.len() < n_slots {
+            *table = Table {
+                slots: (0..n_slots).map(|_| RwLock::default()).collect(),
+                mask: n_slots - 1,
+            };
+        }
     }
 
     #[cfg(test)]
@@ -113,9 +153,21 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///May panic if an internal lock is poisoned.
     pub fn is_empty(&self) -> bool {
         let generation = self.current_generation();
-        self.slots
-            .iter()
-            .all(|s| s.read().unwrap().generation != generation)
+        let table = self.table.read().unwrap();
+        table.slots.iter().all(|s| {
+            let guard = s.read().unwrap();
+            guard.generation != generation || guard.entry.is_none()
+        })
+    }
+
+    #[cfg(test)]
+    ///The number of slots in the cache.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.table.read().unwrap().slots.len()
     }
 
     ///Creates a new [`OpCache`] with at least `capacity` slots.
@@ -125,8 +177,10 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     pub fn with_hasher_and_capacity(capacity: usize, hasher: S) -> Self {
         let n_slots = capacity.max(2).next_power_of_two();
         Self {
-            slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-            mask: n_slots - 1,
+            table: RwLock::new(Table {
+                slots: (0..n_slots).map(|_| RwLock::default()).collect(),
+                mask: n_slots - 1,
+            }),
             hasher,
             generation: AtomicU64::new(1),
         }
@@ -183,9 +237,9 @@ mod tests {
 
     #[test]
     fn capacity_rounds_up_to_power_of_two() {
-        assert_eq!(cache(1).slots.len(), 2);
-        assert_eq!(cache(5).slots.len(), 8);
-        assert_eq!(cache(16).slots.len(), 16);
+        assert_eq!(cache(1).capacity(), 2);
+        assert_eq!(cache(5).capacity(), 8);
+        assert_eq!(cache(16).capacity(), 16);
     }
 
     #[test]
@@ -198,16 +252,43 @@ mod tests {
     }
 
     #[test]
+    fn resize_grows_capacity_and_discards_entries() {
+        let cache = cache(2);
+        cache.insert(1, 10);
+        assert_eq!(cache.get(&1), Some(10));
+        cache.clear();
+        cache.resize(64);
+        assert_eq!(cache.capacity(), 64);
+        //Entries are discarded rather than rehashed.
+        assert_eq!(cache.get(&1), None);
+        assert!(cache.is_empty());
+        for i in 0..50_usize {
+            cache.insert(i, i * 2);
+            assert_eq!(cache.get(&i), Some(i * 2));
+        }
+    }
+
+    #[test]
+    fn resize_never_shrinks() {
+        let cache = cache(64);
+        cache.resize(8);
+        assert_eq!(cache.capacity(), 64);
+    }
+
+    #[test]
     fn colliding_keys_overwrite() {
-        let cache = cache(1);
+        //Keys which land in the same slot overwrite each other.
+        let cache = cache(2);
         cache.insert(1, 10);
         cache.insert(2, 20);
+        //Both keys hash to slot 0 or 1; at most one survives.
         let results = [cache.get(&1), cache.get(&2)];
         assert!(results.contains(&Some(10)) || results.contains(&Some(20)));
     }
 
     #[test]
     fn parallel_inserts_and_gets() {
+        //All threads insert the same pairs, so any survivor is correct.
         let cache = Arc::new(cache(256));
         let mut handles = vec![];
         for _ in 0..8 {
@@ -229,6 +310,8 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
+        //Stale entries from before a clear are dropped when overwritten or
+        //when the cache is dropped.
         let cache: OpCache<usize, Arc<()>, BuildHasherDefault<FxHasher>> =
             OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());
