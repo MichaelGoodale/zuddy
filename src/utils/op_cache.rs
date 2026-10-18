@@ -116,7 +116,10 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn resize(&self, capacity: usize) {
-        let n_slots = capacity.max(2).next_power_of_two();
+        let n_slots = capacity
+            .max(2)
+            .checked_next_power_of_two()
+            .unwrap_or(1 << (usize::BITS - 1));
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
             *table = Table {
@@ -147,7 +150,10 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///The capacity is rounded up to a power of two.
     #[must_use]
     pub fn with_hasher_and_capacity(capacity: usize, hasher: S) -> Self {
-        let n_slots = capacity.max(2).next_power_of_two();
+        let n_slots = capacity
+            .max(2)
+            .checked_next_power_of_two()
+            .unwrap_or(1 << (usize::BITS - 1));
         Self {
             table: RwLock::new(Table {
                 slots: (0..n_slots).map(|_| RwLock::default()).collect(),

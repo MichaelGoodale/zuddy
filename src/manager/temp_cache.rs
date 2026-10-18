@@ -83,10 +83,12 @@ where
         let old_value = self.cache.insert(key, inner_value);
 
         match old_value {
-            Some(old_value) => {
+            Some((old_key, old_value)) => {
                 self.size.fetch_add(value_size, Ordering::Relaxed);
+                let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
                 let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
-                self.size.fetch_sub(old_value_size, Ordering::Relaxed);
+                self.size
+                    .fetch_sub(old_key_size + old_value_size, Ordering::Relaxed);
             }
             None => {
                 self.size
