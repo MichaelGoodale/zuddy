@@ -299,11 +299,26 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
             return holder.one();
         }
 
-        let flat: Vec<Vec<V>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
+        //Flatten the family into a single buffer of elements with an
+        //(offset, len) descriptor per set: one allocation total, and the
+        //descriptors are contiguous so range scans stay cache-friendly.
+        let total: usize = sets.iter().map(BTreeSet::len).sum();
+        let mut elems = Vec::with_capacity(total);
+        let mut descriptors = Vec::with_capacity(sets.len());
+        for set in sets {
+            descriptors.push((elems.len(), set.len()));
+            elems.extend(set);
+        }
+        //The logical content of set `i` is `elems[offset + skip..offset + len]`,
+        //where the first `skip` elements were consumed by ancestor splits.
+        let logical = |i: usize, skip: usize| {
+            let (offset, len) = descriptors[i];
+            &elems[offset + skip..offset + len]
+        };
 
         let mut stack = vec![Task::Split {
             set_start: 0,
-            set_end: flat.len(),
+            set_end: descriptors.len(),
             skip: 0,
             contains_empty_set: false,
         }];
@@ -318,7 +333,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                     mut contains_empty_set,
                 } => {
                     //We need to remove any empty sets since they come first in ordering.
-                    if set_start < set_end && flat[set_start].len() == skip {
+                    if set_start < set_end && descriptors[set_start].1 == skip {
                         contains_empty_set = true;
                         set_start += 1;
                     }
@@ -332,11 +347,12 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         continue;
                     }
 
-                    let value = flat[set_start][skip].clone();
+                    let value = logical(set_start, skip)[0].clone();
 
                     //Find the first set that doesn't have the value.
-                    let split =
-                        flat[set_start..set_end].partition_point(|x| x.get(skip) == Some(&value));
+                    let split = descriptors[set_start..set_end].partition_point(|(offset, len)| {
+                        *len > skip && elems.get(offset + skip) == Some(&value)
+                    });
 
                     stack.extend([
                         Task::Build { value },
