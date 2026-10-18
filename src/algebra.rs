@@ -629,15 +629,42 @@ mod test {
 
     #[test]
     fn test_from_sets_basic() {
-        let holder = ZddHolder::<char>::new();
+        let cases = [
+            // shared prefixes, several branches
+            "ab a b",
+            // single set, several elements
+            "abcdef",
+            // sets which nest completely
+            "abc ab a",
+            // the empty set alongside others
+            " ab a",
+            // only the empty set
+            " ",
+            // duplicated sets (BTreeSet deduplicates)
+            "ab ab a",
+            // all singletons
+            "a b c d e f",
+            // chains of supersets
+            "a ab abc abcd abcde",
+            // disjoint sets
+            "ae bf cg",
+            // many sets sharing one value
+            "a ab ac ad ae",
+            // interleaved prefixes
+            "abcd abce abcdf abcdg",
+            // single character sets mixed into a larger family
+            "a b ab abc",
+        ];
+        for case in cases {
+            let holder = ZddHolder::<char>::new();
 
-        let sets = str_to_sets("ab a b");
-
-        let z = SetFamily::from_sets(sets.clone(), &holder);
-        let members: BTreeSet<Vec<char>> = z.members().collect();
-
-        let sets: BTreeSet<Vec<_>> = sets.into_iter().map(|x| x.into_iter().collect()).collect();
-        assert_eq!(members, sets);
+            let sets = str_to_sets(case);
+            let z = SetFamily::from_sets(sets.clone(), &holder);
+            let members: BTreeSet<Vec<char>> = z.members().collect();
+            let sets: BTreeSet<Vec<_>> =
+                sets.into_iter().map(|x| x.into_iter().collect()).collect();
+            assert_eq!(members, sets, "case: {case:?}");
+        }
     }
 
     #[test]
