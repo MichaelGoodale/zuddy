@@ -300,6 +300,11 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
         }
 
         let total: usize = sets.iter().map(BTreeSet::len).sum();
+        //The ZDD of a family has at most one node per (value, subfamily) pair,
+        //which is bounded by the total number of elements. Resizing mid-build
+        //is a stop-the-world mark-and-rehash of the whole table, so ensure
+        //there is room up front.
+        holder.reserve(total);
         let mut elems = Vec::with_capacity(total);
         let mut descriptors = Vec::with_capacity(sets.len());
         for set in sets {
