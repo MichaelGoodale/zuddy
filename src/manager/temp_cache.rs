@@ -4,7 +4,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use dashmap::DashMap;
+use crate::utils::op_cache::OpCache;
+use ahash::RandomState;
 use mem_dbg::{MemSize, SizeFlags};
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfinity};
@@ -12,7 +13,7 @@ use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfin
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
     holder: &'a ZddHolder<V>,
-    cache: DashMap<K, T>,
+    cache: OpCache<K, T, RandomState>,
     generation: AtomicU64,
     size: AtomicU64,
 }
@@ -37,8 +38,8 @@ impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for ZddIndex<V> {
 impl<'a, V, K, T> TempCache<'a, V, K, T>
 where
     V: Eq + Hash,
-    K: Eq + Hash + MemSize,
-    T: TempCacheItem<'a, V> + MemSize,
+    K: Eq + Hash + MemSize + Clone,
+    T: TempCacheItem<'a, V> + MemSize + Clone,
 {
     fn clear_if_not_current(&self) {
         let current = self.holder.current_generation();
@@ -82,10 +83,12 @@ where
         let old_value = self.cache.insert(key, inner_value);
 
         match old_value {
-            Some(old_value) => {
+            Some((old_key, old_value)) => {
                 self.size.fetch_add(value_size, Ordering::Relaxed);
+                let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
                 let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
-                self.size.fetch_sub(old_value_size, Ordering::Relaxed);
+                self.size
+                    .fetch_sub(old_key_size + old_value_size, Ordering::Relaxed);
             }
             None => {
                 self.size
@@ -105,12 +108,15 @@ impl<V: Eq + Hash> ZddHolder<V> {
     ///Create a [`TempCache`] which allows for the construction of algorithms that require hashing
     ///of partial results. Crucially, this hashmap will empty if garbage collection is triggered,
     ///allowing for caching without requiring all partial values to be held indefinitely.
-    pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(&self) -> TempCache<'_, V, K, T> {
+    pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(
+        &self,
+        capacity: usize,
+    ) -> TempCache<'_, V, K, T> {
         TempCache {
             holder: self,
-            cache: DashMap::new(),
+            cache: OpCache::with_hasher_and_capacity(capacity, RandomState::default()),
             generation: AtomicU64::from(self.current_generation()),
-            size: AtomicU64::from(0),
+            size: AtomicU64::new(0),
         }
     }
 }

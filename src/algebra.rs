@@ -250,11 +250,19 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     #[recursive::recursive]
     pub fn union(self, other: Self) -> Self {
+        self.union_inner(other)
+    }
+
+    fn union_inner(mut self, mut other: Self) -> Self {
         if self.is_zero() {
             return other;
         }
         if other.is_zero() || self == other {
             return self;
+        }
+
+        if self.id > other.id {
+            std::mem::swap(&mut self, &mut other);
         }
 
         let holder = self.manager;
@@ -289,10 +297,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
                 holder.get_node(other_val, lo, other_hi)
             }
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = self
-                    .manager
-                    .pools()
-                    .join(|| self_lo.union(other_lo), || self_hi.union(other_hi));
+                let lo = self_lo.union_inner(other_lo);
+                let hi = self_hi.union_inner(other_hi);
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -505,8 +511,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return self.clone();
         }
         let values = self.manager().single_set(values.into_iter().collect());
-        let cache = self.manager().create_temporary_cache();
-        let o_cache = self.manager().create_temporary_cache();
+        let n_nodes = self.n_nodes();
+        let cache = self.manager().create_temporary_cache(n_nodes * 2);
+        let o_cache = self.manager().create_temporary_cache(n_nodes * 2);
         extend_as_superset_inner(self.clone(), values, &cache, &o_cache)
     }
 }

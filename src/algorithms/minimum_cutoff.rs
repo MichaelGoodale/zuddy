@@ -86,7 +86,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync + Ord> SetFamily<'a, V> {
         F: Fn(&V) -> usize + Send + Sync,
     {
         let mut cache = MaxWeightOfCache::new();
-        let bounds_cache = self.manager().create_temporary_cache();
+        let bounds_cache = self.manager().create_temporary_cache(self.n_nodes() * 2);
         exact_weight_of(self.clone(), budget, &f, &mut cache, &bounds_cache)
     }
 }
