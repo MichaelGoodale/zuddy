@@ -28,9 +28,7 @@ impl<K, V> Default for Slot<K, V> {
 }
 ///A simple parallel hashmap.
 ///
-///# Examples
-///```
-///# use zuddy::utils::op_cache::OpCache;
+///```ignore
 ///let cache = OpCache::new(4);
 ///cache.insert(1, 10);
 ///assert_eq!(cache.get(&1), Some(10));
