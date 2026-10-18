@@ -97,21 +97,21 @@ fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
     holder: &ZddHolder<V>,
     depth: usize,
 ) {
-    if marked.try_mark(usize::from(to_mark)) {
-        if let Some((hi, lo)) = to_mark.raw_children(holder) {
-            if depth < PAR_DEPTH_LIMIT {
-                rayon::join(
-                    || mark_inner(hi, marked, holder, depth + 1),
-                    || mark_inner(lo, marked, holder, depth + 1),
-                );
-            } else {
-                let mut stack = vec![hi, lo];
-                while let Some(x) = stack.pop() {
-                    if marked.try_mark(usize::from(x)) {
-                        if let Some((lo, hi)) = x.raw_children(holder) {
-                            stack.extend([lo, hi]);
-                        }
-                    }
+    if marked.try_mark(usize::from(to_mark))
+        && let Some((hi, lo)) = to_mark.raw_children(holder)
+    {
+        if depth < PAR_DEPTH_LIMIT {
+            rayon::join(
+                || mark_inner(hi, marked, holder, depth + 1),
+                || mark_inner(lo, marked, holder, depth + 1),
+            );
+        } else {
+            let mut stack = vec![hi, lo];
+            while let Some(x) = stack.pop() {
+                if marked.try_mark(usize::from(x))
+                    && let Some((lo, hi)) = x.raw_children(holder)
+                {
+                    stack.extend([lo, hi]);
                 }
             }
         }
