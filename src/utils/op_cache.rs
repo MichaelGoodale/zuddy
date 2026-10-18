@@ -12,18 +12,8 @@ use std::{
     },
 };
 
-///The current table of an [`OpCache`]: its slots and the mask for indexing them.
-struct Table<K, V> {
-    slots: Vec<RwLock<Slot<K, V>>>,
-    mask: usize,
-}
-
-///A single slot of an [`OpCache`].
+///A slot of an [`OpCache`].
 struct Slot<K, V> {
-    ///The generation this slot was last written in.
-    ///
-    ///A slot only holds a visible entry if this matches the cache's current
-    ///generation.
     generation: u64,
     entry: Option<(K, V)>,
 }
@@ -37,22 +27,15 @@ impl<K, V> Default for Slot<K, V> {
     }
 }
 
+struct Table<K, V> {
+    slots: Vec<RwLock<Slot<K, V>>>,
+    mask: usize,
+}
 ///A simple parallel hashmap.
 ///
-///Hash collisions are just overwritten, so this is only appropriate for
-///caches where recomputation is cheap.
+///Hash collisions are just overwritten.
 ///
-///The table does not grow by itself; it is sized by
-///[`resize`](OpCache::resize), which is cheap when called after
-///[`clear`](OpCache::clear) since no entries need to be rehashed.
-///[`clear`] is constant time: entries become invisible and are physically
-///dropped when overwritten or when the cache is dropped.
-///
-///```ignore
-///let cache = OpCache::new(4);
-///cache.insert(1, 10);
-///assert_eq!(cache.get(&1), Some(10));
-///```
+///Fixed size unless resized by [`resize`](OpCache::resize)
 pub(crate) struct OpCache<K, V, S = RandomState> {
     table: RwLock<Table<K, V>>,
     hasher: S,
@@ -60,9 +43,6 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
 }
 
 impl<K, V, S> OpCache<K, V, S> {
-    ///The current generation of the cache.
-    ///
-    ///Entries from a previous generation are logically cleared.
     fn current_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -117,21 +97,12 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
 }
 
 impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
-    ///Logically removes all entries from the cache in constant time.
-    ///
-    ///Existing entries are left in place but become invisible to
-    ///[`get`](OpCache::get). They are physically dropped when overwritten or
-    ///when the cache is dropped.
+    ///Empties cache by invalidating current entries.
     pub fn clear(&self) {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    ///Resizes the cache to have at least `capacity` slots.
-    ///
-    ///Since this is a cache, existing entries are discarded rather than
-    ///rehashed; prefer calling this right after [`clear`](OpCache::clear),
-    ///where no entries need to survive anyway. The capacity is rounded up to
-    ///a power of two.
+    ///Resizes the cache to have at least `capacity` slots while discarding cache.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
@@ -147,11 +118,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     }
 
     #[cfg(test)]
-    ///Returns true if the cache contains no entries.
-    ///
-    ///# Panics
-    ///May panic if an internal lock is poisoned.
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         let generation = self.current_generation();
         let table = self.table.read().unwrap();
         table.slots.iter().all(|s| {
@@ -161,12 +128,8 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     }
 
     #[cfg(test)]
-    ///The number of slots in the cache.
-    ///
-    ///# Panics
-    ///May panic if an internal lock is poisoned.
     #[must_use]
-    pub fn capacity(&self) -> usize {
+    fn capacity(&self) -> usize {
         self.table.read().unwrap().slots.len()
     }
 
@@ -277,8 +240,7 @@ mod tests {
 
     #[test]
     fn colliding_keys_overwrite() {
-        //Keys which land in the same slot overwrite each other.
-        let cache = cache(2);
+        let cache = cache(1);
         cache.insert(1, 10);
         cache.insert(2, 20);
         //Both keys hash to slot 0 or 1; at most one survives.
@@ -310,8 +272,6 @@ mod tests {
 
     #[test]
     fn values_are_dropped() {
-        //Stale entries from before a clear are dropped when overwritten or
-        //when the cache is dropped.
         let cache: OpCache<usize, Arc<()>, BuildHasherDefault<FxHasher>> =
             OpCache::with_hasher_and_capacity(8, BuildHasherDefault::default());
         let value = Arc::new(());

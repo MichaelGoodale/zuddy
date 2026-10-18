@@ -63,9 +63,6 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.used_variables().for_each(|g| mark(g, &marked, self));
             let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
-            //The caches were just cleared, so resizing discards nothing.
-            //Size them off the number of surviving nodes, so that they grow
-            //with the unique table without a per-insert cost.
             let n_live = marked.len();
             self.cache.resize(n_live.saturating_mul(4));
             self.size_caches.resize(n_live.saturating_mul(2));
