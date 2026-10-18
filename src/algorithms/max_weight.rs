@@ -28,9 +28,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> Int + Send + Sync,
         Int: Num + Clone + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
     {
-        let cache: WeightCache<'a, V, Int> = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
+        let cache: WeightCache<'a, V, Int> =
+            self.manager().create_temporary_cache(self.n_nodes() * 2);
         self.clone().max_weight_inner(&f, &cache)
     }
 
@@ -157,9 +156,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> Int + Send + Sync,
         Int: Num + Clone + Ord + TempCacheItem<'a, V, Output = Int> + MemSize,
     {
-        let cache: WeightCache<'a, V, Option<Int>> = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
+        let cache: WeightCache<'a, V, Option<Int>> =
+            self.manager().create_temporary_cache(self.n_nodes() * 2);
         self.clone().min_weight_inner(&f, &cache).unwrap()
     }
 
@@ -205,9 +203,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> T + Send + Sync,
         T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + MemSize,
     {
-        let cache: BoundsWeightCache<'a, V, T> = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
+        let cache: BoundsWeightCache<'a, V, T> =
+            self.manager().create_temporary_cache(self.n_nodes() * 2);
         let (min, max) = self.clone().bounds_inner(&f, &cache);
         (min.unwrap(), max)
     }
@@ -260,9 +257,8 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
         F: Fn(&V) -> T + Send + Sync,
         T: Num + Clone + Ord + TempCacheItem<'a, V, Output = T> + Send + Sync + MemSize + FlatType,
     {
-        let cache: WeightCache<'a, V, BTreeMap<T, usize>> = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
+        let cache: WeightCache<'a, V, BTreeMap<T, usize>> =
+            self.manager().create_temporary_cache(self.n_nodes() * 2);
         self.clone().set_weights_inner(&f, &cache)
     }
 

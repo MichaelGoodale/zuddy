@@ -511,12 +511,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return self.clone();
         }
         let values = self.manager().single_set(values.into_iter().collect());
-        let cache = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
-        let o_cache = self
-            .manager()
-            .create_temporary_cache(std::slice::from_ref(self));
+        let n_nodes = self.n_nodes();
+        let cache = self.manager().create_temporary_cache(n_nodes * 2);
+        let o_cache = self.manager().create_temporary_cache(n_nodes * 2);
         extend_as_superset_inner(self.clone(), values, &cache, &o_cache)
     }
 }
