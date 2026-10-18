@@ -26,7 +26,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub fn max_weight<F, Int>(&self, f: F) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
+        Int: Num + Clone + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
     {
         let cache: WeightCache<'a, V, Int> = self.manager().create_temporary_cache();
         self.clone().max_weight_inner(&f, &cache)
@@ -36,7 +36,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
     pub(crate) fn max_weight_inner<F, Int>(self, f: &F, cache: &WeightCache<'a, V, Int>) -> Int
     where
         F: Fn(&V) -> Int + Send + Sync,
-        Int: Num + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
+        Int: Num + Clone + TempCacheItem<'a, V, Output = Int> + Ord + MemSize,
     {
         if self.is_zero() || self.is_one() {
             return Int::zero();

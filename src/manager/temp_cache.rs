@@ -4,7 +4,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use dashmap::DashMap;
+use crate::utils::op_cache::OpCache;
+use ahash::RandomState;
 use mem_dbg::{MemSize, SizeFlags};
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfinity};
@@ -12,7 +13,7 @@ use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfin
 ///A cache for [`SetFamily`] which empties automatically when garbage collection occurs.
 pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
     holder: &'a ZddHolder<V>,
-    cache: DashMap<K, T>,
+    cache: OpCache<K, T, RandomState>,
     generation: AtomicU64,
     size: AtomicU64,
 }
@@ -37,8 +38,8 @@ impl<'a, V: Eq + Hash + 'a> TempCacheItem<'a, V> for ZddIndex<V> {
 impl<'a, V, K, T> TempCache<'a, V, K, T>
 where
     V: Eq + Hash,
-    K: Eq + Hash + MemSize,
-    T: TempCacheItem<'a, V> + MemSize,
+    K: Eq + Hash + MemSize + Clone,
+    T: TempCacheItem<'a, V> + MemSize + Clone,
 {
     fn clear_if_not_current(&self) {
         let current = self.holder.current_generation();
@@ -108,9 +109,9 @@ impl<V: Eq + Hash> ZddHolder<V> {
     pub(crate) fn create_temporary_cache<K: Eq + Hash, T>(&self) -> TempCache<'_, V, K, T> {
         TempCache {
             holder: self,
-            cache: DashMap::new(),
+            cache: OpCache::with_hasher_and_capacity(1024, RandomState::default()),
             generation: AtomicU64::from(self.current_generation()),
-            size: AtomicU64::from(0),
+            size: AtomicU64::new(0),
         }
     }
 }

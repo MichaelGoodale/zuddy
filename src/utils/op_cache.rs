@@ -68,15 +68,24 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
 
     ///Inserts a key value pair into the cache, overwriting any hash collisions.
     ///
+    ///Returns the entry which was previously stored in the collided slot,
+    ///if it was visible.
+    ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
-    pub fn insert(&self, key: K, value: V) {
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let table = self.table.read().unwrap();
         let slot = &table.slots[self.index(table.mask, &key)];
         let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
+        let old = if guard.generation == generation {
+            guard.entry.take()
+        } else {
+            None
+        };
         guard.generation = generation;
         guard.entry = Some((key, value));
+        old
     }
 }
 
