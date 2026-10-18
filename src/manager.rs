@@ -299,9 +299,6 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
             return holder.one();
         }
 
-        //Flatten the family into a single buffer of elements with an
-        //(offset, len) descriptor per set: one allocation total, and the
-        //descriptors are contiguous so range scans stay cache-friendly.
         let total: usize = sets.iter().map(BTreeSet::len).sum();
         let mut elems = Vec::with_capacity(total);
         let mut descriptors = Vec::with_capacity(sets.len());
@@ -309,9 +306,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
             descriptors.push((elems.len(), set.len()));
             elems.extend(set);
         }
-        //The logical content of set `i` is `elems[offset + skip..offset + len]`,
-        //where the first `skip` elements were consumed by ancestor splits.
-        let logical = |i: usize, skip: usize| {
+        let set_position = |i: usize, skip: usize| {
             let (offset, len) = descriptors[i];
             &elems[offset + skip..offset + len]
         };
@@ -347,7 +342,7 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
                         continue;
                     }
 
-                    let value = logical(set_start, skip)[0].clone();
+                    let value = set_position(set_start, skip)[0].clone();
 
                     //Find the first set that doesn't have the value.
                     let split = descriptors[set_start..set_end].partition_point(|(offset, len)| {
