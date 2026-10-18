@@ -519,7 +519,7 @@ mod test {
             let data = table
                 .get(entry.index())
                 .expect("Hash entry points at missing data!");
-            if let Some(old) = seen.insert(data.clone(), entry.index()) {
+            if let Some(old) = seen.insert(data, entry.index()) {
                 assert!(
                     old != entry.index() && s != old,
                     "Two hash entries hold equal data: {old} and {}",
