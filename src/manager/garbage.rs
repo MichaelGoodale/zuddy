@@ -2,7 +2,6 @@ use crate::{
     ZddHolder,
     manager::{RawZddData, ZddIndex},
 };
-use rayon::prelude::*;
 use std::{
     hash::Hash,
     sync::atomic::{AtomicU64, Ordering},
@@ -31,9 +30,9 @@ impl MarkedNodes {
 
     fn into_marked(self) -> Vec<usize> {
         self.bits
-            .into_par_iter()
+            .into_iter()
             .enumerate()
-            .flat_map_iter(|(i, word)| {
+            .flat_map(|(i, word)| {
                 let mut word = word.into_inner();
                 let base = i * 64;
                 (0..64).filter_map(move |b| {
@@ -60,7 +59,14 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.size_caches.clear();
 
             let marked = MarkedNodes::new(self.uniq_table.len());
-            self.used_variables().for_each(|g| mark(g, &marked, self));
+            let n = self.uniq_table.len();
+            let roots: Vec<_> = (0..n)
+                .filter(|&i| self.uniq_table.count_at(i) != 0)
+                .map(ZddIndex::from)
+                .collect();
+            for g in roots {
+                mark(g, &marked, self);
+            }
             let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
             let n_live = marked.len();
@@ -85,38 +91,62 @@ impl<V: Eq + Hash + Hash + Clone> ZddIndex<V> {
     }
 }
 
+///Marks `to_mark` and everything reachable from it.
+///
+///The mark phase runs sequentially: GC executes on a worker of the holder's
+///rayon pool while every other worker is parked in `wait_until_unpaused`, so
+///rayon parallelism here would block the marking thread on join latches that
+///only parked workers could fire: a self-deadlock.
 fn mark<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
     marked: &MarkedNodes,
     holder: &ZddHolder<V>,
 ) {
-    mark_inner(to_mark, marked, holder, 0);
-}
-const PAR_DEPTH_LIMIT: usize = 12;
-
-fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
-    to_mark: ZddIndex<V>,
-    marked: &MarkedNodes,
-    holder: &ZddHolder<V>,
-    depth: usize,
-) {
     if marked.try_mark(usize::from(to_mark))
         && let Some((hi, lo)) = to_mark.raw_children(holder)
     {
-        if depth < PAR_DEPTH_LIMIT {
-            rayon::join(
-                || mark_inner(hi, marked, holder, depth + 1),
-                || mark_inner(lo, marked, holder, depth + 1),
-            );
-        } else {
-            let mut stack = vec![hi, lo];
-            while let Some(x) = stack.pop() {
-                if marked.try_mark(usize::from(x))
-                    && let Some((lo, hi)) = x.raw_children(holder)
-                {
-                    stack.extend([lo, hi]);
-                }
+        let mut stack = vec![hi, lo];
+        while let Some(x) = stack.pop() {
+            if marked.try_mark(usize::from(x))
+                && let Some((lo, hi)) = x.raw_children(holder)
+            {
+                stack.extend([lo, hi]);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::SetFamily;
+    use rayon::prelude::*;
+
+    ///Regression test for the GC self-deadlock.
+    ///
+    ///GC used to run its mark phase with rayon parallelism on the holder's own
+    ///pool. Since GC executes on a worker of that pool while every other worker
+    ///is parked in `wait_until_unpaused`, the marking thread could block on
+    ///join latches that only the parked workers could fire, permanently wedging
+    ///the pool. The mark phase is sequential now, so this stress test (parallel
+    ///algebra with a tiny table forcing constant GC) must complete.
+    #[test]
+    fn gc_during_parallel_always_completes() {
+        for _ in 0..20 {
+            let holder = ZddHolder::<char>::with_capacity_and_pools(600, 4);
+            let pool = holder.pools();
+
+            pool.install(|| {
+                (0..4u32).into_par_iter().for_each(|t| {
+                    let mut acc = holder.zero();
+                    for v in 0..26u8 {
+                        let value =
+                            char::from_u32(u32::from(v) + u32::from(b'a') + t * 0x100).unwrap();
+                        acc = acc.union(SetFamily::singleton(value, &holder));
+                        acc = acc.change(value);
+                    }
+                });
+            });
         }
     }
 }

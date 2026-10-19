@@ -1,4 +1,4 @@
-use rayon::{ThreadPool, prelude::*};
+use rayon::ThreadPool;
 use std::{
     cell::UnsafeCell,
     fmt::Debug,
@@ -18,7 +18,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmut
 use crate::{
     ZddHolder,
     manager::{
-        RawZddData, ZddIndex,
+        RawZddData,
         hashtable::slots::{REGION_SIZE, Slots},
     },
 };
@@ -133,21 +133,6 @@ impl<V: Hash + Eq> ZddHolder<V> {
     }
 }
 
-impl<V: Hash + Eq + Send + Sync> ZddHolder<V> {
-    pub(super) fn used_variables(&self) -> impl ParallelIterator<Item = ZddIndex<V>> {
-        unsafe { &*self.uniq_table.counts.get() }
-            .par_iter()
-            .enumerate()
-            .filter_map(|(i, x)| {
-                let v = x.load(Relaxed);
-                if v != 0 {
-                    Some(ZddIndex::from(i))
-                } else {
-                    None
-                }
-            })
-    }
-}
 impl<V: Hash + Eq> HashTable<V> {
     fn inc_count(&self, i: usize) {
         unsafe { &(&*self.counts.get())[i] }.fetch_add(1, Relaxed);
@@ -155,6 +140,11 @@ impl<V: Hash + Eq> HashTable<V> {
 
     fn dec_count(&self, i: usize) {
         unsafe { &(&*self.counts.get())[i] }.fetch_sub(1, Relaxed);
+    }
+
+    ///The number of holders of the node at index `i`.
+    pub(super) fn count_at(&self, i: usize) -> u64 {
+        unsafe { &(&*self.counts.get())[i] }.load(Relaxed)
     }
 
     pub(super) fn n_used(&self) -> usize {
@@ -416,6 +406,8 @@ impl Drop for ReadingTheTable<'_> {
 
 #[cfg(test)]
 mod test {
+    use crate::manager::ZddIndex;
+    use rayon::prelude::*;
     use std::{
         collections::{HashMap, HashSet},
         sync::{Arc, atomic::Ordering::Release},
