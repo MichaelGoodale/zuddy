@@ -215,27 +215,27 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { &*self.data.get() }.len()
     }
 
-    fn hash(&self, data: &RawZddData<V>) -> u32 {
+    fn hash(data: &RawZddData<V>) -> u32 {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
-        let hash = h.finish().saturating_add(2);
-        let h =
-            (hash % (1_u64 << (N_BYTES_PER_HASH * 8))) % u64::try_from(self.capacity()).unwrap();
-        h as u32
+        let hash = h.finish();
+        // The low `N_BYTES_PER_HASH * 8` bits are what gets stored in the table.
+        // Any hash bit pattern is fine as long as it is stored consistently, since
+        // `EMPTY` is only ever compared against entries with a non-zero index.
+        (hash & ((1_u64 << (N_BYTES_PER_HASH * 8)) - 1)) as u32
+    }
+
+    ///The first slot probed for a hash.
+    ///
+    ///Slots 0 and 1 (the terminals) are never probed.
+    #[must_use]
+    fn bucket_start(&self, h: u32) -> usize {
+        let s = ((u64::from(h) * self.capacity() as u64) >> (N_BYTES_PER_HASH * 8)) as usize;
+        s.max(2)
     }
 
     fn hashes(&self) -> &Vec<AtomicU64> {
         unsafe { &*self.hashes.get() }
-    }
-
-    fn probe(&self, h: u32) -> impl Iterator<Item = (usize, HashEntry)> {
-        let start = usize::try_from(h).unwrap();
-        self.hashes()
-            .iter()
-            .enumerate()
-            .skip(start)
-            .chain(self.hashes().iter().enumerate().take(start).skip(2))
-            .map(|(i, h)| (i, HashEntry::from_atomic_u64(h)))
     }
 
     fn equal_at_index(&self, i: usize, data: &RawZddData<V>) -> bool {
@@ -264,10 +264,15 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         data: RawZddData<V>,
     ) -> Result<(usize, Option<usize>), FullTable<V>> {
         let read = self.read_table();
-        let h = self.hash(&data);
+        let h = Self::hash(&data);
+        let n = self.capacity();
+        let hashes = self.hashes();
         let mut index = 0;
 
-        for (probe_length, (s, mut v)) in self.probe(h).enumerate() {
+        let mut s = self.bucket_start(h);
+        let mut probe_length = 0;
+        loop {
+            let mut v = HashEntry::from_atomic_u64(&hashes[s]);
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
@@ -281,7 +286,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         *h = Some(data.clone());
                     }
                 }
-                match self.hashes()[s].compare_exchange(
+                match hashes[s].compare_exchange(
                     0,
                     HashEntry::new(index, h).to_u64(),
                     Release,
@@ -300,6 +305,15 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 }
                 return Ok((v.index(), None));
             }
+
+            s += 1;
+            if s >= n {
+                s = 2;
+            }
+            probe_length += 1;
+            if probe_length >= n {
+                break;
+            }
         }
         let r = Err(FullTable {
             size: self.capacity(),
@@ -315,7 +329,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let size = resize_to.unwrap_or(self.capacity());
 
         unsafe {
-            *self.hashes.get() = zeroed_atomic(size);
+            let hashes = &mut *self.hashes.get();
+            if hashes.len() < size {
+                *hashes = zeroed_atomic(size);
+            } else {
+                for h in hashes.iter() {
+                    h.store(0, Relaxed);
+                }
+            }
         }
 
         if let Some(size) = resize_to {
@@ -345,11 +366,13 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 .as_ref()
         }
         .expect("A marked value is None!");
-        let h = self.hash(data);
+        let h = Self::hash(data);
         let hash_entry = HashEntry::new(index, h);
-
-        for (s, _) in self.probe(h) {
-            match self.hashes()[s].compare_exchange(0, hash_entry.to_u64(), Release, Relaxed) {
+        let n = self.capacity();
+        let hashes = self.hashes();
+        let mut s = self.bucket_start(h);
+        for _ in 0..n {
+            match hashes[s].compare_exchange(0, hash_entry.to_u64(), Release, Relaxed) {
                 Ok(_) => {
                     return true;
                 }
@@ -361,6 +384,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         return false;
                     }
                 }
+            }
+            s += 1;
+            if s >= n {
+                s = 2;
             }
         }
         panic!("Full table!")

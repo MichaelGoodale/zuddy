@@ -120,6 +120,9 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             .max(2)
             .checked_next_power_of_two()
             .unwrap_or(1 << (usize::BITS - 1));
+        if self.table.read().unwrap().slots.len() >= n_slots {
+            return;
+        }
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
             *table = Table {
