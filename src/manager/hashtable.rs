@@ -109,7 +109,10 @@ pub(super) struct HashTable<V> {
     unpaused_cond_var: Condvar,
 }
 
-unsafe impl<V> Sync for HashTable<V> {}
+///`Sync` is only sound when the stored values are themselves thread-safe:
+///cloning a value out of the table (`get`) or dropping the table frees `V`s
+///from whatever thread last touches them, so `V: Send + Sync` is required.
+unsafe impl<V: Send + Sync> Sync for HashTable<V> {}
 
 fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
     vec![0u64; n].into_iter().map(AtomicU64::new).collect()
@@ -179,7 +182,14 @@ pub(crate) struct FullTable<V> {
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
-        let size = std::cmp::max(size, n_pools * REGION_SIZE);
+        //The slot bitmap and the region bookkeeping both assume the capacity is
+        //a multiple of REGION_SIZE (8 bitmap words per region, region * 8 + i
+        //indexing), so round up to preserve that invariant.
+        let size = size
+            .max(n_pools * REGION_SIZE)
+            .div_ceil(n_pools * REGION_SIZE)
+            * n_pools
+            * REGION_SIZE;
         let slots = Slots::new(size, n_pools);
 
         HashTable {
@@ -621,9 +631,13 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
-    fn slot_bitmap_out_of_bounds_for_non_multiple_of_512_capacity() {
+    fn capacity_rounds_up_to_a_multiple_of_regions() {
         let table = HashTable::<char>::new(520, 1);
-        assert_eq!(table.capacity(), 520);
+        assert_eq!(table.capacity(), 1024);
+        let table = HashTable::<char>::new(1024, 1);
+        assert_eq!(table.capacity(), 1024);
+        let table = HashTable::<char>::new(1500, 2);
+        assert_eq!(table.capacity(), 2048);
 
         for i in 0..600usize {
             let _ = table.find_or_insert(RawZddData {
@@ -636,36 +650,15 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
 
     ///Fails while the `Sync` implementation is unsound.
     ///
-    ///`HashTable<V>` has an unconditional `unsafe impl<V> Sync for HashTable<V>`:
-    ///it is `Sync` even when `V: !Send`. A `&T` may only cross a thread boundary if
-    ///`T: Sync`, so this compiles today for `HashTable<Rc<char>>` even though
-    ///`Rc`'s refcount is not atomic: any operation through the shared reference
-    ///(`get` cloning the `Rc` out, or the table's `Drop` freeing the `Rc`s) would
-    ///touch that refcount from two threads at once, which is UB.
-    ///
-    ///This test intentionally *succeeds* while the bug exists: the unsoundness is
-    ///that the code compiles at all, and it can only be made to fail by removing
-    ///the unconditional `impl`, which would break this test's compilation. So this
-    ///test is a tripwire: once `Sync` is correctly gated on `V: Send + Sync`, this
-    ///test must be updated to assert that `HashTable<Rc<char>>` is *not* `Sync`
-    ///and then it will assert compile-failure. Until then it documents the UB and
-    ///keeps the issue visible.
+    ///`HashTable<V>` used to have an unconditional `unsafe impl<V> Sync`, so a
+    ///`&HashTable<Rc<char>>` could cross a thread boundary and touch `Rc`'s
+    ///non-atomic refcount from two threads at once (via `get` or `Drop`), which
+    ///is UB. The impl is now gated on `V: Send + Sync`: the `HashTable<char>`
+    ///assertion below compiles, while using `HashTable<Rc<char>>` from another
+    ///thread now fails to compile with a `Sync` bound error.
     #[test]
-    fn sync_impl_is_unsound_for_non_send_values() {
-        use std::rc::Rc;
-
-        //This const helper compiles only while the unsound unconditional `Sync`
-        //impl exists. Once the impl is properly gated on `V: Send + Sync`, it
-        //will fail to compile, flagging this tripwire to be updated to instead
-        //assert that `HashTable<Rc<char>>` is not `Sync`.
-        const fn assert_sync<T: Sync>() {}
-        assert_sync::<HashTable<Rc<char>>>();
-
-        let table = HashTable::<Rc<char>>::new(512, 1);
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let _ = &table;
-            });
-        });
+    fn sync_impl_requires_thread_safe_values() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<HashTable<char>>();
     }
 }
