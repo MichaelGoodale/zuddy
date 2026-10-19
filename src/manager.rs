@@ -1,6 +1,7 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::atomic::AtomicU64,
+    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, num::NonZero,
+    sync::atomic::AtomicU64,
 };
 
 use ahash::RandomState;
@@ -47,6 +48,10 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn with_capacity_and_pools(n: usize, n_pools: usize) -> ZddHolder<V> {
+        //More threads than cores oversubscribes the pool: rayon's work-stealing
+        //latch protocol can then deadlock permanently under the recursive
+        //`pools().join` of the algebra operations. Cap at the available cores.
+        let n_pools = n_pools.min(std::thread::available_parallelism().map_or(1, NonZero::get));
         let id = Uuid::new_v4();
         Self {
             generation: AtomicU64::new(0),
@@ -88,7 +93,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self.size_caches.clear();
     }
 
-    ///Returns a [`HolderStats`]
+    ///Returns statistics about this holder.
     pub fn stats(&self) -> HolderStats {
         HolderStats {
             table_size: self.uniq_table.len(),
