@@ -608,20 +608,20 @@ mod test {
         Ok(())
     }
 
-    ///Demonstrates a slot-bitmap out-of-bounds panic reachable through the public
-    ///API.
+    ///Fails while the slot bitmap is sized with floor division.
     ///
-    ///`DataTakenRecord` sizes its bitmap with floor division (`size / 64`, slots.rs)
-    ///while the region bookkeeping uses `size.div_ceil(REGION_SIZE)`. For any capacity
-    ///that is not a multiple of 64 the bitmap is too short for the last slots, so
-    ///`reserve_slot` panics with an index-out-of-bounds once the bitmap words are
-    ///exhausted. `HashTable::new` only aligns the size up to a multiple of
-    ///`n_pools * REGION_SIZE`, so e.g. `ZddHolder::with_capacity_and_pools(520, 1)`
-    ///gives a 520-slot table whose bitmap holds only 512 slots: reserving slot 512
-    ///reads past the end of the bitmap.
+    ///`DataTakenRecord` sizes its bitmap with floor division (`size / 64`,
+    ///slots.rs) while the region bookkeeping uses `size.div_ceil(REGION_SIZE)`.
+    ///For any capacity that is not a multiple of 512 the bitmap is too short for
+    ///the last region's slots, so `reserve_slot` panics with an index-out-of-bounds
+    ///once a later region is claimed. `HashTable::new` only aligns the size up to a
+    ///multiple of `n_pools * REGION_SIZE`, so this is reachable through the public
+    ///API (`ZddHolder::with_capacity_and_pools(520, 1)`): a 520-slot table whose
+    ///bitmap holds only 512 slots, and claiming region 1 reads past the bitmap.
+    ///This test must fail (panic) until the bitmap sizing is fixed; it will pass
+    ///once all 600 inserts succeed without panicking.
     #[test]
-    #[should_panic(expected = "index out of bounds")]
-    fn slot_bitmap_out_of_bounds_for_non_multiple_of_64_capacity() {
+    fn slot_bitmap_out_of_bounds_for_non_multiple_of_512_capacity() {
         let table = HashTable::<char>::new(520, 1);
         assert_eq!(table.capacity(), 520);
 
@@ -637,27 +637,34 @@ mod test {
         }
     }
 
-    ///Demonstrates an unsound `Sync` implementation.
+    ///Fails while the `Sync` implementation is unsound.
     ///
     ///`HashTable<V>` has an unconditional `unsafe impl<V> Sync for HashTable<V>`:
-    ///it is `Sync` even when `V: !Send`, so a `HashTable<Rc<char>>` can be shared
-    ///across threads by value and its `V` values dropped on foreign threads.
-    ///Dropping an `Rc` on a thread other than the one that created it can decrement
-    ///its reference count concurrently with the owning thread, and the final drop
-    ///frees the allocation on the wrong thread. This test constructs such a table
-    ///and sends it to another thread, which should be impossible to compile-time
-    ///for a correctly gated `Sync` impl; here we only demonstrate that the current
-    ///impl permits it at runtime.
+    ///it is `Sync` even when `V: !Send`. A `&T` may only cross a thread boundary if
+    ///`T: Sync`, so this compiles today for `HashTable<Rc<char>>` even though
+    ///`Rc`'s refcount is not atomic: any operation through the shared reference
+    ///(`get` cloning the `Rc` out, or the table's `Drop` freeing the `Rc`s) would
+    ///touch that refcount from two threads at once, which is UB.
+    ///
+    ///This test intentionally *succeeds* while the bug exists: the unsoundness is
+    ///that the code compiles at all, and it can only be made to fail by removing
+    ///the unconditional `impl`, which would break this test's compilation. So this
+    ///test is a tripwire: once `Sync` is correctly gated on `V: Send + Sync`, this
+    ///test must be updated to assert that `HashTable<Rc<char>>` is *not* `Sync`
+    ///and then it will assert compile-failure. Until then it documents the UB and
+    ///keeps the issue visible.
     #[test]
     fn sync_impl_is_unsound_for_non_send_values() {
         use std::rc::Rc;
 
+        //This const helper compiles only while the unsound unconditional `Sync`
+        //impl exists. Once the impl is properly gated on `V: Send + Sync`, it
+        //will fail to compile, flagging this tripwire to be updated to instead
+        //assert that `HashTable<Rc<char>>` is not `Sync`.
+        const fn assert_sync<T: Sync>() {}
+        assert_sync::<HashTable<Rc<char>>>();
+
         let table = HashTable::<Rc<char>>::new(512, 1);
-        //A `&T` may only cross a thread boundary if `T: Sync`. `Rc<char>` is
-        //decidedly not thread-safe, yet this compiles because `HashTable<V>` has an
-        //unconditional `unsafe impl Sync`. Any operation on the shared reference
-        //(e.g. `get` cloning the `Rc` out, or the table's own `Drop` freeing the
-        //`Rc`s) would then touch a non-atomic refcount from two threads at once.
         std::thread::scope(|s| {
             s.spawn(|| {
                 let _ = &table;
