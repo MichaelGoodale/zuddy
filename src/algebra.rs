@@ -81,7 +81,12 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive::recursive]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
+        self.offset_inner(value)
+    }
+
+    fn offset_inner(self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
             return self.clone();
         }
@@ -100,11 +105,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let value_clone = value.clone();
-        let (lo, hi) = self
-            .manager
-            .pools()
-            .join(|| self_lo.offset(value), || self_hi.offset(value_clone));
+        let lo = self_lo.offset_inner(value.clone());
+        let hi = self_hi.offset_inner(value);
         let r = holder.get_node(self_val, lo, hi);
         holder.put_into_cache(op, r)
     }
@@ -134,7 +136,12 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive::recursive]
     pub fn onset(self, value: V) -> SetFamily<'a, V> {
+        self.onset_inner(value)
+    }
+
+    fn onset_inner(self, value: V) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || self.is_one() {
             return holder.zero();
@@ -153,11 +160,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let value_cloned = value.clone();
-        let (lo, hi) = self
-            .manager
-            .pools()
-            .join(|| self_lo.onset(value), || self_hi.onset(value_cloned));
+        let lo = self_lo.onset_inner(value.clone());
+        let hi = self_hi.onset_inner(value);
 
         let r = holder.get_node(self_val.clone(), lo, hi);
         holder.put_into_cache(op, r)
@@ -392,9 +396,14 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive::recursive]
     pub fn change(&self, value: V) -> Self {
+        self.clone().change_inner(value)
+    }
+
+    fn change_inner(self, value: V) -> Self {
         if self.is_zero() {
-            return self.clone();
+            return self;
         }
         let holder = self.manager;
         if self.is_one() {
@@ -407,19 +416,15 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return holder.get_node(value, hi, lo);
         }
         if this_val > value {
-            return holder.get_node(value, holder.zero(), self.clone());
+            return holder.get_node(value, holder.zero(), self);
         }
         let op = Operations::Change(self.as_raw(), value.clone());
         if let Some(r) = holder.get_from_cache(&op) {
             return r;
         }
 
-        let this_val = this_val.clone();
-        let value_cloned = value.clone();
-        let (new_lo, new_hi) = self
-            .manager
-            .pools()
-            .join(|| lo.change(value), || hi.change(value_cloned));
+        let new_lo = lo.change_inner(value.clone());
+        let new_hi = hi.change_inner(value);
 
         let r = holder.get_node(this_val, new_lo, new_hi);
         holder.put_into_cache(op, r)
