@@ -4,7 +4,7 @@ use std::{
     fmt::Debug,
     hash::{Hash, Hasher},
     sync::{
-        Arc, Condvar, Mutex,
+        Condvar, Mutex,
         atomic::{
             AtomicBool, AtomicU64,
             Ordering::{Acquire, Relaxed, Release, SeqCst},
@@ -104,9 +104,9 @@ pub(super) struct HashTable<V> {
     data: UnsafeCell<Vec<Option<RawZddData<V>>>>,
     counts: UnsafeCell<Vec<AtomicU64>>,
     reading: Vec<AtomicU64>,
-    pause: AtomicBool,
-    pause_mutex: Arc<Mutex<bool>>,
-    pause_cond_var: Condvar,
+    is_paused: AtomicBool,
+    unpaused: Mutex<bool>,
+    unpaused_cond_var: Condvar,
 }
 
 unsafe impl<V> Sync for HashTable<V> {}
@@ -187,21 +187,21 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             hashes: UnsafeCell::new(zeroed_atomic(size)),
             counts: UnsafeCell::new(zeroed_atomic(size)),
             data: UnsafeCell::new(vec![None; size]),
-            pause: AtomicBool::from(false),
+            is_paused: AtomicBool::from(false),
             reading: zeroed_atomic(n_pools),
-            pause_cond_var: Condvar::new(),
-            pause_mutex: Arc::new(Mutex::new(true)),
+            unpaused_cond_var: Condvar::new(),
+            unpaused: Mutex::new(true),
         }
     }
 
     pub(super) fn start_gc(&self) -> bool {
-        let mut paused = self.pause_mutex.lock().unwrap();
-        if !*paused {
+        let mut unpaused = self.unpaused.lock().unwrap();
+        if !*unpaused {
             return false;
         }
-        *paused = false;
-        self.pause.store(true, SeqCst);
-        drop(paused);
+        *unpaused = false;
+        self.is_paused.store(true, SeqCst);
+        drop(unpaused);
         while self.reading.iter().any(|x| x.load(Acquire) != 0) {
             std::hint::spin_loop();
         }
@@ -209,11 +209,11 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     pub fn end_gc(&self) {
-        let mut paused = self.pause_mutex.lock().unwrap();
-        *paused = true;
-        self.pause.store(false, SeqCst);
-        drop(paused);
-        self.pause_cond_var.notify_all();
+        let mut unpaused = self.unpaused.lock().unwrap();
+        *unpaused = true;
+        self.is_paused.store(false, SeqCst);
+        drop(unpaused);
+        self.unpaused_cond_var.notify_all();
     }
 
     pub(crate) fn capacity(&self) -> usize {
@@ -372,9 +372,9 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     pub(crate) fn wait_until_unpaused(&self) {
-        let mut not_paused = self.pause_mutex.lock().unwrap();
-        while !*not_paused {
-            not_paused = self.pause_cond_var.wait(not_paused).unwrap();
+        let mut unpaused = self.unpaused.lock().unwrap();
+        while !*unpaused {
+            unpaused = self.unpaused_cond_var.wait(unpaused).unwrap();
         }
     }
 
@@ -382,12 +382,12 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let thread_id = self.slots.thread_id();
         let reading_num = &self.reading[thread_id];
         loop {
-            if self.pause.load(SeqCst) {
+            if self.is_paused.load(SeqCst) {
                 self.wait_until_unpaused();
                 continue;
             }
             reading_num.fetch_add(1, Release);
-            if !self.pause.load(SeqCst) {
+            if !self.is_paused.load(SeqCst) {
                 return ReadingTheTable(reading_num);
             }
             reading_num.fetch_sub(1, Release);
@@ -408,7 +408,7 @@ impl Drop for ReadingTheTable<'_> {
 mod test {
     use std::{
         collections::{HashMap, HashSet},
-        sync::atomic::Ordering::Release,
+        sync::{Arc, atomic::Ordering::Release},
         time::Duration,
     };
 
@@ -417,8 +417,8 @@ mod test {
 
     ///Diagnostic test for the pause/GC handshake.
     ///
-    ///`start_gc` used to announce the pause in two steps: first the `pause` atomic was
-    ///set, then (after the reader drain) the `pause_mutex` bool. A thread calling
+    ///`start_gc` used to announce the pause in two steps: first the pause atomic was
+    ///set, then (after the reader drain) the mutex-protected bool. A thread calling
     ///`wait_until_unpaused` in between those steps saw the stale mutex value and
     ///returned while the table was paused, i.e. it went on to read/insert into the
     ///table concurrently with the GC. This test pins `start_gc` inside that window
@@ -435,7 +435,7 @@ mod test {
             assert!(gc_table.start_gc());
         });
 
-        while !table.pause.load(Acquire) {
+        while !table.is_paused.load(Acquire) {
             std::hint::spin_loop();
         }
 
