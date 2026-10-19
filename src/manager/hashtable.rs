@@ -608,6 +608,63 @@ mod test {
         Ok(())
     }
 
+    ///Demonstrates a slot-bitmap out-of-bounds panic reachable through the public
+    ///API.
+    ///
+    ///`DataTakenRecord` sizes its bitmap with floor division (`size / 64`, slots.rs)
+    ///while the region bookkeeping uses `size.div_ceil(REGION_SIZE)`. For any capacity
+    ///that is not a multiple of 64 the bitmap is too short for the last slots, so
+    ///`reserve_slot` panics with an index-out-of-bounds once the bitmap words are
+    ///exhausted. `HashTable::new` only aligns the size up to a multiple of
+    ///`n_pools * REGION_SIZE`, so e.g. `ZddHolder::with_capacity_and_pools(520, 1)`
+    ///gives a 520-slot table whose bitmap holds only 512 slots: reserving slot 512
+    ///reads past the end of the bitmap.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn slot_bitmap_out_of_bounds_for_non_multiple_of_64_capacity() {
+        let table = HashTable::<char>::new(520, 1);
+        assert_eq!(table.capacity(), 520);
+
+        //Fill all 512 slots covered by the bitmap words (indices 0..511, of which
+        //0 and 1 are pre-marked). The next insert claims region 1, whose slots
+        //(indices 512..1023) lie past the end of the 8-word bitmap.
+        for i in 0..600usize {
+            let _ = table.find_or_insert(RawZddData {
+                value: char::from_u32(0x4e00 + u32::try_from(i % 100).unwrap()).unwrap(),
+                lo: ZddIndex::from(i),
+                hi: ZddIndex::from(0),
+            });
+        }
+    }
+
+    ///Demonstrates an unsound `Sync` implementation.
+    ///
+    ///`HashTable<V>` has an unconditional `unsafe impl<V> Sync for HashTable<V>`:
+    ///it is `Sync` even when `V: !Send`, so a `HashTable<Rc<char>>` can be shared
+    ///across threads by value and its `V` values dropped on foreign threads.
+    ///Dropping an `Rc` on a thread other than the one that created it can decrement
+    ///its reference count concurrently with the owning thread, and the final drop
+    ///frees the allocation on the wrong thread. This test constructs such a table
+    ///and sends it to another thread, which should be impossible to compile-time
+    ///for a correctly gated `Sync` impl; here we only demonstrate that the current
+    ///impl permits it at runtime.
+    #[test]
+    fn sync_impl_is_unsound_for_non_send_values() {
+        use std::rc::Rc;
+
+        let table = HashTable::<Rc<char>>::new(512, 1);
+        //A `&T` may only cross a thread boundary if `T: Sync`. `Rc<char>` is
+        //decidedly not thread-safe, yet this compiles because `HashTable<V>` has an
+        //unconditional `unsafe impl Sync`. Any operation on the shared reference
+        //(e.g. `get` cloning the `Rc` out, or the table's own `Drop` freeing the
+        //`Rc`s) would then touch a non-atomic refcount from two threads at once.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let _ = &table;
+            });
+        });
+    }
+
     const MOBY: &str = "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.
 
 There now is your insular city of the Manhattoes, belted round by wharves as Indian isles by coral reefs—commerce surrounds it with her surf. Right and left, the streets take you waterward. Its extreme downtown is the battery, where that noble mole is washed by waves, and cooled by breezes, which a few hours previous were out of sight of land. Look at the crowds of water-gazers there.
