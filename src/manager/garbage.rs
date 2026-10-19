@@ -2,7 +2,6 @@ use crate::{
     ZddHolder,
     manager::{RawZddData, ZddIndex},
 };
-use rayon::prelude::*;
 use std::{
     hash::Hash,
     sync::atomic::{AtomicU64, Ordering},
@@ -31,9 +30,9 @@ impl MarkedNodes {
 
     fn into_marked(self) -> Vec<usize> {
         self.bits
-            .into_par_iter()
+            .into_iter()
             .enumerate()
-            .flat_map_iter(|(i, word)| {
+            .flat_map(|(i, word)| {
                 let mut word = word.into_inner();
                 let base = i * 64;
                 (0..64).filter_map(move |b| {
@@ -47,6 +46,12 @@ impl MarkedNodes {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
+    fn used_variables(&self) -> impl Iterator<Item = ZddIndex<V>> {
+        (0..self.uniq_table.len())
+            .filter(|&i| self.uniq_table.is_held(i))
+            .map(ZddIndex::from)
+    }
+
     ///Clean up unused nodes!
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
@@ -60,7 +65,9 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.size_caches.clear();
 
             let marked = MarkedNodes::new(self.uniq_table.len());
-            self.used_variables().for_each(|g| mark(g, &marked, self));
+            for g in self.used_variables() {
+                mark(g, &marked, self);
+            }
             let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
             let n_live = marked.len();
@@ -90,33 +97,44 @@ fn mark<V: Send + Sync + Eq + Hash + Clone>(
     marked: &MarkedNodes,
     holder: &ZddHolder<V>,
 ) {
-    mark_inner(to_mark, marked, holder, 0);
-}
-const PAR_DEPTH_LIMIT: usize = 12;
-
-fn mark_inner<V: Send + Sync + Eq + Hash + Clone>(
-    to_mark: ZddIndex<V>,
-    marked: &MarkedNodes,
-    holder: &ZddHolder<V>,
-    depth: usize,
-) {
     if marked.try_mark(usize::from(to_mark))
         && let Some((hi, lo)) = to_mark.raw_children(holder)
     {
-        if depth < PAR_DEPTH_LIMIT {
-            rayon::join(
-                || mark_inner(hi, marked, holder, depth + 1),
-                || mark_inner(lo, marked, holder, depth + 1),
-            );
-        } else {
-            let mut stack = vec![hi, lo];
-            while let Some(x) = stack.pop() {
-                if marked.try_mark(usize::from(x))
-                    && let Some((lo, hi)) = x.raw_children(holder)
-                {
-                    stack.extend([lo, hi]);
-                }
+        let mut stack = vec![hi, lo];
+        while let Some(x) = stack.pop() {
+            if marked.try_mark(usize::from(x))
+                && let Some((lo, hi)) = x.raw_children(holder)
+            {
+                stack.extend([lo, hi]);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::SetFamily;
+    use rayon::prelude::*;
+
+    ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
+    ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.
+    #[test]
+    fn gc_during_parallel_always_completes() {
+        for _ in 0..20 {
+            let holder = ZddHolder::<usize>::with_capacity_and_pools(600, 4);
+            let pool = holder.pools();
+
+            pool.install(|| {
+                (0..4).into_par_iter().for_each(|t| {
+                    let mut acc = holder.zero();
+                    for v in 0..26 {
+                        let value = v + t;
+                        acc = acc.union(SetFamily::singleton(value, &holder));
+                        acc = acc.change(value);
+                    }
+                });
+            });
         }
     }
 }
