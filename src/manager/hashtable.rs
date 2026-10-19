@@ -93,10 +93,6 @@ impl HashEntry {
     }
 
     fn from_atomic_u64(x: &AtomicU64) -> Self {
-        //Acquire pairs with the Release CAS that publishes an entry: it orders
-        //the subsequent non-atomic read of `data[index]` after the writer's
-        //plain store of that data, so a published entry can never be observed
-        //with stale or torn data.
         transmute!(x.load(Acquire))
     }
 }
@@ -303,9 +299,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 match self.hashes()[s].compare_exchange(
                     0,
                     HashEntry::new(index, h).to_u64(),
-                    //Release publishes the entry: the plain store of
-                    //`data[index]` above happens-before any read of that data by
-                    //a thread that acquires this entry.
                     Release,
                     Relaxed,
                 ) {
