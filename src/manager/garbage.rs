@@ -46,6 +46,12 @@ impl MarkedNodes {
 }
 
 impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
+    fn used_variables(&self) -> impl Iterator<Item = ZddIndex<V>> {
+        (0..self.uniq_table.len())
+            .filter(|&i| self.uniq_table.is_held(i))
+            .map(ZddIndex::from)
+    }
+
     ///Clean up unused nodes!
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
@@ -59,12 +65,7 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.size_caches.clear();
 
             let marked = MarkedNodes::new(self.uniq_table.len());
-            let n = self.uniq_table.len();
-            let roots: Vec<_> = (0..n)
-                .filter(|&i| self.uniq_table.count_at(i) != 0)
-                .map(ZddIndex::from)
-                .collect();
-            for g in roots {
+            for g in self.used_variables() {
                 mark(g, &marked, self);
             }
             let marked = marked.into_marked();
@@ -91,12 +92,6 @@ impl<V: Eq + Hash + Hash + Clone> ZddIndex<V> {
     }
 }
 
-///Marks `to_mark` and everything reachable from it.
-///
-///The mark phase runs sequentially: GC executes on a worker of the holder's
-///rayon pool while every other worker is parked in `wait_until_unpaused`, so
-///rayon parallelism here would block the marking thread on join latches that
-///only parked workers could fire: a self-deadlock.
 fn mark<V: Send + Sync + Eq + Hash + Clone>(
     to_mark: ZddIndex<V>,
     marked: &MarkedNodes,
@@ -122,26 +117,19 @@ mod test {
     use crate::SetFamily;
     use rayon::prelude::*;
 
-    ///Regression test for the GC self-deadlock.
-    ///
-    ///GC used to run its mark phase with rayon parallelism on the holder's own
-    ///pool. Since GC executes on a worker of that pool while every other worker
-    ///is parked in `wait_until_unpaused`, the marking thread could block on
-    ///join latches that only the parked workers could fire, permanently wedging
-    ///the pool. The mark phase is sequential now, so this stress test (parallel
-    ///algebra with a tiny table forcing constant GC) must complete.
+    ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
+    ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.
     #[test]
     fn gc_during_parallel_always_completes() {
         for _ in 0..20 {
-            let holder = ZddHolder::<char>::with_capacity_and_pools(600, 4);
+            let holder = ZddHolder::<usize>::with_capacity_and_pools(600, 4);
             let pool = holder.pools();
 
             pool.install(|| {
-                (0..4u32).into_par_iter().for_each(|t| {
+                (0..4).into_par_iter().for_each(|t| {
                     let mut acc = holder.zero();
-                    for v in 0..26u8 {
-                        let value =
-                            char::from_u32(u32::from(v) + u32::from(b'a') + t * 0x100).unwrap();
+                    for v in 0..26 {
+                        let value = v + t;
                         acc = acc.union(SetFamily::singleton(value, &holder));
                         acc = acc.change(value);
                     }

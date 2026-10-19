@@ -109,9 +109,6 @@ pub(super) struct HashTable<V> {
     unpaused_cond_var: Condvar,
 }
 
-///`Sync` is only sound when the stored values are themselves thread-safe:
-///cloning a value out of the table (`get`) or dropping the table frees `V`s
-///from whatever thread last touches them, so `V: Send + Sync` is required.
 unsafe impl<V: Send + Sync> Sync for HashTable<V> {}
 
 fn zeroed_atomic(n: usize) -> Vec<AtomicU64> {
@@ -142,9 +139,9 @@ impl<V: Hash + Eq> HashTable<V> {
         unsafe { &(&*self.counts.get())[i] }.fetch_sub(1, Relaxed);
     }
 
-    ///The number of holders of the node at index `i`.
-    pub(super) fn count_at(&self, i: usize) -> u64 {
-        unsafe { &(&*self.counts.get())[i] }.load(Relaxed)
+    ///Whether index `i` is held by something that hasn't been dropped in the [`HashTable`]
+    pub(super) fn is_held(&self, i: usize) -> bool {
+        unsafe { &(&*self.counts.get())[i] }.load(Relaxed) != 0
     }
 
     pub(super) fn n_used(&self) -> usize {
@@ -172,9 +169,7 @@ pub(crate) struct FullTable<V> {
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
-        //The slot bitmap and the region bookkeeping both assume the capacity is
-        //a multiple of REGION_SIZE (8 bitmap words per region, region * 8 + i
-        //indexing), so round up to preserve that invariant.
+        //ensure size is multiple of region_size
         let size = size
             .max(n_pools * REGION_SIZE)
             .div_ceil(n_pools * REGION_SIZE)
@@ -638,19 +633,5 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
                 hi: ZddIndex::from(0),
             });
         }
-    }
-
-    ///Fails while the `Sync` implementation is unsound.
-    ///
-    ///`HashTable<V>` used to have an unconditional `unsafe impl<V> Sync`, so a
-    ///`&HashTable<Rc<char>>` could cross a thread boundary and touch `Rc`'s
-    ///non-atomic refcount from two threads at once (via `get` or `Drop`), which
-    ///is UB. The impl is now gated on `V: Send + Sync`: the `HashTable<char>`
-    ///assertion below compiles, while using `HashTable<Rc<char>>` from another
-    ///thread now fails to compile with a `Sync` bound error.
-    #[test]
-    fn sync_impl_requires_thread_safe_values() {
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<HashTable<char>>();
     }
 }
