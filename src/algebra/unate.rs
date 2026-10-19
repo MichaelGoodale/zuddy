@@ -123,7 +123,12 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` are undefined in the [`ZddHolder`](crate::manager::ZddHolder).
     #[must_use]
-    pub fn join(mut self, mut other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+    #[recursive::recursive]
+    pub fn join(self, other: SetFamily<'a, V>) -> SetFamily<'a, V> {
+        self.join_inner(other)
+    }
+
+    fn join_inner(mut self, mut other: SetFamily<'a, V>) -> SetFamily<'a, V> {
         if other.is_zero() || self.is_zero() {
             return self.manager().zero();
         }
@@ -156,18 +161,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             other_hi = self.manager.zero();
         }
 
-        let self_hi_clone = self_hi.clone();
-        let other_lo_clone = other_lo.clone();
-        let other_hi_clone = other_hi.clone();
-        let (a, (b, c)) = self.manager.pools().join(
-            || self_hi_clone.join(other_hi),
-            || {
-                self.manager.pools().join(
-                    || self_hi.join(other_lo_clone),
-                    || self_lo.clone().join(other_hi_clone),
-                )
-            },
-        );
+        let a = self_hi.clone().join_inner(other_hi.clone());
+        let b = self_hi.join_inner(other_lo.clone());
+        let c = self_lo.clone().join_inner(other_hi);
 
         let product = a.union(b).union(c);
         let v_product = holder.get_node(value, holder.zero(), product);
