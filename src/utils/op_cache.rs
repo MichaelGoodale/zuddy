@@ -29,8 +29,8 @@ impl<K, V> Default for Slot<K, V> {
 
 struct Table<K, V> {
     slots: Vec<RwLock<Slot<K, V>>>,
-    mask: usize,
 }
+
 ///A simple parallel hashmap.
 ///
 ///Hash collisions are just overwritten.
@@ -40,6 +40,15 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
     table: RwLock<Table<K, V>>,
     hasher: S,
     generation: AtomicU64,
+}
+
+impl<K: Hash, V> Table<K, V> {
+    fn get<'a, S: BuildHasher>(&'a self, key: &K, hasher: &S) -> &'a RwLock<Slot<K, V>> {
+        let h = hasher.hash_one(key);
+        let i = usize::try_from(h & u64::try_from(self.slots.len() - 1).unwrap()).unwrap();
+        // equivalent to % self.slots.len() since length is a power of two.
+        &self.slots[i]
+    }
 }
 
 impl<K, V, S> OpCache<K, V, S> {
@@ -55,7 +64,7 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     ///May panic if an internal lock is poisoned.
     pub fn get(&self, key: &K) -> Option<V> {
         let table = self.table.read().unwrap();
-        let slot = &table.slots[self.index(table.mask, key)];
+        let slot = &table.get(key, &self.hasher);
         let guard = slot.read().unwrap();
         if guard.generation == self.current_generation() {
             match &guard.entry {
@@ -75,7 +84,7 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
     ///May panic if an internal lock is poisoned.
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let table = self.table.read().unwrap();
-        let slot = &table.slots[self.index(table.mask, &key)];
+        let slot = table.get(&key, &self.hasher);
         let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
         let old = if guard.generation == generation {
@@ -95,14 +104,12 @@ impl<K: Debug, V, S> Debug for OpCache<K, V, S> {
     }
 }
 
-impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
-    fn hash_one(&self, key: &K) -> u64 {
-        self.hasher.hash_one(key)
-    }
-
-    fn index(&self, mask: usize, key: &K) -> usize {
-        usize::try_from(self.hash_one(key)).unwrap_or(usize::MAX) & mask
-    }
+///Rounds up capacity to nearest power of two, maxing out at the biggest possible power of two in usize
+fn slot_capacity(capacity: usize) -> usize {
+    capacity
+        .max(2)
+        .checked_next_power_of_two()
+        .unwrap_or(1 << (usize::BITS - 1))
 }
 
 impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
@@ -116,10 +123,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn resize(&self, capacity: usize) {
-        let n_slots = capacity
-            .max(2)
-            .checked_next_power_of_two()
-            .unwrap_or(1 << (usize::BITS - 1));
+        let n_slots = slot_capacity(capacity);
         if self.table.read().unwrap().slots.len() >= n_slots {
             return;
         }
@@ -127,7 +131,6 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         if table.slots.len() < n_slots {
             *table = Table {
                 slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-                mask: n_slots - 1,
             };
         }
     }
@@ -153,14 +156,11 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///The capacity is rounded up to a power of two.
     #[must_use]
     pub fn with_hasher_and_capacity(capacity: usize, hasher: S) -> Self {
-        let n_slots = capacity
-            .max(2)
-            .checked_next_power_of_two()
-            .unwrap_or(1 << (usize::BITS - 1));
         Self {
             table: RwLock::new(Table {
-                slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-                mask: n_slots - 1,
+                slots: (0..slot_capacity(capacity))
+                    .map(|_| RwLock::default())
+                    .collect(),
             }),
             hasher,
             generation: AtomicU64::new(1),
