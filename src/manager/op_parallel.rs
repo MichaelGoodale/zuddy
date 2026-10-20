@@ -11,8 +11,12 @@
 //!   others (Lace's "leapfrog") until the result lands.
 //! - Idle workers poll random victims with exponential backoff (`pause`
 //!   instructions, then `yield`). They never park on futexes, keeping steal
-//!   latency low. The trade-off is that idle workers burn a little CPU; this
-//!   mirrors Lace's `LACE_BACKOFF` behaviour and was chosen deliberately.
+//!   latency low. The trade-off is that idle workers burn some CPU while
+//!   the pool is idle — this mirrors Lace's `LACE_BACKOFF` behaviour and is
+//!   the right choice on dedicated hardware. On CPU-quota machines
+//!   (containers with cpu.max limits) the spinning burns quota the
+//!   computation itself needs, so the backoff can be tuned with the
+//!   `ZUDDY_OP_SPIN_ITERS` environment variable (see [`backoff_config`]).
 //! - External threads calling ZDD operations *become* workers for the
 //!   duration of the operation (like Lace's main-thread worker), borrowing a
 //!   deque from the pool so their spawned tasks are stealable too.
@@ -27,9 +31,9 @@
 use crossbeam_deque::{Steal, Stealer, Worker as Deque};
 use std::{
     cell::{Cell, UnsafeCell},
-    fmt, hint,
+    env, fmt, hint,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
@@ -79,13 +83,14 @@ impl<T> Slot<T> {
         self.state.store(2, Ordering::Release);
     }
 
-    ///`Ok(())` when the result is written, `Err(())` when poisoned.
-    fn is_ready(&self) -> Result<(), ()> {
-        match self.state.load(Ordering::Acquire) {
-            1 => Ok(()),
-            2 => Err(()),
-            _ => Err(()),
-        }
+    ///Whether the task has not yet written its result or poisoned the slot.
+    fn is_pending(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 0
+    }
+
+    ///Whether the task panicked.
+    fn is_poisoned(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 2
     }
 
     ///Take the value. Must only be called after `is_ready()` observed state 1.
@@ -218,7 +223,7 @@ fn help_once(cur: &Arc<Current>) -> bool {
 ///
 ///Returns both results. Falls back to fully-sequential execution when there
 ///is no pool context on this thread, no worker is idle, or the depth budget
-///[`PAR_SPAWN_DEPTH`] is exhausted.
+///[`spawn_depth`] is exhausted.
 pub(crate) fn join2<T: Send>(
     depth: u32,
     a: impl FnOnce() -> T + Send,
@@ -227,7 +232,7 @@ pub(crate) fn join2<T: Send>(
     let Some(cur) = CURRENT.with(MutableCurrent::get) else {
         return (a(), b());
     };
-    if depth >= PAR_SPAWN_DEPTH || !cur.inner.has_idle() {
+    if depth >= spawn_depth() || !cur.inner.has_idle() {
         return (a(), b());
     }
     let slot: Arc<Slot<T>> = Arc::new(Slot::new());
@@ -242,12 +247,12 @@ pub(crate) fn join2<T: Send>(
         }
         impl<T> Drop for FinishA<'_, T> {
             fn drop(&mut self) {
-                if self.slot.is_ready().is_ok() {
+                if !self.slot.is_pending() {
                     return;
                 }
                 //Not yet run: pop and run it inline (the common case), or
                 //help until the thief finishes or poisons it.
-                while self.slot.is_ready().is_err() {
+                while self.slot.is_pending() {
                     if let Some(t) = self.cur.deque.pop() {
                         run_task(t);
                     } else if !help_once(self.cur) {
@@ -271,16 +276,18 @@ pub(crate) fn join2<T: Send>(
         (a_result, b_result)
     } else {
         //Stolen: leapfrog until the slot is written or poisoned.
-        while slot.is_ready().is_err() {
+        while slot.is_pending() {
             if !help_once(&cur) {
                 hint::spin_loop();
             }
         }
-        if slot.is_ready().is_err() {
-            //Poisoned: the task panicked on its executing thread, and the
-            //panic already propagated there. Re-raise here.
-            panic!("A stolen zuddy op task panicked on another thread");
-        }
+        //Poisoned means the task panicked on whichever thread ran it; the
+        //panic already terminated that worker's task. Re-raise here so the
+        //caller sees a panic rather than a hang or a wrong value.
+        assert!(
+            !slot.is_poisoned(),
+            "A stolen zuddy op task panicked on another thread"
+        );
         let a_result = slot.take();
         (a_result, b_result)
     }
@@ -291,8 +298,34 @@ pub(crate) fn join2<T: Send>(
 ///Beyond this depth `join2` degenerates to a sequential call. Since each level
 ///spawns at most one task, this bounds spawned tasks per operation to
 ///`2^PAR_SPAWN_DEPTH`, which is plenty to keep the pool busy while keeping
-///per-task boxing overhead negligible.
-const PAR_SPAWN_DEPTH: u32 = 2;
+///per-task boxing overhead negligible. Override with `ZUDDY_OP_DEPTH`.
+fn spawn_depth() -> u32 {
+    static D: OnceLock<u32> = OnceLock::new();
+    *D.get_or_init(|| {
+        env::var("ZUDDY_OP_DEPTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+    })
+}
+
+///Idle-worker backoff configuration, from `ZUDDY_OP_SPIN_ITERS`.
+///
+///- `0` (default on quota-limited machines): workers spin only briefly, then
+///  `thread::yield` — safe under CPU quotas (containers, CPU limits), at the
+///  cost of a wakeup on each steal.
+///- Higher values (e.g. `1024`+): pure Lace-style pause-spin with exponential
+///  growth up to this many pause iterations before yielding — lowest steal
+///  latency on dedicated hardware.
+fn backoff_config() -> u32 {
+    static B: OnceLock<u32> = OnceLock::new();
+    *B.get_or_init(|| {
+        env::var("ZUDDY_OP_SPIN_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
 
 ///A Lace-style work-stealing pool for ZDD operations.
 pub(crate) struct OpPool {
@@ -419,12 +452,25 @@ fn worker_loop(inner: &Inner) {
                 inner.n_idle.fetch_sub(1, Ordering::Release);
             }
         } else {
-            //Backoff. In quota-limited environments (containers, CPU
-            //limits) spinning burns quota the computation needs, so we
-            //yield quickly rather than spin long.
-            if backoff < 2 {
-                hint::spin_loop();
+            //Backoff policy: see `backoff_config`. With a nonzero
+            //ZUDDY_OP_SPIN_ITERS, workers pause-spin with exponential
+            //growth capped at that many iterations (Lace's approach, best on
+            //dedicated hardware) and only yield once the cap is reached.
+            //With 0 (default) we yield almost immediately, which is safe
+            //under CPU quotas.
+            let max_spin = backoff_config();
+            #[expect(clippy::bool_to_int_with_if)]
+            let spins = if max_spin > 0 {
+                (1u32 << backoff.min(12)).min(max_spin)
+            } else if backoff < 2 {
+                1
             } else {
+                0
+            };
+            for _ in 0..spins {
+                hint::spin_loop();
+            }
+            if spins == 0 || spins >= max_spin {
                 thread::yield_now();
             }
             backoff = backoff.saturating_add(1);
@@ -514,7 +560,7 @@ mod test {
                         2usize
                     },
                 );
-            })
+            });
         }));
         //Must not hang; the panic must propagate.
         assert!(result.is_err());
@@ -540,7 +586,7 @@ mod test {
                     },
                     || panic!("b died"),
                 );
-            })
+            });
         }));
         assert!(result.is_err());
         //The spawned task must have run exactly once despite the panic.

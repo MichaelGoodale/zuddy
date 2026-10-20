@@ -553,7 +553,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     #[cfg_attr(
         not(feature = "op-parallel"),
-        expect(unused_variables, clippy::only_used_in_recursion)
+        allow(unused_variables, clippy::only_used_in_recursion)
     )]
     fn insert_inner(&self, value: V, depth: u32) -> Self {
         if self.is_zero() {
@@ -573,9 +573,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = holder
-                    .pools()
-                    .join(|| lo.insert(value.clone()), || hi.insert(value.clone()));
+                #[cfg(feature = "op-parallel")]
+                let (lo, hi) = join2(
+                    depth,
+                    || lo.insert_inner(value.clone(), depth + 1),
+                    || hi.insert_inner(value.clone(), depth + 1),
+                );
+                #[cfg(not(feature = "op-parallel"))]
+                let (lo, hi) = (
+                    lo.insert_inner(value.clone(), depth + 1),
+                    hi.insert_inner(value.clone(), depth + 1),
+                );
 
                 holder.get_node(this_val, lo, hi)
             }
@@ -604,7 +612,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
     #[cfg_attr(
         not(feature = "op-parallel"),
-        expect(unused_variables, clippy::only_used_in_recursion)
+        allow(unused_variables, clippy::only_used_in_recursion)
     )]
     fn insert_as_superset_inner(&self, value: V, depth: u32) -> Self {
         if self.is_zero() {
@@ -624,9 +632,16 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = holder.pools().join(
-                    || lo.insert_as_superset(value.clone()),
-                    || hi.insert_as_superset(value.clone()),
+                #[cfg(feature = "op-parallel")]
+                let (lo, hi) = join2(
+                    depth,
+                    || lo.insert_as_superset_inner(value.clone(), depth + 1),
+                    || hi.insert_as_superset_inner(value.clone(), depth + 1),
+                );
+                #[cfg(not(feature = "op-parallel"))]
+                let (lo, hi) = (
+                    lo.insert_as_superset_inner(value.clone(), depth + 1),
+                    hi.insert_as_superset_inner(value.clone(), depth + 1),
                 );
 
                 holder.get_node(this_val, lo, hi)
