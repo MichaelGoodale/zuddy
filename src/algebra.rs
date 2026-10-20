@@ -23,6 +23,8 @@
 //! [^minato_93]: S. Minato, "Zero-suppressed BDDS for set manipulation in combinatorial problems". Proceedings of the 30th international on Design automation conference - DAC '93. pp. 272–277. doi:10.1145/157485.164890
 //! [^minato_94]: S. Minato, "Calculation of Unate Cube Set Algebra Using Zero-Suppressed BDDs," 31st Design Automation Conference, San Diego, CA, USA, 1994, pp. 420-424, doi: 10.1145/196244.196446.
 
+use recursive::recursive;
+
 use crate::{
     ZddHolder,
     manager::TempCache,
@@ -81,6 +83,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
             return self.clone();
@@ -131,6 +134,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn onset(self, value: V) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || self.is_one() {
@@ -180,6 +184,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn intersect(mut self, mut other: Self) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || other.is_zero() {
@@ -242,6 +247,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn union(mut self, mut other: Self) -> Self {
         if self.is_zero() {
             return other;
@@ -318,6 +324,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn difference(self, other: Self) -> SetFamily<'a, V> {
         if self.is_zero() || self == other {
             return self.manager.zero();
@@ -381,7 +388,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    #[recursive::recursive]
+    #[recursive]
     pub fn change(self, value: V) -> Self {
         if self.is_zero() {
             return self;
@@ -417,6 +424,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
+    #[recursive]
     pub fn insert(self, value: V) -> Self {
         if self.is_zero() {
             return self;
