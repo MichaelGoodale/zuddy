@@ -23,15 +23,9 @@ use crate::{
 
 mod slots;
 
-///Number of bits of the hash stored per entry.
-const N_HASH_BITS: u32 = 24;
+const N_BITS_FOR_HASH: u32 = 24;
 
-///A packed entry in the hashtable: the hash in the low [`N_HASH_BITS`] bits
-///and the data index above them, in native endianness.
-///
-///`EMPTY` is the all-zero entry, which no real entry can equal because every
-///inserted node lives at a data index of at least 2 (slots 0 and 1 are the
-///terminals and permanently marked as used).
+///A u64 which contains the index and hash internally.
 #[derive(Copy, Clone, PartialEq, Eq)]
 struct HashEntry(u64);
 
@@ -48,33 +42,21 @@ const EMPTY: HashEntry = HashEntry(0);
 
 impl HashEntry {
     fn new(index: usize, hash: u32) -> Self {
-        debug_assert!(hash < 1_u32 << N_HASH_BITS);
-        debug_assert!(u64::try_from(index).unwrap() < 1_u64 << (64 - N_HASH_BITS));
-        HashEntry((u64::from(hash)) | (index as u64) << N_HASH_BITS)
+        debug_assert!(hash < 1_u32 << N_BITS_FOR_HASH);
+        debug_assert!(u64::try_from(index).unwrap() < 1_u64 << (64 - N_BITS_FOR_HASH));
+        HashEntry((u64::from(hash)) | (index as u64) << N_BITS_FOR_HASH)
     }
 
     fn index(self) -> usize {
-        (self.0 >> N_HASH_BITS) as usize
+        (self.0 >> N_BITS_FOR_HASH) as usize
     }
 
     fn hash(self) -> u32 {
-        (self.0 & ((1 << N_HASH_BITS) - 1)) as u32
+        (self.0 & ((1 << N_BITS_FOR_HASH) - 1)) as u32
     }
 
     fn is_empty(self) -> bool {
         self == EMPTY
-    }
-
-    fn to_u64(self) -> u64 {
-        self.0
-    }
-
-    fn from_u64(x: u64) -> Self {
-        HashEntry(x)
-    }
-
-    fn from_atomic_u64(x: &AtomicU64) -> Self {
-        HashEntry(x.load(Acquire))
     }
 }
 
@@ -200,7 +182,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
         let hash = h.finish().saturating_add(2);
-        let h = (hash & ((1_u64 << N_HASH_BITS) - 1)) % u64::try_from(self.capacity()).unwrap();
+        let h = (hash & ((1_u64 << N_BITS_FOR_HASH) - 1)) % u64::try_from(self.capacity()).unwrap();
         h as u32
     }
 
@@ -215,7 +197,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             .enumerate()
             .skip(start)
             .chain(self.hashes().iter().enumerate().take(start).skip(2))
-            .map(|(i, h)| (i, HashEntry::from_atomic_u64(h)))
+            .map(|(i, h)| (i, HashEntry(h.load(Acquire))))
     }
 
     fn equal_at_index(&self, i: usize, data: &RawZddData<V>) -> bool {
@@ -263,14 +245,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 }
                 match self.hashes()[s].compare_exchange(
                     0,
-                    HashEntry::new(index, h).to_u64(),
+                    HashEntry::new(index, h).0,
                     Release,
                     Relaxed,
                 ) {
                     Ok(_) => {
                         return Ok((index, Some(probe_length)));
                     }
-                    Err(new_v) => v = HashEntry::from_u64(new_v),
+                    Err(new_v) => v = HashEntry(new_v),
                 }
             }
 
@@ -329,13 +311,13 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let hash_entry = HashEntry::new(index, h);
 
         for (s, _) in self.probe(h) {
-            match self.hashes()[s].compare_exchange(0, hash_entry.to_u64(), Release, Relaxed) {
+            match self.hashes()[s].compare_exchange(0, hash_entry.0, Release, Relaxed) {
                 Ok(_) => {
                     return true;
                 }
                 Err(new_v) => {
                     //We had a collision!
-                    let v = HashEntry::from_u64(new_v);
+                    let v = HashEntry(new_v);
                     if v.hash() == h && self.equal_at_index(v.index(), data) {
                         //unlikely to happen unless except has duplicates
                         return false;
@@ -501,7 +483,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
 
         let mut seen: HashMap<RawZddData<char>, usize> = HashMap::new();
         for (s, h) in table.hashes().iter().enumerate() {
-            let entry = HashEntry::from_atomic_u64(h);
+            let entry = HashEntry(h.load(Acquire));
             if entry.is_empty() {
                 continue;
             }

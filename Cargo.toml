@@ -21,7 +21,6 @@ recursive = "0.1.1"
 serde = { version = "1.0.229", features = ["serde_derive"] }
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4"] }
-zerocopy = { version = "0.8.63", features = ["std", "derive", "alloc"] }
 
 [dev-dependencies]
 itertools = "0.15.0"
