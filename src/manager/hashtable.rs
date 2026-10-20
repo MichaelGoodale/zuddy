@@ -62,9 +62,6 @@ impl HashEntry {
 
 ///An iterator over hashtable slots in probe order, wrapping past the
 ///terminal slots 0 and 1.
-///
-///Yields exactly `n` slots (one probe budget per slot in the table); the
-///caller decides that the table is full if the iterator is exhausted.
 struct ProbeSlots {
     s: usize,
     n: usize,
@@ -563,24 +560,27 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
 
     #[test]
     fn full_table_returns_error_not_hang() {
-        //Filling the table completely must terminate with Err, never spin.
-        //Capacity is rounded up to a region multiple, so insert distinct
-        //nodes until the table reports full, with a generous bound.
         let table = HashTable::<u32>::new(REGION_SIZE, 1);
         let bound = table.capacity() + 1;
         let mut inserted = 0;
+        let mut found_err = false;
         for i in 0..bound {
             let r = table.find_or_insert(RawZddData {
                 value: u32::try_from(i).unwrap(),
                 lo: ZddIndex::from(0),
                 hi: ZddIndex::from(1),
             });
-            match r {
-                Ok(_) => inserted += 1,
-                Err(FullTable { .. }) => return,
+            if let Err(FullTable { size, .. }) = r {
+                assert_eq!(size, table.capacity());
+                found_err = true;
+                break;
             }
+            inserted += 1;
         }
-        panic!("Inserted {inserted} of {bound} without a FullTable error");
+        assert!(
+            found_err,
+            "Inserted {inserted} of {bound} without a FullTable error"
+        );
     }
 
     #[test]
