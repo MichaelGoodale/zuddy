@@ -182,15 +182,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
         let hash = h.finish();
-        // The low `N_BITS_FOR_HASH` bits are what gets stored in the table.
-        // Any hash bit pattern is fine as long as it is stored consistently, since
-        // `EMPTY` is only ever compared against entries with a non-zero index.
         (hash & ((1_u64 << N_BITS_FOR_HASH) - 1)) as u32
     }
-
-    ///The first slot probed for a hash.
-    ///
-    ///Slots 0 and 1 (the terminals) are never probed.
     #[must_use]
     fn bucket_start(&self, h: u32) -> usize {
         let s = ((u64::from(h) * self.capacity() as u64) >> N_BITS_FOR_HASH) as usize;
