@@ -47,7 +47,9 @@ pub(crate) type Task = Box<dyn FnOnce() + Send>;
 
 ///The result slot of one spawned task.
 ///
-///State: `0` = pending, `1` = written.
+///State: `0` = pending, `1` = written, `2` = poisoned (the task panicked).
+///A poisoned slot lets the joining thread resume the panic instead of
+///waiting forever for a result that will never arrive.
 struct Slot<T> {
     state: AtomicU64,
     value: UnsafeCell<Option<T>>,
@@ -73,8 +75,17 @@ impl<T> Slot<T> {
         self.state.store(1, Ordering::Release);
     }
 
-    fn is_ready(&self) -> bool {
-        self.state.load(Ordering::Acquire) != 0
+    fn poison(&self) {
+        self.state.store(2, Ordering::Release);
+    }
+
+    ///`Ok(())` when the result is written, `Err(())` when poisoned.
+    fn is_ready(&self) -> Result<(), ()> {
+        match self.state.load(Ordering::Acquire) {
+            1 => Ok(()),
+            2 => Err(()),
+            _ => Err(()),
+        }
     }
 
     ///Take the value. Must only be called after `is_ready()` observed state 1.
@@ -85,17 +96,21 @@ impl<T> Slot<T> {
 
 ///Wraps `f` into a [`Task`] writing its result into `slot`.
 ///
-///If `f` panics, the slot stays pending forever and the joining thread cannot
-///return; so panics are converted to aborts of the process after the join,
-///preserving the "no task outlives its scope" invariant. ZDD operations are
-///infallible in practice (panics only from bugs), and rayon has the same
-///policy for `join` (it propagates and aborts on poisoned joins).
+///If `f` panics, the slot is poisoned so the joining thread resumes the panic
+///instead of waiting forever. The panic payload is re-raised on the joining
+///thread via a handoff, because the task may have run on another worker.
 fn make_task<T: Send>(slot: &Arc<Slot<T>>, f: impl FnOnce() -> T + Send) -> Task {
     let slot = Arc::clone(slot);
     //See the `Task` type's doc comment for why this lifetime erasure is sound.
     let f: Box<dyn FnOnce() + Send + '_> = Box::new(move || {
-        let r = f();
-        slot.write(r);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match r {
+            Ok(r) => slot.write(r),
+            Err(payload) => {
+                slot.poison();
+                std::panic::resume_unwind(payload);
+            }
+        }
     });
     unsafe {
         std::mem::transmute::<Box<dyn FnOnce() + Send + '_>, Box<dyn FnOnce() + Send + 'static>>(f)
@@ -218,18 +233,53 @@ pub(crate) fn join2<T: Send>(
     let slot: Arc<Slot<T>> = Arc::new(Slot::new());
     let task = make_task(&slot, a);
     cur.deque.push(task);
-    let b_result = b();
+    //Run b inline. A guard completes the pending a even if b unwinds, so
+    //no stealable task ever references a dead stack frame.
+    let b_result = {
+        struct FinishA<'a, T> {
+            slot: &'a Arc<Slot<T>>,
+            cur: &'a Arc<Current>,
+        }
+        impl<T> Drop for FinishA<'_, T> {
+            fn drop(&mut self) {
+                if self.slot.is_ready().is_ok() {
+                    return;
+                }
+                //Not yet run: pop and run it inline (the common case), or
+                //help until the thief finishes or poisons it.
+                while self.slot.is_ready().is_err() {
+                    if let Some(t) = self.cur.deque.pop() {
+                        run_task(t);
+                    } else if !help_once(self.cur) {
+                        hint::spin_loop();
+                    }
+                }
+            }
+        }
+        let guard = FinishA {
+            slot: &slot,
+            cur: &cur,
+        };
+        let r = b();
+        drop(guard);
+        r
+    };
     //Now join a: either pop it (not stolen -> inline) or wait (stolen).
     if let Some(t) = cur.deque.pop() {
         run_task(t);
         let a_result = slot.take();
         (a_result, b_result)
     } else {
-        //Stolen: leapfrog until the slot is written.
-        while !slot.is_ready() {
+        //Stolen: leapfrog until the slot is written or poisoned.
+        while slot.is_ready().is_err() {
             if !help_once(&cur) {
                 hint::spin_loop();
             }
+        }
+        if slot.is_ready().is_err() {
+            //Poisoned: the task panicked on its executing thread, and the
+            //panic already propagated there. Re-raise here.
+            panic!("A stolen zuddy op task panicked on another thread");
         }
         let a_result = slot.take();
         (a_result, b_result)
@@ -323,10 +373,13 @@ impl OpPool {
             .unwrap_or_else(Deque::new_lifo);
         //Current is Send but !Sync; the Arc never leaves this thread.
         #[expect(clippy::arc_with_non_send_sync)]
+        //The guest deque is the reserve: stealers index n_workers - 1.
+        //Victim selection only ranges over 0..n_workers-1, so the guest can
+        //be a victim of workers but never selects itself.
         let cur = Arc::new(Current {
             inner: Arc::clone(&self.inner),
             deque,
-            id: 0,
+            id: self.inner.n_workers - 1,
             rng: Cell::new(0x9E37_79B9_7F4A_7C15),
         });
         CURRENT.with(|c| c.set(Some(Arc::clone(&cur))));
@@ -442,6 +495,56 @@ mod test {
         let pool = OpPool::new(2);
         let r = pool.install(|| pool.install(|| 5));
         assert_eq!(r, 5);
+    }
+
+    #[test]
+    fn panic_in_stolen_task_does_not_hang() {
+        //If the SPAWNED task (a) is stolen and then panics, the joining
+        //thread must observe poison instead of spinning forever on a slot
+        //that will never be written.
+        let pool = OpPool::new(4);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(|| {
+                //Sleep in b so a gets stolen; a panics on the worker.
+                let _ = join2(
+                    0,
+                    || panic!("a died on a worker"),
+                    || {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        2usize
+                    },
+                );
+            })
+        }));
+        //Must not hang; the panic must propagate.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn panic_in_b_propagates_and_a_completes() {
+        //If b panics, the unwind must not leave the spawned task a pending
+        //forever: either a was popped and must run during the unwind, or it
+        //was stolen and the join must complete it. Otherwise the pool is
+        //left with a dangling task referencing a dead stack frame.
+        let pool = OpPool::new(4);
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&counter);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(move || {
+                let c2 = Arc::clone(&c);
+                let _ = join2(
+                    0,
+                    move || {
+                        c2.fetch_add(1, Ordering::Relaxed);
+                        1usize
+                    },
+                    || panic!("b died"),
+                );
+            })
+        }));
+        assert!(result.is_err());
+        //The spawned task must have run exactly once despite the panic.
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     #[test]

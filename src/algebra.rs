@@ -542,6 +542,20 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn insert(&self, value: V) -> Self {
+        #[cfg(feature = "op-parallel")]
+        return self.manager.op_pool().install({
+            let this = self.clone();
+            move || this.insert_inner(value, 0)
+        });
+        #[cfg(not(feature = "op-parallel"))]
+        self.insert_inner(value, 0)
+    }
+
+    #[cfg_attr(
+        not(feature = "op-parallel"),
+        expect(unused_variables, clippy::only_used_in_recursion)
+    )]
+    fn insert_inner(&self, value: V, depth: u32) -> Self {
         if self.is_zero() {
             return self.clone();
         }
@@ -579,6 +593,20 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn insert_as_superset(&self, value: V) -> Self {
+        #[cfg(feature = "op-parallel")]
+        return self.manager.op_pool().install({
+            let this = self.clone();
+            move || this.insert_as_superset_inner(value, 0)
+        });
+        #[cfg(not(feature = "op-parallel"))]
+        self.insert_as_superset_inner(value, 0)
+    }
+
+    #[cfg_attr(
+        not(feature = "op-parallel"),
+        expect(unused_variables, clippy::only_used_in_recursion)
+    )]
+    fn insert_as_superset_inner(&self, value: V, depth: u32) -> Self {
         if self.is_zero() {
             return self.clone();
         }
