@@ -879,5 +879,4 @@ dependencies = [
  "serde",
  "thiserror",
  "uuid",
- "zerocopy",
 ]
