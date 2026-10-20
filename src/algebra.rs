@@ -81,12 +81,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    #[recursive::recursive]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
-        self.offset_inner(value)
-    }
-
-    fn offset_inner(self, value: V) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
             return self.clone();
         }
@@ -105,8 +100,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let lo = self_lo.offset_inner(value.clone());
-        let hi = self_hi.offset_inner(value);
+        let lo = self_lo.offset(value.clone());
+        let hi = self_hi.offset(value);
         let r = holder.get_node(self_val, lo, hi);
         holder.put_into_cache(op, r)
     }
@@ -136,12 +131,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    #[recursive::recursive]
     pub fn onset(self, value: V) -> SetFamily<'a, V> {
-        self.onset_inner(value)
-    }
-
-    fn onset_inner(self, value: V) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || self.is_one() {
             return holder.zero();
@@ -160,8 +150,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let lo = self_lo.onset_inner(value.clone());
-        let hi = self_hi.onset_inner(value);
+        let lo = self_lo.onset(value.clone());
+        let hi = self_hi.onset(value);
 
         let r = holder.get_node(self_val.clone(), lo, hi);
         holder.put_into_cache(op, r)
@@ -252,12 +242,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    #[recursive::recursive]
-    pub fn union(self, other: Self) -> Self {
-        self.union_inner(other)
-    }
-
-    fn union_inner(mut self, mut other: Self) -> Self {
+    pub fn union(mut self, mut other: Self) -> Self {
         if self.is_zero() {
             return other;
         }
@@ -301,8 +286,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
                 holder.get_node(other_val, lo, other_hi)
             }
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.union_inner(other_lo);
-                let hi = self_hi.union_inner(other_hi);
+                let lo = self_lo.union(other_lo);
+                let hi = self_hi.union(other_hi);
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -397,11 +382,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
     #[recursive::recursive]
-    pub fn change(&self, value: V) -> Self {
-        self.clone().change_inner(value)
-    }
-
-    fn change_inner(self, value: V) -> Self {
+    pub fn change(self, value: V) -> Self {
         if self.is_zero() {
             return self;
         }
@@ -423,8 +404,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let new_lo = lo.change_inner(value.clone());
-        let new_hi = hi.change_inner(value);
+        let new_lo = lo.change(value.clone());
+        let new_hi = hi.change(value);
 
         let r = holder.get_node(this_val, new_lo, new_hi);
         holder.put_into_cache(op, r)
@@ -436,9 +417,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn insert(&self, value: V) -> Self {
+    pub fn insert(self, value: V) -> Self {
         if self.is_zero() {
-            return self.clone();
+            return self;
         }
         let holder = self.manager;
         if self.is_one() {
@@ -473,9 +454,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn insert_as_superset(&self, value: V) -> Self {
+    pub fn insert_as_superset(self, value: V) -> Self {
         if self.is_zero() {
-            return self.clone();
+            return self;
         }
         let holder = self.manager;
         if self.is_one() {
@@ -511,9 +492,9 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn extend_as_superset(&self, values: impl IntoIterator<Item = V>) -> Self {
+    pub fn extend_as_superset(self, values: impl IntoIterator<Item = V>) -> Self {
         if self.is_zero() {
-            return self.clone();
+            return self;
         }
         let values = self.manager().single_set(values.into_iter().collect());
         let n_nodes = self.n_nodes();
