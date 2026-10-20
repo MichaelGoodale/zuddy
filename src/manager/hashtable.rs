@@ -62,20 +62,25 @@ impl HashEntry {
 
 ///An iterator over hashtable slots in probe order, wrapping past the
 ///terminal slots 0 and 1.
+///
+///Yields exactly `n` slots (one probe budget per slot in the table); the
+///caller decides that the table is full if the iterator is exhausted.
 struct ProbeSlots {
     s: usize,
     n: usize,
+    left: usize,
 }
 
 impl Iterator for ProbeSlots {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
-        if self.s >= self.n {
+        if self.left == 0 {
             return None;
         }
         let s = self.s;
         self.s = if s + 1 >= self.n { 2 } else { s + 1 };
+        self.left -= 1;
         Some(s)
     }
 }
@@ -212,9 +217,11 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
 
     ///The slots to probe for a hash, in order, wrapping past the terminals.
     fn probe_slots(&self, h: u32) -> ProbeSlots {
+        let n = self.capacity();
         ProbeSlots {
             s: self.bucket_start(h),
-            n: self.capacity(),
+            n,
+            left: n,
         }
     }
 
@@ -552,6 +559,28 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
             assert_eq!(map.len(), used_chars.len());
         }
         Ok(())
+    }
+
+    #[test]
+    fn full_table_returns_error_not_hang() {
+        //Filling the table completely must terminate with Err, never spin.
+        //Capacity is rounded up to a region multiple, so insert distinct
+        //nodes until the table reports full, with a generous bound.
+        let table = HashTable::<u32>::new(REGION_SIZE, 1);
+        let bound = table.capacity() + 1;
+        let mut inserted = 0;
+        for i in 0..bound {
+            let r = table.find_or_insert(RawZddData {
+                value: u32::try_from(i).unwrap(),
+                lo: ZddIndex::from(0),
+                hi: ZddIndex::from(1),
+            });
+            match r {
+                Ok(_) => inserted += 1,
+                Err(FullTable { .. }) => return,
+            }
+        }
+        panic!("Inserted {inserted} of {bound} without a FullTable error");
     }
 
     #[test]
