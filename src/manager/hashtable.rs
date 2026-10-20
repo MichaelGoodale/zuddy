@@ -60,6 +60,26 @@ impl HashEntry {
     }
 }
 
+///An iterator over hashtable slots in probe order, wrapping past the
+///terminal slots 0 and 1.
+struct ProbeSlots {
+    s: usize,
+    n: usize,
+}
+
+impl Iterator for ProbeSlots {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.s >= self.n {
+            return None;
+        }
+        let s = self.s;
+        self.s = if s + 1 >= self.n { 2 } else { s + 1 };
+        Some(s)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
     slots: Slots,
@@ -190,6 +210,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         s.max(2)
     }
 
+    ///The slots to probe for a hash, in order, wrapping past the terminals.
+    fn probe_slots(&self, h: u32) -> ProbeSlots {
+        ProbeSlots {
+            s: self.bucket_start(h),
+            n: self.capacity(),
+        }
+    }
+
     fn hashes(&self) -> &Vec<AtomicU64> {
         unsafe { &*self.hashes.get() }
     }
@@ -221,13 +249,10 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     ) -> Result<(usize, Option<usize>), FullTable<V>> {
         let read = self.read_table();
         let h = Self::hash(&data);
-        let n = self.capacity();
         let hashes = self.hashes();
         let mut index = 0;
 
-        let mut s = self.bucket_start(h);
-        let mut probe_length = 0;
-        loop {
+        for (probe_length, s) in self.probe_slots(h).enumerate() {
             let mut v = HashEntry(hashes[s].load(Acquire));
             if v.is_empty() {
                 if index == 0 {
@@ -242,12 +267,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         *h = Some(data.clone());
                     }
                 }
-                match hashes[s].compare_exchange(
-                    0,
-                    HashEntry::new(index, h).0,
-                    Release,
-                    Relaxed,
-                ) {
+                match hashes[s].compare_exchange(0, HashEntry::new(index, h).0, Release, Relaxed) {
                     Ok(_) => {
                         return Ok((index, Some(probe_length)));
                     }
@@ -260,15 +280,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                     self.slots.free_bucket(index);
                 }
                 return Ok((v.index(), None));
-            }
-
-            s += 1;
-            if s >= n {
-                s = 2;
-            }
-            probe_length += 1;
-            if probe_length >= n {
-                break;
             }
         }
         let r = Err(FullTable {
@@ -324,10 +335,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         .expect("A marked value is None!");
         let h = Self::hash(data);
         let hash_entry = HashEntry::new(index, h);
-        let n = self.capacity();
         let hashes = self.hashes();
-        let mut s = self.bucket_start(h);
-        for _ in 0..n {
+        for s in self.probe_slots(h) {
             match hashes[s].compare_exchange(0, hash_entry.0, Release, Relaxed) {
                 Ok(_) => {
                     return true;
@@ -340,10 +349,6 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         return false;
                     }
                 }
-            }
-            s += 1;
-            if s >= n {
-                s = 2;
             }
         }
         panic!("Full table!")
