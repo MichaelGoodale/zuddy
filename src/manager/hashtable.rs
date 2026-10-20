@@ -13,8 +13,6 @@ use std::{
 };
 use thiserror::Error;
 
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, transmute};
-
 use crate::{
     ZddHolder,
     manager::{
@@ -25,15 +23,17 @@ use crate::{
 
 mod slots;
 
-const N_BYTES_PER_HASH: usize = 3;
-const N_BYTES_PER_INDEX: usize = 5;
+///Number of bits of the hash stored per entry.
+const N_HASH_BITS: u32 = 24;
 
-#[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, Unaligned, PartialEq, Eq, KnownLayout)]
-#[repr(C)]
-struct HashEntry {
-    hash: [u8; N_BYTES_PER_HASH],
-    index: [u8; N_BYTES_PER_INDEX],
-}
+///A packed entry in the hashtable: the hash in the low [`N_HASH_BITS`] bits
+///and the data index above them, in native endianness.
+///
+///`EMPTY` is the all-zero entry, which no real entry can equal because every
+///inserted node lives at a data index of at least 2 (slots 0 and 1 are the
+///terminals and permanently marked as used).
+#[derive(Copy, Clone, PartialEq, Eq)]
+struct HashEntry(u64);
 
 impl std::fmt::Debug for HashEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,40 +44,21 @@ impl std::fmt::Debug for HashEntry {
     }
 }
 
-const EMPTY: HashEntry = HashEntry {
-    hash: [0; N_BYTES_PER_HASH],
-    index: [0; N_BYTES_PER_INDEX],
-};
+const EMPTY: HashEntry = HashEntry(0);
 
 impl HashEntry {
-    #[expect(clippy::many_single_char_names)]
     fn new(index: usize, hash: u32) -> Self {
-        debug_assert!(hash < 1_u32 << (N_BYTES_PER_HASH * 8));
-        let [_, a, b, c] = u32::to_be_bytes(hash);
-        let [_, _, _, d, e, f, g, h] = u64::to_be_bytes(index as u64);
-
-        HashEntry {
-            hash: [a, b, c],
-            index: [d, e, f, g, h],
-        }
+        debug_assert!(hash < 1_u32 << N_HASH_BITS);
+        debug_assert!(u64::try_from(index).unwrap() < 1_u64 << (64 - N_HASH_BITS));
+        HashEntry((u64::from(hash)) | (index as u64) << N_HASH_BITS)
     }
 
     fn index(self) -> usize {
-        usize::try_from(u64::from_be_bytes([
-            0,
-            0,
-            0,
-            self.index[0],
-            self.index[1],
-            self.index[2],
-            self.index[3],
-            self.index[4],
-        ]))
-        .unwrap()
+        (self.0 >> N_HASH_BITS) as usize
     }
 
     fn hash(self) -> u32 {
-        u32::from_be_bytes([0, self.hash[0], self.hash[1], self.hash[2]])
+        (self.0 & ((1 << N_HASH_BITS) - 1)) as u32
     }
 
     fn is_empty(self) -> bool {
@@ -85,15 +66,15 @@ impl HashEntry {
     }
 
     fn to_u64(self) -> u64 {
-        transmute!(self)
+        self.0
     }
 
     fn from_u64(x: u64) -> Self {
-        transmute!(x)
+        HashEntry(x)
     }
 
     fn from_atomic_u64(x: &AtomicU64) -> Self {
-        transmute!(x.load(Acquire))
+        HashEntry(x.load(Acquire))
     }
 }
 
@@ -219,8 +200,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
         let hash = h.finish().saturating_add(2);
-        let h =
-            (hash % (1_u64 << (N_BYTES_PER_HASH * 8))) % u64::try_from(self.capacity()).unwrap();
+        let h = (hash & ((1_u64 << N_HASH_BITS) - 1)) % u64::try_from(self.capacity()).unwrap();
         h as u32
     }
 
