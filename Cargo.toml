@@ -17,6 +17,7 @@ ordered-float = { version = "5.5.0", features = ["serde"] }
 rand = { version = "0.10.1", optional = true }
 rangemap = "1.8.0"
 rayon = "1.12.0"
+crossbeam-deque = "0.8.8"
 recursive = "0.1.1"
 serde = { version = "1.0.229", features = ["serde_derive"] }
 thiserror = "2.0.21"
@@ -50,6 +51,7 @@ harness = false
 [features]
 default = ["sampling"]
 sampling = ["dep:rand"]
+op-parallel = []
 
 [lints.rust]
 missing_docs = "warn"

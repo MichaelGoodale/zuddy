@@ -8,6 +8,8 @@ use ahash::RandomState;
 use crate::utils::op_cache::OpCache;
 mod garbage;
 mod hashtable;
+#[cfg(feature = "op-parallel")]
+pub(crate) mod op_parallel;
 mod parallelism;
 mod raw;
 mod temp_cache;
@@ -29,6 +31,8 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
+    #[cfg(feature = "op-parallel")]
+    op_pool: crate::manager::op_parallel::OpPool,
     id: Uuid,
 }
 
@@ -50,6 +54,8 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         let id = Uuid::new_v4();
         Self {
             generation: AtomicU64::new(0),
+            #[cfg(feature = "op-parallel")]
+            op_pool: crate::manager::op_parallel::OpPool::new(n_pools.max(1)),
             uniq_table: HashTable::new(n, n_pools),
             size_caches: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(16).next_power_of_two(),
@@ -180,6 +186,11 @@ impl<V: Eq + Hash> ZddHolder<V> {
     #[must_use]
     pub fn n_nodes(&self) -> usize {
         self.uniq_table.n_used()
+    }
+
+    #[cfg(feature = "op-parallel")]
+    pub(crate) fn op_pool(&self) -> &crate::manager::op_parallel::OpPool {
+        &self.op_pool
     }
 }
 

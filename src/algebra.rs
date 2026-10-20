@@ -30,6 +30,8 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+#[cfg(feature = "op-parallel")]
+use crate::manager::op_parallel::join2;
 use crate::{SetFamily, manager::ZddIndex};
 
 use std::{fmt::Debug, hash::Hash};
@@ -83,10 +85,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     #[recursive::recursive]
     pub fn offset(self, value: V) -> SetFamily<'a, V> {
-        self.offset_inner(value)
+        #[cfg(feature = "op-parallel")]
+        return self
+            .manager
+            .op_pool()
+            .install(move || self.offset_inner(value, 0));
+        #[cfg(not(feature = "op-parallel"))]
+        self.offset_inner(value, 0)
     }
 
-    fn offset_inner(self, value: V) -> SetFamily<'a, V> {
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn offset_inner(self, value: V, depth: u32) -> SetFamily<'a, V> {
         if self.is_zero() || self.is_one() {
             return self.clone();
         }
@@ -105,8 +114,18 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let lo = self_lo.offset_inner(value.clone());
-        let hi = self_hi.offset_inner(value);
+        let value_clone = value.clone();
+        #[cfg(feature = "op-parallel")]
+        let (lo, hi) = join2(
+            depth,
+            || self_lo.offset_inner(value, depth + 1),
+            || self_hi.offset_inner(value_clone, depth + 1),
+        );
+        #[cfg(not(feature = "op-parallel"))]
+        let (lo, hi) = (
+            self_lo.offset_inner(value, depth + 1),
+            self_hi.offset_inner(value_clone, depth + 1),
+        );
         let r = holder.get_node(self_val, lo, hi);
         holder.put_into_cache(op, r)
     }
@@ -138,10 +157,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     #[recursive::recursive]
     pub fn onset(self, value: V) -> SetFamily<'a, V> {
-        self.onset_inner(value)
+        #[cfg(feature = "op-parallel")]
+        return self
+            .manager
+            .op_pool()
+            .install(move || self.onset_inner(value, 0));
+        #[cfg(not(feature = "op-parallel"))]
+        self.onset_inner(value, 0)
     }
 
-    fn onset_inner(self, value: V) -> SetFamily<'a, V> {
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn onset_inner(self, value: V, depth: u32) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || self.is_one() {
             return holder.zero();
@@ -160,8 +186,18 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let lo = self_lo.onset_inner(value.clone());
-        let hi = self_hi.onset_inner(value);
+        let value_clone = value.clone();
+        #[cfg(feature = "op-parallel")]
+        let (lo, hi) = join2(
+            depth,
+            || self_lo.onset_inner(value, depth + 1),
+            || self_hi.onset_inner(value_clone, depth + 1),
+        );
+        #[cfg(not(feature = "op-parallel"))]
+        let (lo, hi) = (
+            self_lo.onset_inner(value, depth + 1),
+            self_hi.onset_inner(value_clone, depth + 1),
+        );
 
         let r = holder.get_node(self_val.clone(), lo, hi);
         holder.put_into_cache(op, r)
@@ -190,7 +226,18 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///# Panics
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
-    pub fn intersect(mut self, mut other: Self) -> SetFamily<'a, V> {
+    pub fn intersect(self, other: Self) -> SetFamily<'a, V> {
+        #[cfg(feature = "op-parallel")]
+        return self
+            .manager
+            .op_pool()
+            .install(move || self.intersect_inner(other, 0));
+        #[cfg(not(feature = "op-parallel"))]
+        self.intersect_inner(other, 0)
+    }
+
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn intersect_inner(mut self, mut other: Self, depth: u32) -> SetFamily<'a, V> {
         let holder = self.manager;
         if self.is_zero() || other.is_zero() {
             return holder.zero();
@@ -224,12 +271,19 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
         let (other_val, other_lo, other_hi) = other.get().expect("Invalid index");
 
         let r = match self_val.cmp(&other_val) {
-            std::cmp::Ordering::Less => self_lo.intersect(other),
-            std::cmp::Ordering::Greater => self.intersect(other_lo),
+            std::cmp::Ordering::Less => self_lo.intersect_inner(other, depth),
+            std::cmp::Ordering::Greater => self.intersect_inner(other_lo, depth),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = holder.pools().join(
-                    || self_lo.intersect(other_lo),
-                    || self_hi.intersect(other_hi),
+                #[cfg(feature = "op-parallel")]
+                let (lo, hi) = join2(
+                    depth,
+                    || self_lo.intersect_inner(other_lo, depth + 1),
+                    || self_hi.intersect_inner(other_hi, depth + 1),
+                );
+                #[cfg(not(feature = "op-parallel"))]
+                let (lo, hi) = (
+                    self_lo.intersect_inner(other_lo, depth + 1),
+                    self_hi.intersect_inner(other_hi, depth + 1),
                 );
                 holder.get_node(self_val, lo, hi)
             }
@@ -254,10 +308,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     #[recursive::recursive]
     pub fn union(self, other: Self) -> Self {
-        self.union_inner(other)
+        #[cfg(feature = "op-parallel")]
+        return self
+            .manager
+            .op_pool()
+            .install(move || self.union_inner(other, 0));
+        #[cfg(not(feature = "op-parallel"))]
+        self.union_inner(other, 0)
     }
 
-    fn union_inner(mut self, mut other: Self) -> Self {
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn union_inner(mut self, mut other: Self, depth: u32) -> Self {
         if self.is_zero() {
             return other;
         }
@@ -301,8 +362,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
                 holder.get_node(other_val, lo, other_hi)
             }
             std::cmp::Ordering::Equal => {
-                let lo = self_lo.union_inner(other_lo);
-                let hi = self_hi.union_inner(other_hi);
+                #[cfg(feature = "op-parallel")]
+                let (lo, hi) = join2(
+                    depth,
+                    || self_lo.union_inner(other_lo, depth + 1),
+                    || self_hi.union_inner(other_hi, depth + 1),
+                );
+                #[cfg(not(feature = "op-parallel"))]
+                let (lo, hi) = (
+                    self_lo.union_inner(other_lo, depth + 1),
+                    self_hi.union_inner(other_hi, depth + 1),
+                );
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -334,6 +404,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     ///May panic if `self` or `other` is not a valid index in the [`ZddHolder`]
     #[must_use]
     pub fn difference(self, other: Self) -> SetFamily<'a, V> {
+        #[cfg(feature = "op-parallel")]
+        return self
+            .manager
+            .op_pool()
+            .install(move || self.difference_inner(other, 0));
+        #[cfg(not(feature = "op-parallel"))]
+        self.difference_inner(other, 0)
+    }
+
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn difference_inner(self, other: Self, depth: u32) -> SetFamily<'a, V> {
         if self.is_zero() || self == other {
             return self.manager.zero();
         }
@@ -362,13 +443,20 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match self_val.cmp(&other_val) {
             std::cmp::Ordering::Less => {
-                holder.get_node(self_val, self_lo.difference(other), self_hi)
+                holder.get_node(self_val, self_lo.difference_inner(other, depth), self_hi)
             }
-            std::cmp::Ordering::Greater => self.difference(other_lo),
+            std::cmp::Ordering::Greater => self.difference_inner(other_lo, depth),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = self.manager.pools().join(
-                    || self_lo.difference(other_lo),
-                    || self_hi.difference(other_hi),
+                #[cfg(feature = "op-parallel")]
+                let (lo, hi) = join2(
+                    depth,
+                    || self_lo.difference_inner(other_lo, depth + 1),
+                    || self_hi.difference_inner(other_hi, depth + 1),
+                );
+                #[cfg(not(feature = "op-parallel"))]
+                let (lo, hi) = (
+                    self_lo.difference_inner(other_lo, depth + 1),
+                    self_hi.difference_inner(other_hi, depth + 1),
                 );
                 holder.get_node(self_val, lo, hi)
             }
@@ -398,10 +486,17 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
     #[must_use]
     #[recursive::recursive]
     pub fn change(&self, value: V) -> Self {
-        self.clone().change_inner(value)
+        #[cfg(feature = "op-parallel")]
+        return self.manager.op_pool().install({
+            let this = self.clone();
+            move || this.change_inner(value, 0)
+        });
+        #[cfg(not(feature = "op-parallel"))]
+        self.clone().change_inner(value, 0)
     }
 
-    fn change_inner(self, value: V) -> Self {
+    #[cfg_attr(not(feature = "op-parallel"), expect(clippy::only_used_in_recursion))]
+    fn change_inner(self, value: V, depth: u32) -> Self {
         if self.is_zero() {
             return self;
         }
@@ -423,8 +518,18 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             return r;
         }
 
-        let new_lo = lo.change_inner(value.clone());
-        let new_hi = hi.change_inner(value);
+        let value_clone = value.clone();
+        #[cfg(feature = "op-parallel")]
+        let (new_lo, new_hi) = join2(
+            depth,
+            || lo.change_inner(value, depth + 1),
+            || hi.change_inner(value_clone, depth + 1),
+        );
+        #[cfg(not(feature = "op-parallel"))]
+        let (new_lo, new_hi) = (
+            lo.change_inner(value, depth + 1),
+            hi.change_inner(value_clone, depth + 1),
+        );
 
         let r = holder.get_node(this_val, new_lo, new_hi);
         holder.put_into_cache(op, r)
