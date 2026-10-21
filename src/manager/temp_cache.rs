@@ -258,10 +258,12 @@ mod tests {
     fn temp_cache_byte_cap_frees_memory() {
         let mut holder = ZddHolder::<usize>::new();
         //Small enough that the cap fires partway through the inserts below.
+        //Note the cache counts its fixed slot overhead, so the cap must exceed it.
         holder.set_temp_cache_size(Some(4096));
 
         let cache: TempCache<'_, usize, Vec<usize>, usize> =
-            holder.create_temporary_cache(1024_usize.next_power_of_two());
+            holder.create_temporary_cache(64);
+        let base = cache.cache.size.load(Ordering::Acquire);
 
         //Each key is ~800 bytes, so the cap is hit after a handful of inserts.
         for i in 0..100_usize {
@@ -271,7 +273,7 @@ mod tests {
         //Without the cap, the size would be ~80_000. The cap must have cleared
         //the cache along the way, so the counter is far below that.
         let size = cache.cache.size.load(Ordering::Acquire);
-        assert!(0 < size && size < 4096 + 1000, "size was {size}");
+        assert!(0 < size && size < base + 4096 + 1000, "size was {size}");
     }
 
     ///The temp cache must be invalidated when a GC occurs.
@@ -293,13 +295,14 @@ mod tests {
     fn temp_cache_size_stays_bounded_under_repeated_wipes() {
         let mut holder = ZddHolder::<usize>::new();
         holder.set_temp_cache_size(Some(4096));
-        let cache: TempCache<'_, usize, Vec<usize>, usize> = holder.create_temporary_cache(1024);
+        let cache: TempCache<'_, usize, Vec<usize>, usize> = holder.create_temporary_cache(64);
+        let base = cache.cache.size.load(Ordering::Acquire);
         let entry_size = 840;
         for i in 0..1000usize {
             cache.insert((0..100).chain([i]).collect(), i);
             let size = cache.cache.size.load(Ordering::Acquire);
             assert!(
-                size < 4096 + 2 * entry_size,
+                size < base + 4096 + 2 * entry_size,
                 "size {size} escaped the cap at insert {i}"
             );
         }

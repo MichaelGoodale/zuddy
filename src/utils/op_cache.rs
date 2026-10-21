@@ -159,19 +159,17 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///May panic if an internal lock is poisoned.
     pub fn resize(&self, capacity: usize) {
         let n_slots = slot_capacity(capacity);
-        let old_n_slots = self.table.read().unwrap().slots.len();
-        if old_n_slots >= n_slots {
+        if self.table.read().unwrap().slots.len() >= n_slots {
             return;
         }
 
-        let n_new = n_slots - old_n_slots;
-        self.size.fetch_add(
-            u64::try_from(n_new * core::mem::size_of::<u64>() * 2).unwrap(),
-            Ordering::Relaxed,
-        );
-
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
+            //All entries (and their tracked bytes) are discarded by the resize.
+            self.size.store(
+                u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
+                Ordering::Relaxed,
+            );
             *table = Table {
                 slots: (0..n_slots).map(|_| RwLock::default()).collect(),
             };
