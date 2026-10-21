@@ -52,7 +52,7 @@ where
                 .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
         {
-            self.cache.clear();
+            self.cache.clear_memory();
             self.size.store(0, Ordering::Release);
         }
 
@@ -62,7 +62,7 @@ where
                 .compare_exchange(current_size, 0, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
         {
-            self.cache.clear();
+            self.cache.clear_memory();
             self.size.store(0, Ordering::Release);
         }
     }
@@ -84,7 +84,7 @@ where
 
         match old_value {
             Some((old_key, old_value)) => {
-                self.size.fetch_add(value_size, Ordering::Relaxed);
+                self.size.fetch_add(key_size + value_size, Ordering::Relaxed);
                 let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
                 let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
                 self.size
@@ -273,3 +273,41 @@ macro_rules! impl_temp_cache_item_tuple {
 }
 
 impl_temp_cache_item_tuple! { A B C D E F G H I J K L }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_cache_byte_cap_frees_memory() {
+        let mut holder = ZddHolder::<usize>::new();
+        holder.set_temp_cache_size(Some(4096));
+
+        let cache: TempCache<'_, usize, Vec<usize>, usize> =
+            holder.create_temporary_cache(1024_usize.next_power_of_two());
+
+        let key = (0..100).collect::<Vec<_>>();
+        for i in 0..100_usize {
+            cache.insert(key.iter().copied().chain([i]).collect(), i);
+        }
+        assert!(cache.size.load(Ordering::Acquire) > 4096);
+
+        cache.insert(key.clone(), 0);
+        let size = cache.size.load(Ordering::Acquire) as u64;
+        assert!(size > 0 && size < 4096);
+        assert!(cache.cache.get(&key).is_some());
+    }
+
+    ///The temp cache must be invalidated when a GC occurs.
+    #[test]
+    fn temp_cache_invalidated_by_gc() {
+        let holder = ZddHolder::<usize>::new();
+
+        let cache: TempCache<'_, usize, usize, usize> =
+            holder.create_temporary_cache(1024_usize.next_power_of_two());
+        cache.insert(1, 1);
+        assert_eq!(cache.get(&1), Some(1));
+        holder.gc(false);
+        assert_eq!(cache.get(&1), None);
+    }
+}

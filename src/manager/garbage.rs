@@ -56,8 +56,19 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
             self.generation.fetch_add(1, Ordering::Relaxed);
+            let double = self.uniq_table.capacity() * 2;
             let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
-                Some(self.uniq_table.capacity() * 2)
+                if let Some(max) = self.max_table_size
+                    && double > max
+                {
+                    if self.uniq_table.capacity() >= max {
+                        None
+                    } else {
+                        Some(max)
+                    }
+                } else {
+                    Some(double)
+                }
             } else {
                 None
             };
@@ -116,6 +127,24 @@ mod test {
     use super::*;
     use crate::SetFamily;
     use rayon::prelude::*;
+
+    ///The unique table should never grow past `max_table_size` nodes, and should panic
+    ///once it is full rather than growing or looping forever.
+    #[test]
+    #[should_panic(expected = "The unique table is full at its maximum size")]
+    fn gc_respects_max_table_size() {
+        use crate::manager::hashtable::slots::REGION_SIZE;
+        let max = 8 * REGION_SIZE;
+        let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
+            .with_max_table_size(max);
+
+        let mut acc = holder.one();
+        for v in 0..(REGION_SIZE * 4) {
+            acc = acc.change(v);
+            holder.gc(false);
+        }
+        assert!(holder.stats().table_size <= max);
+    }
 
     ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
     ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.

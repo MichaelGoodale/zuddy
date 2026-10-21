@@ -114,8 +114,23 @@ fn slot_capacity(capacity: usize) -> usize {
 
 impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///Empties cache by invalidating current entries.
+    ///
+    ///This keeps the allocated memory, see [`clear_memory`](OpCache::clear_memory)
+    ///to also free the stored entries.
     pub fn clear(&self) {
         self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    ///Empties the cache, dropping all stored entries and freeing their memory.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn clear_memory(&self) {
+        let mut table = self.table.write().unwrap();
+        let n_slots = table.slots.len();
+        *table = Table {
+            slots: (0..n_slots).map(|_| RwLock::default()).collect(),
+        };
     }
 
     ///Resizes the cache to have at least `capacity` slots while discarding cache.

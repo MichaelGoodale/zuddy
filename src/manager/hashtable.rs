@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-mod slots;
+pub(crate) mod slots;
 
 const N_BITS_FOR_HASH: u32 = 24;
 

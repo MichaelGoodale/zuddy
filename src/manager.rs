@@ -29,6 +29,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
+    max_table_size: Option<usize>,
     id: Uuid,
 }
 
@@ -56,6 +57,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
                 RandomState::default(),
             ),
             temp_cache_max: None,
+            max_table_size: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
                 RandomState::default(),
@@ -78,6 +80,29 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn with_temp_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.temp_cache_max = Some(size_in_bytes);
+        self
+    }
+
+    ///The current maximum number of nodes the unique table may grow to.
+    ///
+    ///If `None`, the table may grow without bound.
+    pub fn max_table_size(&self) -> Option<usize> {
+        self.max_table_size
+    }
+
+    ///Changes the maximum number of nodes the unique table may grow to.
+    ///
+    ///If `None`, the table may grow without bound. The limit only caps future
+    /// growth: a table already larger than `size` is not shrunk.
+    pub fn set_max_table_size(&mut self, size: Option<usize>) {
+        self.max_table_size = size;
+    }
+
+    ///Builder style function to set the maximum number of nodes the unique table
+    ///may grow to.
+    #[must_use]
+    pub fn with_max_table_size(mut self, size: usize) -> Self {
+        self.max_table_size = Some(size);
         self
     }
 

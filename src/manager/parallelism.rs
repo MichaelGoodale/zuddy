@@ -158,6 +158,12 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
                 s
             }
             Err(FullTable { value, .. }) => {
+                if self.max_table_size.is_some_and(|m| self.uniq_table.capacity() >= m) {
+                    panic!(
+                        "The unique table is full at its maximum size of {} nodes!",
+                        self.uniq_table.capacity()
+                    );
+                }
                 self.gc(true);
                 self.get_node(value.value, lo, hi)
             }
