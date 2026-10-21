@@ -123,14 +123,14 @@ fn mark<V: Send + Sync + Eq + Hash + Clone>(
 
 #[cfg(test)]
 mod test {
+
     use super::*;
     use crate::SetFamily;
     use rayon::prelude::*;
 
-    ///Fill the unique table with `n` held nodes so GC considers them live.
-    fn fill_table(holder: &ZddHolder<usize>, n: usize, offset: usize) {
-        for i in offset..offset + n {
- let (idx, _) = holder
+    fn fill_table(holder: &ZddHolder<usize>, range: std::ops::Range<usize>) {
+        for i in range {
+            let (idx, _) = holder
                 .uniq_table
                 .find_or_insert(RawZddData {
                     value: i,
@@ -150,14 +150,13 @@ mod test {
         let holder =
             ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1).with_max_table_size(max);
 
-        //Slots 0 and 1 are reserved for the terminals.
-        fill_table(&holder, REGION_SIZE - 2, 0);
+        fill_table(&holder, 2..(REGION_SIZE - 2));
         assert!(holder.uniq_table.usage() > 0.5);
 
         holder.gc(false);
         assert_eq!(holder.stats().table_size, max, "must grow to exactly max");
 
-        fill_table(&holder, max - REGION_SIZE, REGION_SIZE);
+        fill_table(&holder, REGION_SIZE..(max - REGION_SIZE));
         holder.gc(false);
         assert_eq!(
             holder.stats().table_size,
@@ -174,7 +173,7 @@ mod test {
         let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
             .with_max_table_size(REGION_SIZE);
 
-        fill_table(&holder, REGION_SIZE - 2, 0);
+        fill_table(&holder, 0..(REGION_SIZE - 2));
         holder.get_node(usize::MAX, holder.zero(), holder.one());
     }
 

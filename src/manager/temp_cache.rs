@@ -252,6 +252,7 @@ impl_temp_cache_item_tuple! { A B C D E F G H I J K L }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn temp_cache_byte_cap_frees_memory() {
@@ -285,12 +286,6 @@ mod tests {
         holder.gc(false);
         assert_eq!(cache.get(&1), None);
     }
-}
-
-#[cfg(test)]
-mod debug_tests {
-    use super::*;
-    use std::sync::atomic::Ordering;
 
     ///The size counter must stay bounded near the cap despite half-wipes
     ///refilling the surviving half.

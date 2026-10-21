@@ -18,7 +18,6 @@ use mem_dbg::{MemSize, SizeFlags};
 struct Slot<K, V> {
     generation: u64,
     entry: Option<(K, V)>,
-    ///The tracked memory usage of `entry` in bytes, set at insertion time.
     size: u64,
 }
 
@@ -91,38 +90,24 @@ impl<K: Hash + Eq + MemSize, V: Clone + MemSize, S: BuildHasher> OpCache<K, V, S
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
-        let key_size = key.mem_size(SizeFlags::default()) as u64;
-        let value_size = value.mem_size(SizeFlags::default()) as u64;
-        let size = key_size + value_size;
         let table = self.table.read().unwrap();
         let slot = table.get(&key, &self.hasher);
         let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
+
+        let key_size = key.mem_size(SizeFlags::default()) as u64;
+        let value_size = value.mem_size(SizeFlags::default()) as u64;
+        let size = key_size + value_size;
+        self.size.fetch_sub(guard.size, Ordering::Relaxed);
+        self.size.fetch_add(size, Ordering::Relaxed);
+        guard.size = size;
+
         let old = if guard.generation == generation {
-            match guard.entry.take() {
-                Some((old_key, old_value)) => {
-                    let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
-                    let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
-                    self.size
-                        .fetch_add(key_size + value_size, Ordering::Relaxed);
-                    self.size
-                        .fetch_sub(old_key_size + old_value_size, Ordering::Relaxed);
-                    Some((old_key, old_value))
-                }
-                None => {
-                    self.size.fetch_add(size, Ordering::Relaxed);
-                    None
-                }
-            }
+            guard.entry.take()
         } else {
-            //The old entry (if any) is from a previous generation: it is dropped
-            //by the overwrite, so stop counting its bytes.
-            self.size.fetch_sub(guard.size, Ordering::Relaxed);
-            self.size.fetch_add(size, Ordering::Relaxed);
             None
         };
         guard.generation = generation;
-        guard.size = size;
         guard.entry = Some((key, value));
         old
     }
@@ -174,9 +159,17 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///May panic if an internal lock is poisoned.
     pub fn resize(&self, capacity: usize) {
         let n_slots = slot_capacity(capacity);
-        if self.table.read().unwrap().slots.len() >= n_slots {
+        let old_n_slots = self.table.read().unwrap().slots.len();
+        if old_n_slots >= n_slots {
             return;
         }
+
+        let n_new = n_slots - old_n_slots;
+        self.size.fetch_add(
+            u64::try_from(n_new * core::mem::size_of::<u64>() * 2).unwrap(),
+            Ordering::Relaxed,
+        );
+
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
             *table = Table {
@@ -206,16 +199,16 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///The capacity is rounded up to a power of two.
     #[must_use]
     pub fn with_hasher_and_capacity(capacity: usize, hasher: S) -> Self {
+        let n = slot_capacity(capacity);
         Self {
             table: RwLock::new(Table {
-                slots: (0..slot_capacity(capacity))
-                    .map(|_| RwLock::default())
-                    .collect(),
+                slots: (0..n).map(|_| RwLock::default()).collect(),
             }),
             hasher,
             generation: AtomicU64::new(1),
             wipe_odd: AtomicBool::new(false),
-            size: AtomicU64::new(0),
+            //Account for `generation` and `size` in each slots
+            size: AtomicU64::new(u64::try_from(n * core::mem::size_of::<u64>() * 2).unwrap()),
         }
     }
 }
