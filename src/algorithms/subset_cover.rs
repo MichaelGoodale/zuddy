@@ -246,12 +246,11 @@ where
     ///Drops every other entry, alternating which half is dropped between calls.
     fn clear_half(&mut self) {
         self.wipe_odd = !self.wipe_odd;
-        let drop_odd = self.wipe_odd;
         let mut seen = 0;
         let mut mem_usage = 0;
         self.map.retain(|_, entry| {
             seen += 1;
-            let keep = (seen % 2 == 1) != drop_odd;
+            let keep = (seen % 2 == 1) != self.wipe_odd;
             if keep {
                 mem_usage += size_of::<K>()
                     + btree_size::<Range<Infinite<T>>, RawNodeInterval<V, T>>(entry.len());
