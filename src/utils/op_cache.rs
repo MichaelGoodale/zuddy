@@ -115,10 +115,14 @@ impl<K: Hash + Eq + MemSize, V: Clone + MemSize, S: BuildHasher> OpCache<K, V, S
                 }
             }
         } else {
+            //The old entry (if any) is from a previous generation: it is dropped
+            //by the overwrite, so stop counting its bytes.
+            self.size.fetch_sub(guard.size, Ordering::Relaxed);
             self.size.fetch_add(size, Ordering::Relaxed);
             None
         };
         guard.generation = generation;
+        guard.size = size;
         guard.entry = Some((key, value));
         old
     }

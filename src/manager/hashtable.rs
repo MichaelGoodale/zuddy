@@ -115,7 +115,7 @@ impl<V: Hash + Eq> ZddHolder<V> {
 }
 
 impl<V: Hash + Eq> HashTable<V> {
-    fn inc_count(&self, i: usize) {
+    pub(super) fn inc_count(&self, i: usize) {
         unsafe { &(&*self.counts.get())[i] }.fetch_add(1, Relaxed);
     }
 
