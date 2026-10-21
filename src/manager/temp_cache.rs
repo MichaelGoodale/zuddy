@@ -257,12 +257,9 @@ mod tests {
     #[test]
     fn temp_cache_byte_cap_frees_memory() {
         let mut holder = ZddHolder::<usize>::new();
-        //Small enough that the cap fires partway through the inserts below.
-        //Note the cache counts its fixed slot overhead, so the cap must exceed it.
         holder.set_temp_cache_size(Some(4096));
 
-        let cache: TempCache<'_, usize, Vec<usize>, usize> =
-            holder.create_temporary_cache(64);
+        let cache: TempCache<'_, usize, Vec<usize>, usize> = holder.create_temporary_cache(64);
         let base = cache.cache.size.load(Ordering::Acquire);
 
         //Each key is ~800 bytes, so the cap is hit after a handful of inserts.
@@ -270,8 +267,6 @@ mod tests {
             cache.insert((0..100).chain([i]).collect(), i);
         }
 
-        //Without the cap, the size would be ~80_000. The cap must have cleared
-        //the cache along the way, so the counter is far below that.
         let size = cache.cache.size.load(Ordering::Acquire);
         assert!(0 < size && size < base + 4096 + 1000, "size was {size}");
     }
