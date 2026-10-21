@@ -8,7 +8,7 @@ use std::{
     hash::{BuildHasher, Hash},
     sync::{
         RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -16,6 +16,8 @@ use std::{
 struct Slot<K, V> {
     generation: u64,
     entry: Option<(K, V)>,
+    ///The tracked memory usage of `entry` in bytes, set at insertion time.
+    size: u64,
 }
 
 impl<K, V> Default for Slot<K, V> {
@@ -23,6 +25,7 @@ impl<K, V> Default for Slot<K, V> {
         Self {
             generation: 0,
             entry: None,
+            size: 0,
         }
     }
 }
@@ -40,6 +43,8 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
     table: RwLock<Table<K, V>>,
     hasher: S,
     generation: AtomicU64,
+    ///Parity of the slots to drop in the next [`clear_half`](OpCache::clear_half).
+    wipe_odd: AtomicBool,
 }
 
 impl<K: Hash, V> Table<K, V> {
@@ -75,14 +80,21 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
         None
     }
 
-    ///Inserts a key value pair into the cache, overwriting any hash collisions.
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
+        self.insert_with_size(key, value, 0)
+    }
+
+    ///Inserts a key value pair into the cache, overwriting any hash collisions,
+    ///tracking `size_in_bytes` as the memory usage of the entry.
     ///
     ///Returns the entry which was previously stored in the collided slot,
     ///if it was visible.
     ///
+    ///See [`clear_half`](OpCache::clear_half) for a way to reclaim tracked memory.
+    ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
-    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
+    pub fn insert_with_size(&self, key: K, value: V, size_in_bytes: u64) -> Option<(K, V)> {
         let table = self.table.read().unwrap();
         let slot = table.get(&key, &self.hasher);
         let generation = self.current_generation();
@@ -93,6 +105,7 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
             None
         };
         guard.generation = generation;
+        guard.size = size_in_bytes;
         guard.entry = Some((key, value));
         old
     }
@@ -122,12 +135,43 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
-    pub fn clear_memory(&self) {
-        let mut table = self.table.write().unwrap();
-        let n_slots = table.slots.len();
-        *table = Table {
-            slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-        };
+    #[cfg(test)]
+    fn clear_memory(&self) {
+        let table = self.table.write().unwrap();
+        for slot in &table.slots {
+            let mut guard = slot.write().unwrap();
+            guard.entry = None;
+            guard.size = 0;
+        }
+    }
+
+    ///Drops roughly half the stored entries (chosen by slot parity, which is
+    ///uniformly spread by hashing), freeing their memory in place.
+    ///
+    ///The parity alternates between calls so that no half of the table can
+    ///become a permanent refuge that never gets wiped.
+    ///
+    ///Returns the total tracked memory usage in bytes of the dropped entries.
+    ///
+    ///Entries from previous generations are dropped and counted too, since they
+    ///still occupy memory.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn clear_half(&self) -> u64 {
+        let wipe_odd = self.wipe_odd.fetch_xor(true, Ordering::Release);
+        let table = self.table.read().unwrap();
+        let mut freed = 0;
+        for (i, slot) in table.slots.iter().enumerate() {
+            if i % 2 == usize::from(wipe_odd) {
+                let mut guard = slot.write().unwrap();
+                if guard.entry.take().is_some() {
+                    freed += guard.size;
+                    guard.size = 0;
+                }
+            }
+        }
+        freed
     }
 
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
@@ -176,6 +220,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             }),
             hasher,
             generation: AtomicU64::new(1),
+            wipe_odd: AtomicBool::new(false),
         }
     }
 }
