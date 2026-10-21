@@ -174,7 +174,6 @@ struct IntervalCache<'a, K: Eq + Hash, V: Eq + Hash, T> {
     holder: &'a ZddHolder<V>,
     generation: u64,
     mem_usage: usize,
-    ///Parity of the entries to drop in the next [`clear_half`](IntervalCache::clear_half).
     wipe_odd: bool,
 }
 
@@ -244,10 +243,6 @@ where
         self.mem_usage = 0;
     }
 
-    ///Drops roughly half the entries (chosen by key hash parity), freeing their memory.
-    ///
-    ///The parity alternates between calls so that no half of the cache can
-    ///become a permanent refuge that never gets wiped.
     fn clear_half(&mut self) {
         self.wipe_odd = !self.wipe_odd;
         let wipe_odd = self.wipe_odd;
@@ -797,14 +792,11 @@ mod test {
 
     use super::*;
 
-    ///The interval cache's size counter must stay bounded near the cap despite
-    ///half-wipes refilling the surviving half.
     #[test]
     fn interval_cache_size_stays_bounded_under_repeated_wipes() {
         let mut holder = ZddHolder::<usize>::new();
         holder.set_temp_cache_size(Some(4096));
-        let mut cache: IntervalCache<'_, usize, usize, usize> =
-            IntervalCache::new(&holder);
+        let mut cache: IntervalCache<'_, usize, usize, usize> = IntervalCache::new(&holder);
 
         let entry_size = size_of::<usize>()
             + btree_size::<Range<Infinite<usize>>, RawNodeInterval<usize, usize>>(1);
