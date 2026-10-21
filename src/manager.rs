@@ -45,6 +45,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     pub fn with_capacity(n: usize) -> ZddHolder<V> {
         Self::with_capacity_and_pools(n, rayon::current_num_threads())
     }
+
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn with_capacity_and_pools(n: usize, n_pools: usize) -> ZddHolder<V> {
@@ -83,23 +84,17 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self
     }
 
-    ///The current maximum number of nodes the unique table may grow to.
-    ///
-    ///If `None`, the table may grow without bound.
+    ///The current maximum number of nodes the unique table may grow to. If `None`, there is no limit.
     pub fn max_table_size(&self) -> Option<usize> {
         self.max_table_size
     }
 
-    ///Changes the maximum number of nodes the unique table may grow to.
-    ///
-    ///If `None`, the table may grow without bound. The limit only caps future
-    /// growth: a table already larger than `size` is not shrunk.
+    ///Changes the maximum number of nodes in the manager. If `None`, there is no size limit.
     pub fn set_max_table_size(&mut self, size: Option<usize>) {
         self.max_table_size = size;
     }
 
-    ///Builder style function to set the maximum number of nodes the unique table
-    ///may grow to.
+    ///Builder style function to set the maximum number of nodes of the manager
     #[must_use]
     pub fn with_max_table_size(mut self, size: usize) -> Self {
         self.max_table_size = Some(size);

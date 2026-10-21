@@ -114,9 +114,6 @@ fn slot_capacity(capacity: usize) -> usize {
 
 impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///Empties cache by invalidating current entries.
-    ///
-    ///This keeps the allocated memory, see [`clear_memory`](OpCache::clear_memory)
-    ///to also free the stored entries.
     pub fn clear(&self) {
         self.generation.fetch_add(1, Ordering::Release);
     }

@@ -58,16 +58,15 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             self.generation.fetch_add(1, Ordering::Relaxed);
             let double = self.uniq_table.capacity() * 2;
             let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
-                if let Some(max) = self.max_table_size
-                    && double > max
-                {
-                    if self.uniq_table.capacity() >= max {
-                        None
-                    } else {
-                        Some(max)
+                match self.max_table_size {
+                    Some(max) if double > max => {
+                        if self.uniq_table.capacity() >= max {
+                            None
+                        } else {
+                            Some(max)
+                        }
                     }
-                } else {
-                    Some(double)
+                    Some(_) | None => Some(double),
                 }
             } else {
                 None
@@ -135,8 +134,8 @@ mod test {
     fn gc_respects_max_table_size() {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let max = 8 * REGION_SIZE;
-        let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
-            .with_max_table_size(max);
+        let holder =
+            ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1).with_max_table_size(max);
 
         let mut acc = holder.one();
         for v in 0..(REGION_SIZE * 4) {

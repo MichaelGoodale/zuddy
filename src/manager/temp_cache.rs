@@ -84,7 +84,8 @@ where
 
         match old_value {
             Some((old_key, old_value)) => {
-                self.size.fetch_add(key_size + value_size, Ordering::Relaxed);
+                self.size
+                    .fetch_add(key_size + value_size, Ordering::Relaxed);
                 let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
                 let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
                 self.size
@@ -293,8 +294,8 @@ mod tests {
         assert!(cache.size.load(Ordering::Acquire) > 4096);
 
         cache.insert(key.clone(), 0);
-        let size = cache.size.load(Ordering::Acquire) as u64;
-        assert!(size > 0 && size < 4096);
+        let size = cache.size.load(Ordering::Acquire);
+        assert!(0 < size && size < 4096);
         assert!(cache.cache.get(&key).is_some());
     }
 
