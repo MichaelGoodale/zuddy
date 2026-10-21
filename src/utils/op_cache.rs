@@ -12,6 +12,8 @@ use std::{
     },
 };
 
+use mem_dbg::{MemSize, SizeFlags};
+
 ///A slot of an [`OpCache`].
 struct Slot<K, V> {
     generation: u64,
@@ -43,8 +45,8 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
     table: RwLock<Table<K, V>>,
     hasher: S,
     generation: AtomicU64,
-    ///Parity of the slots to drop in the next [`clear_half`](OpCache::clear_half).
     wipe_odd: AtomicBool,
+    pub(crate) size: AtomicU64,
 }
 
 impl<K: Hash, V> Table<K, V> {
@@ -62,7 +64,7 @@ impl<K, V, S> OpCache<K, V, S> {
     }
 }
 
-impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
+impl<K: Hash + Eq + MemSize, V: Clone + MemSize, S: BuildHasher> OpCache<K, V, S> {
     ///Returns the value stored for `key`, or `None` if it is not cached.
     ///
     ///# Panics
@@ -80,32 +82,43 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
         None
     }
 
-    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
-        self.insert_with_size(key, value, 0)
-    }
-
-    ///Inserts a key value pair into the cache, overwriting any hash collisions,
-    ///tracking `size_in_bytes` as the memory usage of the entry.
+    ///Inserts a key value pair into the cache, overwriting any hash collisions.
     ///
-    ///Returns the entry which was previously stored in the collided slot,
-    ///if it was visible.
+    ///Returns the entry which was previously stored in the collided slot.
     ///
     ///See [`clear_half`](OpCache::clear_half) for a way to reclaim tracked memory.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
-    pub fn insert_with_size(&self, key: K, value: V, size_in_bytes: u64) -> Option<(K, V)> {
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
+        let key_size = key.mem_size(SizeFlags::default()) as u64;
+        let value_size = value.mem_size(SizeFlags::default()) as u64;
+        let size = key_size + value_size;
         let table = self.table.read().unwrap();
         let slot = table.get(&key, &self.hasher);
         let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
         let old = if guard.generation == generation {
-            guard.entry.take()
+            match guard.entry.take() {
+                Some((old_key, old_value)) => {
+                    let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
+                    let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
+                    self.size
+                        .fetch_add(key_size + value_size, Ordering::Relaxed);
+                    self.size
+                        .fetch_sub(old_key_size + old_value_size, Ordering::Relaxed);
+                    Some((old_key, old_value))
+                }
+                None => {
+                    self.size.fetch_add(size, Ordering::Relaxed);
+                    None
+                }
+            }
         } else {
+            self.size.fetch_add(size, Ordering::Relaxed);
             None
         };
         guard.generation = generation;
-        guard.size = size_in_bytes;
         guard.entry = Some((key, value));
         old
     }
@@ -131,34 +144,11 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    ///Empties the cache, dropping all stored entries and freeing their memory.
+    /// Drops half of the hashtable
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
-    #[cfg(test)]
-    fn clear_memory(&self) {
-        let table = self.table.write().unwrap();
-        for slot in &table.slots {
-            let mut guard = slot.write().unwrap();
-            guard.entry = None;
-            guard.size = 0;
-        }
-    }
-
-    ///Drops roughly half the stored entries (chosen by slot parity, which is
-    ///uniformly spread by hashing), freeing their memory in place.
-    ///
-    ///The parity alternates between calls so that no half of the table can
-    ///become a permanent refuge that never gets wiped.
-    ///
-    ///Returns the total tracked memory usage in bytes of the dropped entries.
-    ///
-    ///Entries from previous generations are dropped and counted too, since they
-    ///still occupy memory.
-    ///
-    ///# Panics
-    ///May panic if an internal lock is poisoned.
-    pub fn clear_half(&self) -> u64 {
+    pub fn clear_half(&self) {
         let wipe_odd = self.wipe_odd.fetch_xor(true, Ordering::Release);
         let table = self.table.read().unwrap();
         let mut freed = 0;
@@ -171,7 +161,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
                 }
             }
         }
-        freed
+        self.size.fetch_sub(freed, Ordering::Relaxed);
     }
 
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
@@ -221,6 +211,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             hasher,
             generation: AtomicU64::new(1),
             wipe_odd: AtomicBool::new(false),
+            size: AtomicU64::new(0),
         }
     }
 }

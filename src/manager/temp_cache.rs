@@ -6,7 +6,7 @@ use std::{
 
 use crate::utils::op_cache::OpCache;
 use ahash::RandomState;
-use mem_dbg::{MemSize, SizeFlags};
+use mem_dbg::MemSize;
 
 use crate::{SetFamily, ZddHolder, manager::ZddIndex, utils::UsizeOrPositiveInfinity};
 
@@ -15,7 +15,6 @@ pub(crate) struct TempCache<'a, V: Eq + Hash, K, T = ZddIndex<V>> {
     holder: &'a ZddHolder<V>,
     cache: OpCache<K, T, RandomState>,
     generation: AtomicU64,
-    size: AtomicU64,
 }
 
 pub trait TempCacheItem<'a, V: Eq + Hash> {
@@ -44,7 +43,7 @@ where
     fn clear_if_not_current(&self) {
         let current = self.holder.current_generation();
         let our_gen = self.generation.load(Ordering::Acquire);
-        let current_size = self.size.load(Ordering::Acquire);
+        let current_size = self.cache.size.load(Ordering::Acquire);
 
         if current != our_gen
             && self
@@ -52,19 +51,11 @@ where
                 .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
         {
-            //Entries from before the GC are stale but keep occupying memory, so only
-            //invalidate them cheaply and keep counting them towards the cap.
             self.cache.clear();
         }
 
         if self.holder.temp_cache_max.is_some_and(|x| current_size > x) {
-            //Drop roughly half the entries, keeping the accounting in sync via the
-            //tracked sizes. Concurrent wipes are safe: each entry is only dropped
-            //and counted once.
-            let freed = self.cache.clear_half();
-            if freed > 0 {
-                self.size.fetch_sub(freed, Ordering::Release);
-            }
+            self.cache.clear_half();
         }
     }
 
@@ -78,25 +69,8 @@ where
     pub fn insert(&self, key: K, value: T::Output) -> T::Output {
         self.clear_if_not_current();
         let inner_value = T::from_gc(&value);
-        let key_size = key.mem_size(SizeFlags::default()) as u64;
-        let value_size = inner_value.mem_size(SizeFlags::default()) as u64;
 
-        let old_value = self.cache.insert_with_size(key, inner_value, key_size + value_size);
-
-        match old_value {
-            Some((old_key, old_value)) => {
-                self.size
-                    .fetch_add(key_size + value_size, Ordering::Relaxed);
-                let old_key_size = old_key.mem_size(SizeFlags::default()) as u64;
-                let old_value_size = old_value.mem_size(SizeFlags::default()) as u64;
-                self.size
-                    .fetch_sub(old_key_size + old_value_size, Ordering::Relaxed);
-            }
-            None => {
-                self.size
-                    .fetch_add(key_size + value_size, Ordering::Relaxed);
-            }
-        }
+        self.cache.insert(key, inner_value);
 
         value
     }
@@ -118,7 +92,6 @@ impl<V: Eq + Hash> ZddHolder<V> {
             holder: self,
             cache: OpCache::with_hasher_and_capacity(capacity, RandomState::default()),
             generation: AtomicU64::from(self.current_generation()),
-            size: AtomicU64::new(0),
         }
     }
 }
@@ -296,7 +269,7 @@ mod tests {
 
         //Without the cap, the size would be ~80_000. The cap must have cleared
         //the cache along the way, so the counter is far below that.
-        let size = cache.size.load(Ordering::Acquire);
+        let size = cache.cache.size.load(Ordering::Acquire);
         assert!(0 < size && size < 4096 + 1000, "size was {size}");
     }
 
@@ -325,12 +298,11 @@ mod debug_tests {
     fn temp_cache_size_stays_bounded_under_repeated_wipes() {
         let mut holder = ZddHolder::<usize>::new();
         holder.set_temp_cache_size(Some(4096));
-        let cache: TempCache<'_, usize, Vec<usize>, usize> =
-            holder.create_temporary_cache(1024);
+        let cache: TempCache<'_, usize, Vec<usize>, usize> = holder.create_temporary_cache(1024);
         let entry_size = 840;
         for i in 0..1000usize {
             cache.insert((0..100).chain([i]).collect(), i);
-            let size = cache.size.load(Ordering::Acquire);
+            let size = cache.cache.size.load(Ordering::Acquire);
             assert!(
                 size < 4096 + 2 * entry_size,
                 "size {size} escaped the cap at insert {i}"

@@ -4,6 +4,7 @@ use std::{
 };
 
 use ahash::RandomState;
+use mem_dbg::MemSize;
 
 use crate::utils::op_cache::OpCache;
 mod garbage;
@@ -221,6 +222,18 @@ pub(crate) enum SizeValue {
     Max(usize),
     Bounds(UsizeOrPositiveInfinity, usize),
     EmptySet(bool),
+}
+
+impl MemSize for SizeValue {
+    fn mem_size_rec(&self, _: mem_dbg::SizeFlags, _: &mut mem_dbg::HashMap<usize, usize>) -> usize {
+        core::mem::size_of::<Self>()
+    }
+}
+
+impl<V> MemSize for SizeKey<V> {
+    fn mem_size_rec(&self, _: mem_dbg::SizeFlags, _: &mut mem_dbg::HashMap<usize, usize>) -> usize {
+        core::mem::size_of::<Self>()
+    }
 }
 
 impl SizeValue {
