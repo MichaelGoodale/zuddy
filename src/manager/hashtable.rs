@@ -60,11 +60,10 @@ impl HashEntry {
     }
 }
 
-///An iterator over hashtable slots in probe order, wrapping past the
-///terminal slots 0 and 1.
+///Iterate over `n_slot` ids starting at `s`, skipping 0, 1.
 struct ProbeSlots {
     s: usize,
-    n: usize,
+    n_slots: usize,
     left: usize,
 }
 
@@ -76,7 +75,7 @@ impl Iterator for ProbeSlots {
             return None;
         }
         let s = self.s;
-        self.s = if s + 1 >= self.n { 2 } else { s + 1 };
+        self.s = if s + 1 >= self.n_slots { 2 } else { s + 1 };
         self.left -= 1;
         Some(s)
     }
@@ -217,7 +216,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let n = self.capacity();
         ProbeSlots {
             s: self.bucket_start(h),
-            n,
+            n_slots: n,
             left: n,
         }
     }
