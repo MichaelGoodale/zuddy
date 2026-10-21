@@ -60,6 +60,27 @@ impl HashEntry {
     }
 }
 
+///Iterate over `n_slot` ids starting at `s`, skipping 0, 1.
+struct ProbeSlots {
+    s: usize,
+    n_slots: usize,
+    left: usize,
+}
+
+impl Iterator for ProbeSlots {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.left == 0 {
+            return None;
+        }
+        let s = self.s;
+        self.s = if s + 1 >= self.n_slots { 2 } else { s + 1 };
+        self.left -= 1;
+        Some(s)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct HashTable<V> {
     slots: Slots,
@@ -178,26 +199,30 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         unsafe { &*self.data.get() }.len()
     }
 
-    fn hash(&self, data: &RawZddData<V>) -> u32 {
+    fn hash(data: &RawZddData<V>) -> u32 {
         let mut h = ahash::AHasher::default();
         data.hash(&mut h);
-        let hash = h.finish().saturating_add(2);
-        let h = (hash & ((1_u64 << N_BITS_FOR_HASH) - 1)) % u64::try_from(self.capacity()).unwrap();
-        h as u32
+        let hash = h.finish();
+        (hash & ((1_u64 << N_BITS_FOR_HASH) - 1)) as u32
+    }
+    #[must_use]
+    fn bucket_start(&self, h: u32) -> usize {
+        let s = ((u64::from(h) * self.capacity() as u64) >> N_BITS_FOR_HASH) as usize;
+        s.max(2)
+    }
+
+    ///The slots to probe for a hash, in order, wrapping past the terminals.
+    fn probe_slots(&self, h: u32) -> ProbeSlots {
+        let n = self.capacity();
+        ProbeSlots {
+            s: self.bucket_start(h),
+            n_slots: n,
+            left: n,
+        }
     }
 
     fn hashes(&self) -> &Vec<AtomicU64> {
         unsafe { &*self.hashes.get() }
-    }
-
-    fn probe(&self, h: u32) -> impl Iterator<Item = (usize, HashEntry)> {
-        let start = usize::try_from(h).unwrap();
-        self.hashes()
-            .iter()
-            .enumerate()
-            .skip(start)
-            .chain(self.hashes().iter().enumerate().take(start).skip(2))
-            .map(|(i, h)| (i, HashEntry(h.load(Acquire))))
     }
 
     fn equal_at_index(&self, i: usize, data: &RawZddData<V>) -> bool {
@@ -226,10 +251,12 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         data: RawZddData<V>,
     ) -> Result<(usize, Option<usize>), FullTable<V>> {
         let read = self.read_table();
-        let h = self.hash(&data);
+        let h = Self::hash(&data);
+        let hashes = self.hashes();
         let mut index = 0;
 
-        for (probe_length, (s, mut v)) in self.probe(h).enumerate() {
+        for (probe_length, s) in self.probe_slots(h).enumerate() {
+            let mut v = HashEntry(hashes[s].load(Acquire));
             if v.is_empty() {
                 if index == 0 {
                     //will only happen once so maybe there's a way to avoid the clone here
@@ -243,12 +270,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                         *h = Some(data.clone());
                     }
                 }
-                match self.hashes()[s].compare_exchange(
-                    0,
-                    HashEntry::new(index, h).0,
-                    Release,
-                    Relaxed,
-                ) {
+                match hashes[s].compare_exchange(0, HashEntry::new(index, h).0, Release, Relaxed) {
                     Ok(_) => {
                         return Ok((index, Some(probe_length)));
                     }
@@ -277,7 +299,14 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         let size = resize_to.unwrap_or(self.capacity());
 
         unsafe {
-            *self.hashes.get() = zeroed_atomic(size);
+            let hashes = &mut *self.hashes.get();
+            if hashes.len() < size {
+                *hashes = zeroed_atomic(size);
+            } else {
+                for h in hashes.iter() {
+                    h.store(0, Relaxed);
+                }
+            }
         }
 
         if let Some(size) = resize_to {
@@ -307,11 +336,11 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
                 .as_ref()
         }
         .expect("A marked value is None!");
-        let h = self.hash(data);
+        let h = Self::hash(data);
         let hash_entry = HashEntry::new(index, h);
-
-        for (s, _) in self.probe(h) {
-            match self.hashes()[s].compare_exchange(0, hash_entry.0, Release, Relaxed) {
+        let hashes = self.hashes();
+        for s in self.probe_slots(h) {
+            match hashes[s].compare_exchange(0, hash_entry.0, Release, Relaxed) {
                 Ok(_) => {
                     return true;
                 }
@@ -526,6 +555,31 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
             assert_eq!(map.len(), used_chars.len());
         }
         Ok(())
+    }
+
+    #[test]
+    fn full_table_returns_error_not_hang() {
+        let table = HashTable::<u32>::new(REGION_SIZE, 1);
+        let bound = table.capacity() + 1;
+        let mut inserted = 0;
+        let mut found_err = false;
+        for i in 0..bound {
+            let r = table.find_or_insert(RawZddData {
+                value: u32::try_from(i).unwrap(),
+                lo: ZddIndex::from(0),
+                hi: ZddIndex::from(1),
+            });
+            if let Err(FullTable { size, .. }) = r {
+                assert_eq!(size, table.capacity());
+                found_err = true;
+                break;
+            }
+            inserted += 1;
+        }
+        assert!(
+            found_err,
+            "Inserted {inserted} of {bound} without a FullTable error"
+        );
     }
 
     #[test]
