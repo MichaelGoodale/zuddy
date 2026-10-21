@@ -8,14 +8,17 @@ use std::{
     hash::{BuildHasher, Hash},
     sync::{
         RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+
+use mem_dbg::{MemSize, SizeFlags};
 
 ///A slot of an [`OpCache`].
 struct Slot<K, V> {
     generation: u64,
     entry: Option<(K, V)>,
+    size: u64,
 }
 
 impl<K, V> Default for Slot<K, V> {
@@ -23,6 +26,7 @@ impl<K, V> Default for Slot<K, V> {
         Self {
             generation: 0,
             entry: None,
+            size: 0,
         }
     }
 }
@@ -40,6 +44,8 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
     table: RwLock<Table<K, V>>,
     hasher: S,
     generation: AtomicU64,
+    wipe_odd: AtomicBool,
+    pub(crate) size: AtomicU64,
 }
 
 impl<K: Hash, V> Table<K, V> {
@@ -57,7 +63,7 @@ impl<K, V, S> OpCache<K, V, S> {
     }
 }
 
-impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
+impl<K: Hash + Eq + MemSize, V: Clone + MemSize, S: BuildHasher> OpCache<K, V, S> {
     ///Returns the value stored for `key`, or `None` if it is not cached.
     ///
     ///# Panics
@@ -77,8 +83,9 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
 
     ///Inserts a key value pair into the cache, overwriting any hash collisions.
     ///
-    ///Returns the entry which was previously stored in the collided slot,
-    ///if it was visible.
+    ///Returns the entry which was previously stored in the collided slot.
+    ///
+    ///See [`clear_half`](OpCache::clear_half) for a way to reclaim tracked memory.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
@@ -87,6 +94,14 @@ impl<K: Hash + Eq, V: Clone, S: BuildHasher> OpCache<K, V, S> {
         let slot = table.get(&key, &self.hasher);
         let generation = self.current_generation();
         let mut guard = slot.write().unwrap();
+
+        let key_size = key.mem_size(SizeFlags::default()) as u64;
+        let value_size = value.mem_size(SizeFlags::default()) as u64;
+        let size = key_size + value_size;
+        self.size.fetch_sub(guard.size, Ordering::Relaxed);
+        self.size.fetch_add(size, Ordering::Relaxed);
+        guard.size = size;
+
         let old = if guard.generation == generation {
             guard.entry.take()
         } else {
@@ -118,6 +133,26 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    /// Drops half of the hashtable
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn clear_half(&self) {
+        let wipe_odd = self.wipe_odd.fetch_xor(true, Ordering::Release);
+        let table = self.table.read().unwrap();
+        let mut freed = 0;
+        for (i, slot) in table.slots.iter().enumerate() {
+            if i % 2 == usize::from(wipe_odd) {
+                let mut guard = slot.write().unwrap();
+                if guard.entry.take().is_some() {
+                    freed += guard.size;
+                    guard.size = 0;
+                }
+            }
+        }
+        self.size.fetch_sub(freed, Ordering::Relaxed);
+    }
+
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
     ///
     ///# Panics
@@ -127,8 +162,14 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         if self.table.read().unwrap().slots.len() >= n_slots {
             return;
         }
+
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
+            //All entries (and their tracked bytes) are discarded by the resize.
+            self.size.store(
+                u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
+                Ordering::Relaxed,
+            );
             *table = Table {
                 slots: (0..n_slots).map(|_| RwLock::default()).collect(),
             };
@@ -156,14 +197,16 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///The capacity is rounded up to a power of two.
     #[must_use]
     pub fn with_hasher_and_capacity(capacity: usize, hasher: S) -> Self {
+        let n = slot_capacity(capacity);
         Self {
             table: RwLock::new(Table {
-                slots: (0..slot_capacity(capacity))
-                    .map(|_| RwLock::default())
-                    .collect(),
+                slots: (0..n).map(|_| RwLock::default()).collect(),
             }),
             hasher,
             generation: AtomicU64::new(1),
+            wipe_odd: AtomicBool::new(false),
+            //Account for `generation` and `size` in each slots
+            size: AtomicU64::new(u64::try_from(n * core::mem::size_of::<u64>() * 2).unwrap()),
         }
     }
 }

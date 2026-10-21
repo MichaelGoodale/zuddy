@@ -56,8 +56,18 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
     pub fn gc(&self, force_resize: bool) {
         if self.uniq_table.start_gc() {
             self.generation.fetch_add(1, Ordering::Relaxed);
+            let double = self.uniq_table.capacity() * 2;
             let resize_to = if force_resize || self.uniq_table.usage() > 0.5 {
-                Some(self.uniq_table.capacity() * 2)
+                match self.max_table_size {
+                    Some(max) if double > max => {
+                        if self.uniq_table.capacity() >= max {
+                            None
+                        } else {
+                            Some(max)
+                        }
+                    }
+                    Some(_) | None => Some(double),
+                }
             } else {
                 None
             };
@@ -113,9 +123,59 @@ fn mark<V: Send + Sync + Eq + Hash + Clone>(
 
 #[cfg(test)]
 mod test {
+
     use super::*;
     use crate::SetFamily;
     use rayon::prelude::*;
+
+    fn fill_table(holder: &ZddHolder<usize>, range: std::ops::Range<usize>) {
+        for i in range {
+            let (idx, _) = holder
+                .uniq_table
+                .find_or_insert(RawZddData {
+                    value: i,
+                    lo: ZddIndex::from(0),
+                    hi: ZddIndex::from(1),
+                })
+                .expect("Table should not be full!");
+            holder.uniq_table.inc_count(idx);
+        }
+    }
+
+    ///The unique table grows to exactly `max_table_size` and then stops.
+    #[test]
+    fn gc_respects_max_table_size() {
+        use crate::manager::hashtable::slots::REGION_SIZE;
+        let max = 2 * REGION_SIZE;
+        let holder =
+            ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1).with_max_table_size(max);
+
+        fill_table(&holder, 2..(REGION_SIZE - 2));
+        assert!(holder.uniq_table.usage() > 0.5);
+
+        holder.gc(false);
+        assert_eq!(holder.stats().table_size, max, "must grow to exactly max");
+
+        fill_table(&holder, REGION_SIZE..(max - REGION_SIZE));
+        holder.gc(false);
+        assert_eq!(
+            holder.stats().table_size,
+            max,
+            "must not grow past max when full"
+        );
+    }
+
+    ///Once the capped table is full, `get_node` must panic rather than loop forever.
+    #[test]
+    #[should_panic(expected = "The unique table is full at its maximum size")]
+    fn get_node_panics_when_capped_table_is_full() {
+        use crate::manager::hashtable::slots::REGION_SIZE;
+        let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
+            .with_max_table_size(REGION_SIZE);
+
+        fill_table(&holder, 0..(REGION_SIZE - 2));
+        holder.get_node(usize::MAX, holder.zero(), holder.one());
+    }
 
     ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
     ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.

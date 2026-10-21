@@ -4,6 +4,7 @@ use std::{
 };
 
 use ahash::RandomState;
+use mem_dbg::MemSize;
 
 use crate::utils::op_cache::OpCache;
 mod garbage;
@@ -29,6 +30,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
+    max_table_size: Option<usize>,
     id: Uuid,
 }
 
@@ -44,6 +46,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     pub fn with_capacity(n: usize) -> ZddHolder<V> {
         Self::with_capacity_and_pools(n, rayon::current_num_threads())
     }
+
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn with_capacity_and_pools(n: usize, n_pools: usize) -> ZddHolder<V> {
@@ -56,6 +59,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
                 RandomState::default(),
             ),
             temp_cache_max: None,
+            max_table_size: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
                 RandomState::default(),
@@ -78,6 +82,23 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn with_temp_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.temp_cache_max = Some(size_in_bytes);
+        self
+    }
+
+    ///The current maximum number of nodes the unique table may grow to. If `None`, there is no limit.
+    pub fn max_table_size(&self) -> Option<usize> {
+        self.max_table_size
+    }
+
+    ///Changes the maximum number of nodes in the manager. If `None`, there is no size limit.
+    pub fn set_max_table_size(&mut self, size: Option<usize>) {
+        self.max_table_size = size;
+    }
+
+    ///Builder style function to set the maximum number of nodes of the manager
+    #[must_use]
+    pub fn with_max_table_size(mut self, size: usize) -> Self {
+        self.max_table_size = Some(size);
         self
     }
 
@@ -201,6 +222,18 @@ pub(crate) enum SizeValue {
     Max(usize),
     Bounds(UsizeOrPositiveInfinity, usize),
     EmptySet(bool),
+}
+
+impl MemSize for SizeValue {
+    fn mem_size_rec(&self, _: mem_dbg::SizeFlags, _: &mut mem_dbg::HashMap<usize, usize>) -> usize {
+        core::mem::size_of::<Self>()
+    }
+}
+
+impl<V> MemSize for SizeKey<V> {
+    fn mem_size_rec(&self, _: mem_dbg::SizeFlags, _: &mut mem_dbg::HashMap<usize, usize>) -> usize {
+        core::mem::size_of::<Self>()
+    }
 }
 
 impl SizeValue {
