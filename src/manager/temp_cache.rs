@@ -41,20 +41,26 @@ where
     T: TempCacheItem<'a, V> + MemSize + Clone,
 {
     fn clear_if_not_current(&self) {
-        let current = self.holder.current_generation();
         let our_gen = self.generation.load(Ordering::Acquire);
-        let current_size = self.cache.size.load(Ordering::Acquire);
-
-        if current != our_gen
+        if self.holder.current_generation() != our_gen
             && self
                 .generation
-                .compare_exchange(our_gen, current, Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(
+                    our_gen,
+                    self.holder.current_generation(),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
         {
             self.cache.clear();
         }
 
-        if self.holder.temp_cache_max.is_some_and(|x| current_size > x) {
+        if self
+            .holder
+            .temp_cache_max
+            .is_some_and(|x| self.cache.size.load(Ordering::Acquire) > x)
+        {
             self.cache.clear_half();
         }
     }

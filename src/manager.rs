@@ -83,7 +83,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         }
     }
 
-    ///The current maximum size of temporary caches
+    ///The current maximum size of temporary caches, `None` meaning unlimited
     pub fn temp_cache_size(&self) -> Option<u64> {
         self.temp_cache_max
     }
