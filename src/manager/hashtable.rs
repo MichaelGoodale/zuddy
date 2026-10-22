@@ -465,6 +465,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_reader_slips_past_gc_pause() {
         let table = Arc::new(HashTable::<char>::new(1 << 12, 2));
         let stop = Arc::new(AtomicBool::new(false));
@@ -523,6 +524,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn hash_table_with_other_pool() -> Result<(), FullTable<char>> {
         for _ in 0..20 {
             let hash_table = HashTable::<char>::new(100, 8);
@@ -576,6 +578,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn hash_table() -> Result<(), FullTable<char>> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
         let hash_table = HashTable::<char>::new(100, 8);

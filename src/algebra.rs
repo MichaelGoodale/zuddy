@@ -676,6 +676,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_offset() {
         let holder = ZddHolder::new();
         let ops = [
@@ -705,6 +706,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_onset() {
         let holder = ZddHolder::new();
 
@@ -730,6 +732,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_insert() {
         let holder = ZddHolder::new();
 
@@ -756,6 +759,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_insert_as_superset() {
         let holder = ZddHolder::new();
 
@@ -796,6 +800,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_change() {
         let holder = ZddHolder::new();
         let ops = [
@@ -821,6 +826,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_intersect() {
         let holder = ZddHolder::new();
         let ops = [
@@ -847,6 +853,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_difference() {
         let holder = ZddHolder::new();
         let ops = [
@@ -874,6 +881,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_union() {
         let holder = ZddHolder::new();
         let ops = [

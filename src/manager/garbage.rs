@@ -179,6 +179,7 @@ mod test {
     ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
     ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gc_during_parallel_always_completes() {
         for _ in 0..20 {
             let holder = ZddHolder::<usize>::with_capacity(600);
