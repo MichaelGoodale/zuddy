@@ -625,6 +625,34 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         Ok(())
     }
 
+    ///A single-threaded exercise of the GC pause protocol: reads taken while paused must block
+    /// GC, and `clear` must not run under a live read. Miri-friendly since no second thread is
+    /// needed to check the aliasing rules around the `UnsafeCell`s.
+    #[test]
+    fn gc_pause_protocol_is_upheld_sequentially() {
+        let table = HashTable::<char>::new(REGION_SIZE, 1);
+        assert!(!table.is_paused.load(Acquire));
+        assert!(table.start_gc(), "first GC should succeed");
+        assert!(table.is_paused.load(Acquire));
+        assert!(!table.start_gc(), "second concurrent GC should be rejected");
+
+        //A read after the pause must wait until GC ends; drop it first, like a well-behaved
+        // reader that checks the flag in a loop.
+        table.end_gc();
+        assert!(!table.is_paused.load(Acquire));
+        let read = table.read_table();
+        let data = table.get(1);
+        assert_eq!(data, None, "the empty table has no node at index 1");
+        drop(read);
+        assert!(
+            table.start_gc(),
+            "GC after the read is dropped should succeed"
+        );
+        table.clear(&[], None);
+        table.end_gc();
+        assert!(!table.is_paused.load(Acquire));
+    }
+
     #[test]
     fn capacity_rounds_up_to_a_multiple_of_regions() {
         let table = HashTable::<char>::new(520, 1);

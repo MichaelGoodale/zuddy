@@ -226,3 +226,95 @@ impl Slots {
         unsafe { &*self.current_region.get() }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    ///Reserving and freeing slots must maintain a consistent view of which slots are taken, and
+    /// `clear` must reset that view to exactly the marked set. Single-threaded so Miri can check
+    /// the bit and index arithmetic behind the `UnsafeCell`s.
+    #[test]
+    fn slot_allocator_matches_shadow_model() {
+        //With a single pool thread, the thread can claim every region, so the full table is
+        // reachable. Indexes 0 and 1 are reserved for the terminals and never handed out.
+        let size = 4 * REGION_SIZE;
+        let slots = Slots::new(size, 1);
+
+        let mut reserved = std::collections::HashSet::new();
+        for _ in 0..size - 2 {
+            let i = slots.reserve_bucket().expect("table is not yet full");
+            assert!(reserved.insert(i), "slot {i} reserved twice");
+        }
+        //Indexes 0 and 1 are reserved for the terminals and never handed out.
+        assert!(!reserved.contains(&0) && !reserved.contains(&1));
+        assert_eq!(slots.n_used(), reserved.len() + 2);
+        assert_eq!(
+            slots.reserve_bucket(),
+            None,
+            "all buckets but the terminals are taken"
+        );
+
+        //Freed slots in the thread's current region are reused on the next reserve; slots in
+        // other regions stay stranded until a `clear`, which is what makes a full table trigger
+        // GC.
+        let thread_id = slots.thread_id();
+        let current_region = slots.current_region()[thread_id].load(Relaxed);
+        let mut freed_in_current_region = vec![];
+        for i in (current_region * REGION_SIZE..(current_region + 1) * REGION_SIZE).step_by(7) {
+            slots.free_bucket(i);
+            assert!(reserved.remove(&i));
+            freed_in_current_region.push(i);
+        }
+        for expected in freed_in_current_region {
+            let i = slots
+                .reserve_bucket()
+                .expect("freed slots in the current region are reused");
+            assert_eq!(i, expected, "freed slots are reused first");
+            assert!(reserved.insert(i));
+        }
+
+        //clear must reset the taken set to exactly the marked indexes plus the terminals:
+        // draining the allocator afterwards must hand out every other slot, and never a marked
+        // one.
+        let marked: Vec<usize> = (13..100).step_by(3).collect();
+        slots.clear(&marked, Some(2 * size));
+        assert_eq!(slots.n_used(), marked.len() + 2);
+        let mut drained = std::collections::HashSet::new();
+        while let Some(i) = slots.reserve_bucket() {
+            assert!(
+                !marked.contains(&i),
+                "marked slot {i} handed out after clear"
+            );
+            assert!(drained.insert(i), "slot {i} reserved twice after clear");
+        }
+        //The terminal indexes 0 and 1 are re-marked by clear and never handed out.
+        let expected_free: std::collections::HashSet<usize> = (0..2 * size)
+            .filter(|i| !marked.contains(i) && !matches!(i, 0 | 1))
+            .collect();
+        assert_eq!(
+            drained, expected_free,
+            "after clear every unmarked slot is handed out"
+        );
+    }
+
+    ///A full walk of the allocator must hand out every valid index exactly once before failing.
+    #[test]
+    fn slot_allocator_exhausts_every_index_once() {
+        let size = 3 * REGION_SIZE;
+        let slots = Slots::new(size, 1);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(i) = slots.reserve_bucket() {
+            assert!(i < size, "reserved index {i} out of bounds");
+            assert!(seen.insert(i), "index {i} handed out twice");
+        }
+        //The two terminal indexes are marked at construction and never handed out.
+        assert_eq!(
+            seen.len(),
+            size - 2,
+            "every index but the terminals handed out"
+        );
+        assert!(!seen.contains(&0) && !seen.contains(&1));
+        assert_eq!(slots.n_used(), size);
+    }
+}

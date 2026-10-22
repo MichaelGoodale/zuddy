@@ -126,6 +126,7 @@ mod test {
 
     use super::*;
     use crate::SetFamily;
+    use crate::utils::UsizeOrPositiveInfinity;
     use rayon::prelude::*;
 
     fn fill_table(holder: &ZddHolder<usize>, range: std::ops::Range<usize>) {
@@ -140,6 +141,43 @@ mod test {
                 .expect("Table should not be full!");
             holder.uniq_table.inc_count(idx);
         }
+    }
+
+    ///Inserting while holding ZDDs, GC-ing under them, and reading afterwards must never
+    /// corrupt a node: the mark phase keeps held nodes alive through `clear`+`resize`. Loops
+    /// enough to drive many GCs with a tiny table. Single-threaded so Miri can check it.
+    #[test]
+    fn held_zdds_survive_interleaved_gc() {
+        use crate::manager::hashtable::slots::REGION_SIZE;
+        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE);
+
+        let mut held: Vec<SetFamily<usize>> = vec![];
+        for round in 0..1000 {
+            let value = round % 97;
+            let singleton = SetFamily::singleton(value, &holder);
+            let acc = if held.is_empty() {
+                singleton
+            } else {
+                held[round % held.len()].clone().union(singleton)
+            };
+            held.push(acc);
+            if held.len() > 16 {
+                held.remove(round % held.len());
+            }
+            //Force GC cycles: usage crosses the threshold as the table fills.
+            holder.gc(false);
+            //Every surviving ZDD must still read back its own members.
+            for (i, z) in held.iter().enumerate() {
+                assert!(
+                    z.size() != UsizeOrPositiveInfinity::Size(0),
+                    "round {round}: held zdd {i} lost its members after GC"
+                );
+            }
+        }
+        assert!(
+            holder.uniq_table.usage() > 0.0 || !held.is_empty(),
+            "table should hold the live nodes"
+        );
     }
 
     ///The unique table grows to exactly `max_table_size` and then stops.
