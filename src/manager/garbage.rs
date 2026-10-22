@@ -157,19 +157,29 @@ mod test {
 
             holder.gc(false);
 
-            for (i, z) in held.iter().enumerate() {
-                let expected: Vec<Vec<usize>> = (0..=i).map(|v| vec![v]).collect();
-                assert_eq!(
-                    z.size().unwrap(),
-                    i + 1,
-                    "held zdd {i} lost members after GC"
-                );
-                assert_eq!(
-                    z.members().collect::<Vec<Vec<usize>>>(),
-                    expected,
-                    "held zdd {i} has wrong members after GC"
-                );
-            }
+            //Members of the newest zdd: the only one that wasn't held over a GC before.
+            let expected: Vec<Vec<usize>> = (0..=value).map(|v| vec![v]).collect();
+            assert_eq!(
+                acc.members().collect::<Vec<Vec<usize>>>(),
+                expected,
+                "round {value}: newest zdd has wrong members after GC"
+            );
+        }
+
+        //One full sweep at the end: everything held since its round must have survived every
+        // GC in between.
+        for (i, z) in held.iter().enumerate() {
+            let expected: Vec<Vec<usize>> = (0..=i).map(|v| vec![v]).collect();
+            assert_eq!(
+                z.size().unwrap(),
+                i + 1,
+                "held zdd {i} lost members after GC"
+            );
+            assert_eq!(
+                z.members().collect::<Vec<Vec<usize>>>(),
+                expected,
+                "held zdd {i} has wrong members after GC"
+            );
         }
     }
 
