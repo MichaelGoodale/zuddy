@@ -142,14 +142,13 @@ mod test {
         }
     }
 
-    ///ZDDs held across a GC must stay readable: the mark phase keeps their nodes alive through
-    /// `clear`+`resize`. Single-threaded so Miri can check it.
+    ///Held ZDDs shouldn't get cleared or changed by gc
     #[test]
     fn held_zdds_survive_interleaved_gc() {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE);
 
-        //Held families {{0}}, {{0},{1}}, {{0},{1},{2}}, ...
+        //Held family  {{0}}, {{0},{1}}, {{0},{1},{2}}, ...
         let mut acc = holder.zero();
         let mut held: Vec<SetFamily<usize>> = vec![];
         for value in 0..100 {
