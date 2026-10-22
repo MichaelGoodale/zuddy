@@ -229,7 +229,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             std::cmp::Ordering::Less => self_lo.intersect(other),
             std::cmp::Ordering::Greater => self.intersect(other_lo),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = holder.pools().join(
+                let (lo, hi) = rayon::join(
                     || self_lo.intersect(other_lo),
                     || self_hi.intersect(other_hi),
                 );
@@ -365,7 +365,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             }
             std::cmp::Ordering::Greater => self.difference(other_lo),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = self.manager.pools().join(
+                let (lo, hi) = rayon::join(
                     || self_lo.difference(other_lo),
                     || self_hi.difference(other_hi),
                 );
@@ -450,9 +450,10 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = holder
-                    .pools()
-                    .join(|| lo.insert(value.clone()), || hi.insert(value.clone()));
+                let (lo, hi) = rayon::join(
+                    || lo.insert(value.clone()),
+                    || hi.insert(value.clone()),
+                );
 
                 holder.get_node(this_val, lo, hi)
             }
@@ -487,7 +488,7 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = holder.pools().join(
+                let (lo, hi) = rayon::join(
                     || lo.insert_as_superset(value.clone()),
                     || hi.insert_as_superset(value.clone()),
                 );
@@ -550,7 +551,7 @@ where
 
     let set = if let Some(top) = higher_or_equal.first() {
         if top > this_val {
-            let (lo, hi) = holder.pools().join(
+            let (lo, hi) = rayon::join(
                 || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
                 || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
             );
@@ -558,7 +559,7 @@ where
         } else {
             higher_or_equal.pop_first();
             // top must be equal since we've checked if it was smaller or bigger.
-            let (lo, hi) = holder.pools().join(
+            let (lo, hi) = rayon::join(
                 || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
                 || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
             );

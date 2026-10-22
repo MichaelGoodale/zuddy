@@ -148,7 +148,7 @@ mod test {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let max = 2 * REGION_SIZE;
         let holder =
-            ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1).with_max_table_size(max);
+            ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(max);
 
         fill_table(&holder, 2..(REGION_SIZE - 2));
         assert!(holder.uniq_table.usage() > 0.5);
@@ -170,7 +170,7 @@ mod test {
     #[should_panic(expected = "The unique table is full at its maximum size")]
     fn get_node_panics_when_capped_table_is_full() {
         use crate::manager::hashtable::slots::REGION_SIZE;
-        let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
+        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE)
             .with_max_table_size(REGION_SIZE);
 
         fill_table(&holder, 0..(REGION_SIZE - 2));
@@ -182,18 +182,15 @@ mod test {
     #[test]
     fn gc_during_parallel_always_completes() {
         for _ in 0..20 {
-            let holder = ZddHolder::<usize>::with_capacity_and_pools(600, 4);
-            let pool = holder.pools();
+            let holder = ZddHolder::<usize>::with_capacity(600);
 
-            pool.install(|| {
-                (0..4).into_par_iter().for_each(|t| {
-                    let mut acc = holder.zero();
-                    for v in 0..26 {
-                        let value = v + t;
-                        acc = acc.union(SetFamily::singleton(value, &holder));
-                        acc = acc.change(value);
-                    }
-                });
+            (0..4).into_par_iter().for_each(|t| {
+                let mut acc = holder.zero();
+                for v in 0..26 {
+                    let value = v + t;
+                    acc = acc.union(SetFamily::singleton(value, &holder));
+                    acc = acc.change(value);
+                }
             });
         }
     }

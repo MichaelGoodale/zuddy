@@ -1,4 +1,3 @@
-use rayon::ThreadPool;
 use std::{
     cell::UnsafeCell,
     fmt::Debug,
@@ -108,10 +107,6 @@ impl<V: Hash + Eq> ZddHolder<V> {
         self.uniq_table.dec_count(i);
     }
 
-    ///Get a reference to the Rayon [`ThreadPool`] used by the manager.
-    pub fn pools(&self) -> &ThreadPool {
-        &self.uniq_table.slots.pools
-    }
 }
 
 impl<V: Hash + Eq> HashTable<V> {
@@ -153,6 +148,8 @@ pub(crate) struct FullTable<V> {
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn new(size: usize, n_pools: usize) -> Self {
+        //No point having more pools than regions, since each pool thread gets its own region.
+        let n_pools = n_pools.min(size.div_ceil(REGION_SIZE)).max(1);
         //ensure size is multiple of region_size
         let size = size
             .max(n_pools * REGION_SIZE)
@@ -401,7 +398,6 @@ mod test {
     };
 
     use super::*;
-    use rayon::ThreadPoolBuilder;
 
     const MOBY: &str = "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.
 
@@ -491,20 +487,18 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         let vals: Vec<_> = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
             .chars()
             .collect();
-        table.slots.pools.install(|| {
-            (0..4).into_par_iter().for_each(|_| {
-                for _ in 0..2_000 {
-                    for &k in &vals {
-                        table
-                            .find_or_insert(RawZddData {
-                                value: k,
-                                lo: ZddIndex::from(k as usize),
-                                hi: ZddIndex::from(0),
-                            })
-                            .expect("Table should not be full!");
-                    }
+        (0..4).into_par_iter().for_each(|_| {
+            for _ in 0..2_000 {
+                for &k in &vals {
+                    table
+                        .find_or_insert(RawZddData {
+                            value: k,
+                            lo: ZddIndex::from(k as usize),
+                            hi: ZddIndex::from(0),
+                        })
+                        .expect("Table should not be full!");
                 }
-            });
+            }
         });
 
         stop.store(true, Relaxed);
@@ -585,22 +579,19 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     #[test]
     fn hash_table() -> Result<(), FullTable<char>> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
-        let pools = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
         let hash_table = HashTable::<char>::new(100, 8);
-        let vals = pools.install(|| {
-            "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
-                .par_chars()
-                .map(|k| {
-                    hash_table
-                        .find_or_insert(RawZddData {
-                            value: k,
-                            lo: ZddIndex::from(k as usize),
-                            hi: ZddIndex::from(0),
-                        })
-                        .map(|(v, _)| (k, v))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+        let vals = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
+            .par_chars()
+            .map(|k| {
+                hash_table
+                    .find_or_insert(RawZddData {
+                        value: k,
+                        lo: ZddIndex::from(k as usize),
+                        hi: ZddIndex::from(0),
+                    })
+                    .map(|(v, _)| (k, v))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         println!("{vals:?}");
         let mut map = HashMap::new();
         for (k, v) in vals {
@@ -611,19 +602,18 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         let hash_table = HashTable::<char>::new(100, 8);
         let used_chars = MOBY.chars().collect::<HashSet<_>>();
 
-        let vals = pools.install(|| {
-            MOBY.par_chars()
-                .map(|k| {
-                    hash_table
-                        .find_or_insert(RawZddData {
-                            value: k,
-                            lo: ZddIndex::from(k as usize),
-                            hi: ZddIndex::from(0),
-                        })
-                        .map(|(v, _)| (k, v))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+        let vals = MOBY
+            .par_chars()
+            .map(|k| {
+                hash_table
+                    .find_or_insert(RawZddData {
+                        value: k,
+                        lo: ZddIndex::from(k as usize),
+                        hi: ZddIndex::from(0),
+                    })
+                    .map(|(v, _)| (k, v))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut map = HashMap::new();
         for (k, v) in vals {
             let old_v = *map.entry(k).or_insert(v);

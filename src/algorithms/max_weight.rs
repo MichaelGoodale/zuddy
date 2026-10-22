@@ -284,7 +284,7 @@ impl<'a, V: Eq + Hash + Clone + Send + Sync> SetFamily<'a, V> {
 
         let (value, lo, hi) = self.get().unwrap();
 
-        let (mut lo_hist, hi_hist) = self.manager().pools().join(
+        let (mut lo_hist, hi_hist) = rayon::join(
             || lo.set_weights_inner(f, cache),
             || hi.set_weights_inner(f, cache),
         );

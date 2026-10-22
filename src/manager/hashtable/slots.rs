@@ -6,8 +6,6 @@ use std::{
     },
 };
 
-use rayon::{ThreadPool, ThreadPoolBuilder};
-
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
     let mut gap = size / n_pools;
     if gap == 0 {
@@ -24,7 +22,6 @@ pub(super) struct Slots {
     current_region: UnsafeCell<Vec<AtomicUsize>>,
     claimed_regions: UnsafeCell<Vec<AtomicBool>>,
     used_data: DataTakenRecord,
-    pub(super) pools: ThreadPool,
     n_pools: usize,
 }
 
@@ -117,24 +114,16 @@ impl Slots {
             claimed_regions[i].store(true, Relaxed);
         }
 
-        let pools = ThreadPoolBuilder::new()
-            .num_threads(n_pools)
-            .build()
-            .unwrap();
-
         Slots {
             claimed_regions: UnsafeCell::new(claimed_regions),
             current_region: UnsafeCell::new(current_region),
             used_data: DataTakenRecord::new(size),
-            pools,
             n_pools,
         }
     }
 
     pub(super) fn thread_id(&self) -> usize {
-        self.pools
-            .current_thread_index()
-            .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
+        rayon::current_thread_index().unwrap_or(0) % self.n_pools
     }
 
     pub(crate) fn n_claimed_regions(&self) -> usize {
