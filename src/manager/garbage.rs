@@ -126,7 +126,6 @@ mod test {
 
     use super::*;
     use crate::SetFamily;
-    use crate::utils::UsizeOrPositiveInfinity;
     use rayon::prelude::*;
 
     fn fill_table(holder: &ZddHolder<usize>, range: std::ops::Range<usize>) {
@@ -143,38 +142,36 @@ mod test {
         }
     }
 
+    ///ZDDs held across a GC must stay readable: the mark phase keeps their nodes alive through
+    /// `clear`+`resize`. Single-threaded so Miri can check it.
     #[test]
     fn held_zdds_survive_interleaved_gc() {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE);
 
+        //Held families {{0}}, {{0},{1}}, {{0},{1},{2}}, ...
+        let mut acc = holder.zero();
         let mut held: Vec<SetFamily<usize>> = vec![];
-        for round in 0..1000 {
-            let value = round % 97;
-            let singleton = SetFamily::singleton(value, &holder);
-            let acc = if held.is_empty() {
-                singleton
-            } else {
-                held[round % held.len()].clone().union(singleton)
-            };
-            held.push(acc);
-            if held.len() > 16 {
-                held.remove(round % held.len());
-            }
-            //Force GC cycles: usage crosses the threshold as the table fills.
+        for value in 0..100 {
+            acc = acc.union(SetFamily::singleton(value, &holder));
+            held.push(acc.clone());
+
             holder.gc(false);
-            //Every surviving ZDD must still read back its own members.
+
             for (i, z) in held.iter().enumerate() {
-                assert!(
-                    z.size() != UsizeOrPositiveInfinity::Size(0),
-                    "round {round}: held zdd {i} lost its members after GC"
+                let expected: Vec<Vec<usize>> = (0..=i).map(|v| vec![v]).collect();
+                assert_eq!(
+                    z.size().unwrap(),
+                    i + 1,
+                    "held zdd {i} lost members after GC"
+                );
+                assert_eq!(
+                    z.members().collect::<Vec<Vec<usize>>>(),
+                    expected,
+                    "held zdd {i} has wrong members after GC"
                 );
             }
         }
-        assert!(
-            holder.uniq_table.usage() > 0.0 || !held.is_empty(),
-            "table should hold the live nodes"
-        );
     }
 
     ///The unique table grows to exactly `max_table_size` and then stops.
