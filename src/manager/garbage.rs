@@ -143,9 +143,6 @@ mod test {
         }
     }
 
-    ///Inserting while holding ZDDs, GC-ing under them, and reading afterwards must never
-    /// corrupt a node: the mark phase keeps held nodes alive through `clear`+`resize`. Loops
-    /// enough to drive many GCs with a tiny table. Single-threaded so Miri can check it.
     #[test]
     fn held_zdds_survive_interleaved_gc() {
         use crate::manager::hashtable::slots::REGION_SIZE;

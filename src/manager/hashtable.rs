@@ -624,11 +624,8 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         Ok(())
     }
 
-    ///A single-threaded exercise of the GC pause protocol: reads taken while paused must block
-    /// GC, and `clear` must not run under a live read. Miri-friendly since no second thread is
-    /// needed to check the aliasing rules around the `UnsafeCell`s.
     #[test]
-    fn gc_pause_protocol_is_upheld_sequentially() {
+    fn cant_pause_gc_more_than_once() {
         let table = HashTable::<char>::new(REGION_SIZE, 1);
         assert!(!table.is_paused.load(Acquire));
         assert!(table.start_gc(), "first GC should succeed");

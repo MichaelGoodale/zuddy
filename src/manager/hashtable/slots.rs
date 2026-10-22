@@ -13,9 +13,8 @@ thread_local! {
 static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
 
 ///For each thread, it assigns it an id, which gradually grows.
-///It returns which "region" the thread should belong to by taking the modulo.
 ///
-///This is so that different threads use different parts of the table.
+///This is modulod by the `n_splits_of_regions` so that all threads are offset to an extent
 fn assign_thread_id(n_splits_of_regions: usize) -> usize {
     THREAD_ID.with(|id| {
         if id.get() == usize::MAX {
@@ -233,13 +232,9 @@ impl Slots {
 mod test {
     use super::*;
 
-    ///Reserving and freeing slots must maintain a consistent view of which slots are taken, and
-    /// `clear` must reset that view to exactly the marked set. Single-threaded so Miri can check
-    /// the bit and index arithmetic behind the `UnsafeCell`s.
     #[test]
-    fn slot_allocator_matches_shadow_model() {
-        //With a single thread, the thread can claim every region, so the full table is
-        // reachable. Indexes 0 and 1 are reserved for the terminals and never handed out.
+    fn freeing_and_using_slots() {
+        //Fill up the table
         let size = 4 * REGION_SIZE;
         let slots = Slots::new(size, 1);
 
@@ -257,9 +252,7 @@ mod test {
             "all buckets but the terminals are taken"
         );
 
-        //Freed slots in the thread's current region are reused on the next reserve; slots in
-        // other regions stay stranded until a `clear`, which is what makes a full table trigger
-        // GC.
+        //Freed slots get recycled for new insertions
         let thread_id = slots.thread_id();
         let current_region = slots.current_region()[thread_id].load(Relaxed);
         let mut freed_in_current_region = vec![];
@@ -276,12 +269,12 @@ mod test {
             assert!(reserved.insert(i));
         }
 
-        //clear must reset the taken set to exactly the marked indexes plus the terminals:
-        // draining the allocator afterwards must hand out every other slot, and never a marked
-        // one.
+        //Clear keeps only the marked (plus terminals)
         let marked: Vec<usize> = (13..100).step_by(3).collect();
         slots.clear(&marked, Some(2 * size));
         assert_eq!(slots.n_used(), marked.len() + 2);
+
+        //Any new insertions are unmarked.
         let mut drained = std::collections::HashSet::new();
         while let Some(i) = slots.reserve_bucket() {
             assert!(
@@ -290,7 +283,6 @@ mod test {
             );
             assert!(drained.insert(i), "slot {i} reserved twice after clear");
         }
-        //The terminal indexes 0 and 1 are re-marked by clear and never handed out.
         let expected_free: std::collections::HashSet<usize> = (0..2 * size)
             .filter(|i| !marked.contains(i) && !matches!(i, 0 | 1))
             .collect();
@@ -300,9 +292,8 @@ mod test {
         );
     }
 
-    ///A full walk of the allocator must hand out every valid index exactly once before failing.
     #[test]
-    fn slot_allocator_exhausts_every_index_once() {
+    fn use_every_possible_slot() {
         let size = 3 * REGION_SIZE;
         let slots = Slots::new(size, 1);
         let mut seen = std::collections::HashSet::new();
@@ -310,7 +301,6 @@ mod test {
             assert!(i < size, "reserved index {i} out of bounds");
             assert!(seen.insert(i), "index {i} handed out twice");
         }
-        //The two terminal indexes are marked at construction and never handed out.
         assert_eq!(
             seen.len(),
             size - 2,
