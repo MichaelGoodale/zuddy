@@ -1,6 +1,7 @@
 //! Repeated unions causing issue with zdds.
 use std::{collections::BTreeSet, fs, path::Path};
 
+use bytesize::ByteSize;
 use clap::Parser;
 use indicatif::ProgressIterator;
 use serde::{Deserialize, Serialize};
@@ -16,11 +17,11 @@ struct WeightedId {
 }
 
 #[derive(Parser)]
-#[command(about = "Repeated unions causing issue with zdds.")]
+#[command(about = "Example bounded join usage to model MG inference code")]
 struct Args {
-    ///Maximum size, in bytes, of the temporary caches used during computation.
-    #[arg(long, default_value_t = 8_u64 << 30)]
-    memory_limit: u64,
+    ///Maximum size of the temporary caches used during computation.
+    #[arg(long, short = 'm')]
+    memory_limit: Option<ByteSize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -30,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     let tree_sets: Vec<Vec<BTreeSet<BTreeSet<WeightedId>>>> =
         ron::from_str(fs::read_to_string(path)?.as_str())?;
     let mut holder = ZddHolder::new();
-    holder.set_temp_cache_size(Some(args.memory_limit));
+    holder.set_temp_cache_size(args.memory_limit.map(|x| x.as_u64()));
 
     let mut zdds = vec![];
     for v in tree_sets.into_iter().progress() {

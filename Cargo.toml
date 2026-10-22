@@ -6,6 +6,7 @@ edition = "2024"
 
 [dependencies]
 ahash = "0.8.12"
+bytesize = "2.7.0"
 indicatif = { version = "0.18.6", features = ["rayon"] }
 mem_dbg = { git = "https://github.com/MichaelGoodale/mem_dbg-rs.git", features = [
   "std",

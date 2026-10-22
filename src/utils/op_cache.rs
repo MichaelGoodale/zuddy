@@ -49,13 +49,11 @@ pub(crate) struct OpCache<K, V, S = RandomState> {
 }
 
 impl<K: Hash, V> Table<K, V> {
-    #[expect(clippy::cast_possible_truncation)]
     fn get<'a, S: BuildHasher>(&'a self, key: &K, hasher: &S) -> &'a RwLock<Slot<K, V>> {
         let h = hasher.hash_one(key);
-        let mask = self.slots.len() - 1;
+        let mask = u64::try_from(self.slots.len() - 1).unwrap();
         // equivalent to % self.slots.len() since length is a power of two.
-        // `mask` is a slot count which always fits in the hashing word on supported targets.
-        let i = (h & u64::try_from(mask).unwrap_or(u64::MAX)) as usize;
+        let i = usize::try_from(h & mask).unwrap();
         &self.slots[i]
     }
 }
@@ -101,8 +99,8 @@ impl<K: Hash + Eq + MemSize, V: Clone + MemSize, S: BuildHasher> OpCache<K, V, S
         let key_size = key.mem_size(SizeFlags::default()) as u64;
         let value_size = value.mem_size(SizeFlags::default()) as u64;
         let size = key_size + value_size;
-        //A single atomic update instead of a subtract followed by an add.
-        self.size.fetch_add(size.wrapping_sub(guard.size), Ordering::Relaxed);
+        self.size
+            .fetch_add(size.wrapping_sub(guard.size), Ordering::Relaxed);
         guard.size = size;
 
         let old = if guard.generation == generation {
