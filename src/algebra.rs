@@ -229,10 +229,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             std::cmp::Ordering::Less => self_lo.intersect(other),
             std::cmp::Ordering::Greater => self.intersect(other_lo),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = rayon::join(
-                    || self_lo.intersect(other_lo),
-                    || self_hi.intersect(other_hi),
-                );
+                let lo = self_lo.intersect(other_lo);
+                let hi = self_hi.intersect(other_hi);
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -365,10 +363,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
             }
             std::cmp::Ordering::Greater => self.difference(other_lo),
             std::cmp::Ordering::Equal => {
-                let (lo, hi) = rayon::join(
-                    || self_lo.difference(other_lo),
-                    || self_hi.difference(other_hi),
-                );
+                let lo = self_lo.difference(other_lo);
+                let hi = self_hi.difference(other_hi);
                 holder.get_node(self_val, lo, hi)
             }
         };
@@ -450,8 +446,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) =
-                    rayon::join(|| lo.insert(value.clone()), || hi.insert(value.clone()));
+                let lo = lo.insert(value.clone());
+                let hi = hi.insert(value.clone());
 
                 holder.get_node(this_val, lo, hi)
             }
@@ -486,10 +482,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = rayon::join(
-                    || lo.insert_as_superset(value.clone()),
-                    || hi.insert_as_superset(value.clone()),
-                );
+                let lo = lo.insert_as_superset(value.clone());
+                let hi = hi.insert_as_superset(value.clone());
 
                 holder.get_node(this_val, lo, hi)
             }
@@ -549,18 +543,14 @@ where
 
     let set = if let Some(top) = higher_or_equal.first() {
         if top > this_val {
-            let (lo, hi) = rayon::join(
-                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
-                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
-            );
+            let lo = extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache);
+            let hi = extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache);
             holder.get_node(this_val, lo, hi)
         } else {
             higher_or_equal.pop_first();
             // top must be equal since we've checked if it was smaller or bigger.
-            let (lo, hi) = rayon::join(
-                || extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache),
-                || extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache),
-            );
+            let lo = extend_as_superset_inner(lo, higher_or_equal.clone(), cache, o_cache);
+            let hi = extend_as_superset_inner(hi, higher_or_equal.clone(), cache, o_cache);
             holder.get_node(this_val, lo.clone(), hi.union(lo))
         }
     } else {

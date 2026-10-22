@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 ahash = "0.8.12"
-indicatif = { version = "0.18.6", features = ["rayon"] }
+indicatif = "0.18.6"
 mem_dbg = { git = "https://github.com/MichaelGoodale/mem_dbg-rs.git", features = [
   "std",
   "derive",
@@ -16,13 +16,13 @@ num-traits = "0.2.19"
 ordered-float = { version = "5.5.0", features = ["serde"] }
 rand = { version = "0.10.1", optional = true }
 rangemap = "1.8.0"
-rayon = "1.12.0"
 recursive = "0.1.1"
 serde = { version = "1.0.229", features = ["serde_derive"] }
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4"] }
 
 [dev-dependencies]
+rayon = "1.12.0"
 itertools = "0.15.0"
 ron = "0.12.2"
 divan = "0.1.21"

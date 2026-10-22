@@ -1,10 +1,29 @@
 use std::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     sync::atomic::{
         AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{Acquire, Relaxed},
     },
 };
+
+thread_local! {
+    static THREAD_ID: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+///Assigns each thread a small id, used to give each thread its own region of the slot allocator.
+///
+///Ids are never reused after thread death, so they are capped by `n_pools` to keep indexing in
+///bounds. Threads beyond the cap share a region, which is correct but more contended.
+fn assign_thread_id(n_pools: usize) -> usize {
+    THREAD_ID.with(|id| {
+        if id.get() == usize::MAX {
+            id.set(NEXT_THREAD_ID.fetch_add(1, Relaxed));
+        }
+        id.get() % n_pools
+    })
+}
+
+static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
 
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
     let mut gap = size / n_pools;
@@ -123,7 +142,7 @@ impl Slots {
     }
 
     pub(super) fn thread_id(&self) -> usize {
-        rayon::current_thread_index().unwrap_or(0) % self.n_pools
+        assign_thread_id(self.n_pools)
     }
 
     pub(crate) fn n_claimed_regions(&self) -> usize {

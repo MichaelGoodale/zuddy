@@ -22,20 +22,13 @@ use crate::{manager::hashtable::HashTable, utils::UsizeOrPositiveInfinity};
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
-///The default number of threads rayon would use, without initializing its global registry.
-///
-///Mirrors `rayon_core::ThreadPoolBuilder::get_num_threads`: `RAYON_NUM_THREADS` (or the
-///deprecated `RAYON_RS_NUM_CPUS`), else `std::thread::available_parallelism`, else 1. Unlike
-///`rayon::current_num_threads`, this never spawns worker threads, keeping Miri happy.
+///A guess at how many threads will access the holder in parallel, used to size the slot
+/// allocator's per-thread regions. Callers doing heavy parallelism should pass their worker
+/// count to [`ZddHolder::with_capacity_and_pools`] instead.
 fn default_num_threads() -> usize {
     let env_var = std::env::var("RAYON_NUM_THREADS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .or_else(|| {
-            std::env::var("RAYON_RS_NUM_CPUS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-        });
+        .and_then(|s| s.parse().ok());
     match env_var {
         Some(x @ 1..) => x,
         _ => std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
