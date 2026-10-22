@@ -211,15 +211,21 @@ where
     K: TempCacheItem<'a, V>,
 {
     fn get(&mut self, node: &K, budget: T) -> Option<NodeInterval<'a, T, V>> {
-        self.clear_if_not_current();
-        self.map
+        if let Some((node, accepted_worst, rejected_best)) = self
+            .map
             .get(node)
             .and_then(|x| x.get(&Infinite::Finite(budget)).cloned())
-            .map(|(node, accepted_worst, rejected_best)| NodeInterval {
+        {
+            return Some(NodeInterval {
                 node: SetFamily::from_set_family(node, self.holder),
                 accepted_worst,
                 rejected_best,
-            })
+            });
+        }
+        //Only pay for the generation/mem checks once the lookup missed: hits can't have been
+        //invalidated since the last check.
+        self.clear_if_not_current();
+        None
     }
 
     fn clear_if_not_current(&mut self) {
