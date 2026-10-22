@@ -88,6 +88,9 @@ pub(super) struct HashTable<V> {
     data: UnsafeCell<Vec<Option<RawZddData<V>>>>,
     counts: UnsafeCell<Vec<AtomicU64>>,
     reading: Vec<AtomicU64>,
+    ///Seqlock version: odd while GC mutates the table, even otherwise. Fast-path readers check
+    ///it around their access instead of maintaining a counter.
+    version: AtomicU64,
     is_paused: AtomicBool,
     paused: Mutex<bool>,
     unpaused_cond_var: Condvar,
@@ -166,6 +169,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             hashes: UnsafeCell::new(zeroed_atomic(size)),
             counts: UnsafeCell::new(zeroed_atomic(size)),
             data: UnsafeCell::new(vec![None; size]),
+            version: AtomicU64::new(0),
             is_paused: AtomicBool::from(false),
             reading: zeroed_atomic(n_pools),
             unpaused_cond_var: Condvar::new(),
@@ -180,6 +184,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
         }
         *paused = true;
         self.is_paused.store(true, SeqCst);
+        //Mark the seqlock odd so fast-path readers retry instead of trusting stale reads.
+        self.version.fetch_add(1, SeqCst);
         drop(paused);
         while self.reading.iter().any(|x| x.load(Acquire) != 0) {
             std::hint::spin_loop();
@@ -190,6 +196,8 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     pub fn end_gc(&self) {
         let mut paused = self.paused.lock().unwrap();
         *paused = false;
+        //Mark the seqlock even again so fast-path readers succeed.
+        self.version.fetch_add(1, SeqCst);
         self.is_paused.store(false, SeqCst);
         drop(paused);
         self.unpaused_cond_var.notify_all();
@@ -234,6 +242,16 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
     }
 
     pub(crate) fn get(&self, i: usize) -> Option<RawZddData<V>> {
+        //Fast path: no GC is in progress (and none can start while we hold no shared state),
+        //so read directly with a version check to catch a GC that raced us.
+        if !self.is_paused.load(Relaxed) {
+            let v1 = self.version.load(Relaxed);
+            let x = unsafe { (&*self.data.get())[i].clone() };
+            if v1.is_multiple_of(2) && self.version.load(Relaxed) == v1 {
+                return x;
+            }
+        }
+        //Slow path: a GC may be (or about to be) in progress; use the reader counter protocol.
         let reading = self.read_table();
         let x = unsafe { (&*self.data.get())[i].clone() };
         drop(reading);
