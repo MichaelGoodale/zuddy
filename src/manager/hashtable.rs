@@ -146,16 +146,15 @@ pub(crate) struct FullTable<V> {
     pub(crate) value: RawZddData<V>,
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
-    pub fn new(size: usize, n_pools: usize) -> Self {
-        //No point having more pools than regions, since each pool thread gets its own region.
-        let n_pools = n_pools.min(size.div_ceil(REGION_SIZE)).max(1);
+    pub fn new(size: usize, n_region_splits: usize) -> Self {
+        let n_region_splits = n_region_splits.min(size.div_ceil(REGION_SIZE)).max(1);
         //ensure size is multiple of region_size
         let size = size
-            .max(n_pools * REGION_SIZE)
-            .div_ceil(n_pools * REGION_SIZE)
-            * n_pools
+            .max(n_region_splits * REGION_SIZE)
+            .div_ceil(n_region_splits * REGION_SIZE)
+            * n_region_splits
             * REGION_SIZE;
-        let slots = Slots::new(size, n_pools);
+        let slots = Slots::new(size, n_region_splits);
 
         HashTable {
             slots,
@@ -163,7 +162,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             counts: UnsafeCell::new(zeroed_atomic(size)),
             data: UnsafeCell::new(vec![None; size]),
             is_paused: AtomicBool::from(false),
-            reading: zeroed_atomic(n_pools),
+            reading: zeroed_atomic(n_region_splits),
             unpaused_cond_var: Condvar::new(),
             paused: Mutex::new(false),
         }

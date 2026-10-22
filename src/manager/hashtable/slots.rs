@@ -10,20 +10,20 @@ thread_local! {
     static THREAD_ID: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
-///Assigns each thread a small id, used to give each thread its own region of the slot allocator.
+static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
+
+///For each thread, it assigns it an id, which gradually grows.
+///It returns which "region" the thread should belong to by taking the modulo.
 ///
-///Ids are never reused after thread death, so they are capped by `n_pools` to keep indexing in
-///bounds. Threads beyond the cap share a region, which is correct but more contended.
-fn assign_thread_id(n_pools: usize) -> usize {
+///This is so that different threads use different parts of the table.
+fn assign_thread_id(n_splits_of_regions: usize) -> usize {
     THREAD_ID.with(|id| {
         if id.get() == usize::MAX {
             id.set(NEXT_THREAD_ID.fetch_add(1, Relaxed));
         }
-        id.get() % n_pools
+        id.get() % n_splits_of_regions
     })
 }
-
-static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
 
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
     let mut gap = size / n_pools;
@@ -41,7 +41,7 @@ pub(super) struct Slots {
     current_region: UnsafeCell<Vec<AtomicUsize>>,
     claimed_regions: UnsafeCell<Vec<AtomicBool>>,
     used_data: DataTakenRecord,
-    n_pools: usize,
+    n_splits_of_regions: usize,
 }
 
 #[derive(Debug)]
@@ -119,10 +119,11 @@ impl DataTakenRecord {
 }
 
 impl Slots {
-    pub(super) fn new(size: usize, n_pools: usize) -> Self {
-        let current_region = generate_current_position(size.div_ceil(REGION_SIZE), n_pools)
-            .map(AtomicUsize::from)
-            .collect::<Vec<_>>();
+    pub(super) fn new(size: usize, n_splits_of_regions: usize) -> Self {
+        let current_region =
+            generate_current_position(size.div_ceil(REGION_SIZE), n_splits_of_regions)
+                .map(AtomicUsize::from)
+                .collect::<Vec<_>>();
 
         let claimed_regions = (0..size.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
@@ -137,18 +138,19 @@ impl Slots {
             claimed_regions: UnsafeCell::new(claimed_regions),
             current_region: UnsafeCell::new(current_region),
             used_data: DataTakenRecord::new(size),
-            n_pools,
+            n_splits_of_regions,
         }
     }
 
     pub(super) fn thread_id(&self) -> usize {
-        assign_thread_id(self.n_pools)
+        assign_thread_id(self.n_splits_of_regions)
     }
 
     pub(crate) fn n_claimed_regions(&self) -> usize {
         let x = unsafe { self.claimed_regions.get().as_ref().unwrap() };
         x.iter().map(|x| usize::from(x.load(Relaxed))).sum()
     }
+
     pub(crate) fn n_regions(&self) -> usize {
         unsafe { self.claimed_regions.get().as_ref() }
             .unwrap()
@@ -197,7 +199,7 @@ impl Slots {
     pub(super) fn clear(&self, marked: &[usize], resize_to: Option<usize>) {
         let n_elements = resize_to.unwrap_or(self.used_data.len() * 64);
         let current_region =
-            generate_current_position(n_elements.div_ceil(REGION_SIZE), self.n_pools)
+            generate_current_position(n_elements.div_ceil(REGION_SIZE), self.n_splits_of_regions)
                 .map(AtomicUsize::from)
                 .collect::<Vec<_>>();
 
@@ -236,7 +238,7 @@ mod test {
     /// the bit and index arithmetic behind the `UnsafeCell`s.
     #[test]
     fn slot_allocator_matches_shadow_model() {
-        //With a single pool thread, the thread can claim every region, so the full table is
+        //With a single thread, the thread can claim every region, so the full table is
         // reachable. Indexes 0 and 1 are reserved for the terminals and never handed out.
         let size = 4 * REGION_SIZE;
         let slots = Slots::new(size, 1);

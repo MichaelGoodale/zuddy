@@ -22,9 +22,7 @@ use crate::{manager::hashtable::HashTable, utils::UsizeOrPositiveInfinity};
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
-///A guess at how many threads will access the holder in parallel, used to size the slot
-/// allocator's per-thread regions. Callers doing heavy parallelism should pass their worker
-/// count to [`ZddHolder::with_capacity_and_pools`] instead.
+///Estimate of the number of threads used by Rayon, without using rayon to avoid miri issues.
 fn default_num_threads() -> usize {
     let env_var = std::env::var("RAYON_NUM_THREADS")
         .ok()
@@ -57,19 +55,20 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     #[must_use]
     pub fn with_capacity(n: usize) -> ZddHolder<V> {
-        Self::with_capacity_and_pools(n, default_num_threads())
+        Self::with_capacity_and_splits(n, default_num_threads())
     }
 
     ///Create a new [`ZddHolder`] to hold various ZDDs.
     ///
-    ///`n_pools` is the number of worker threads that will access the holder in parallel. It is
-    /// only a sizing hint for the internal slot allocator: no threads are spawned.
+    ///`n_region_splits` is how many sub-parts of the table are split up for different threads.
+    ///Typically this should be equal to the number of parallel threads you will be using (by
+    ///default it usess the number of rayon threads)
     #[must_use]
-    pub fn with_capacity_and_pools(n: usize, n_pools: usize) -> ZddHolder<V> {
+    pub fn with_capacity_and_splits(n: usize, n_region_splits: usize) -> ZddHolder<V> {
         let id = Uuid::new_v4();
         Self {
             generation: AtomicU64::new(0),
-            uniq_table: HashTable::new(n, n_pools),
+            uniq_table: HashTable::new(n, n_region_splits),
             size_caches: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(16).next_power_of_two(),
                 RandomState::default(),
