@@ -1,12 +1,28 @@
 use std::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     sync::atomic::{
         AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{Acquire, Relaxed},
     },
 };
 
-use rayon::{ThreadPool, ThreadPoolBuilder};
+thread_local! {
+    static THREAD_ID: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
+
+///For each thread, it assigns it an id, which gradually grows.
+///
+///This is modulod by the `n_splits_of_regions` so that all threads are offset to an extent
+fn assign_thread_id(n_splits_of_regions: usize) -> usize {
+    THREAD_ID.with(|id| {
+        if id.get() == usize::MAX {
+            id.set(NEXT_THREAD_ID.fetch_add(1, Relaxed));
+        }
+        id.get() % n_splits_of_regions
+    })
+}
 
 fn generate_current_position(size: usize, n_pools: usize) -> impl Iterator<Item = usize> {
     let mut gap = size / n_pools;
@@ -24,8 +40,7 @@ pub(super) struct Slots {
     current_region: UnsafeCell<Vec<AtomicUsize>>,
     claimed_regions: UnsafeCell<Vec<AtomicBool>>,
     used_data: DataTakenRecord,
-    pub(super) pools: ThreadPool,
-    n_pools: usize,
+    n_splits_of_regions: usize,
 }
 
 #[derive(Debug)]
@@ -103,10 +118,11 @@ impl DataTakenRecord {
 }
 
 impl Slots {
-    pub(super) fn new(size: usize, n_pools: usize) -> Self {
-        let current_region = generate_current_position(size.div_ceil(REGION_SIZE), n_pools)
-            .map(AtomicUsize::from)
-            .collect::<Vec<_>>();
+    pub(super) fn new(size: usize, n_splits_of_regions: usize) -> Self {
+        let current_region =
+            generate_current_position(size.div_ceil(REGION_SIZE), n_splits_of_regions)
+                .map(AtomicUsize::from)
+                .collect::<Vec<_>>();
 
         let claimed_regions = (0..size.div_ceil(REGION_SIZE))
             .map(|_| AtomicBool::from(false))
@@ -117,30 +133,23 @@ impl Slots {
             claimed_regions[i].store(true, Relaxed);
         }
 
-        let pools = ThreadPoolBuilder::new()
-            .num_threads(n_pools)
-            .build()
-            .unwrap();
-
         Slots {
             claimed_regions: UnsafeCell::new(claimed_regions),
             current_region: UnsafeCell::new(current_region),
             used_data: DataTakenRecord::new(size),
-            pools,
-            n_pools,
+            n_splits_of_regions,
         }
     }
 
     pub(super) fn thread_id(&self) -> usize {
-        self.pools
-            .current_thread_index()
-            .unwrap_or_else(|| rayon::current_thread_index().unwrap_or(0) % self.n_pools)
+        assign_thread_id(self.n_splits_of_regions)
     }
 
     pub(crate) fn n_claimed_regions(&self) -> usize {
         let x = unsafe { self.claimed_regions.get().as_ref().unwrap() };
         x.iter().map(|x| usize::from(x.load(Relaxed))).sum()
     }
+
     pub(crate) fn n_regions(&self) -> usize {
         unsafe { self.claimed_regions.get().as_ref() }
             .unwrap()
@@ -189,7 +198,7 @@ impl Slots {
     pub(super) fn clear(&self, marked: &[usize], resize_to: Option<usize>) {
         let n_elements = resize_to.unwrap_or(self.used_data.len() * 64);
         let current_region =
-            generate_current_position(n_elements.div_ceil(REGION_SIZE), self.n_pools)
+            generate_current_position(n_elements.div_ceil(REGION_SIZE), self.n_splits_of_regions)
                 .map(AtomicUsize::from)
                 .collect::<Vec<_>>();
 
@@ -216,5 +225,88 @@ impl Slots {
 
     fn current_region(&self) -> &Vec<AtomicUsize> {
         unsafe { &*self.current_region.get() }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn freeing_and_using_slots() {
+        //Fill up the table
+        let size = 4 * REGION_SIZE;
+        let slots = Slots::new(size, 1);
+
+        let mut reserved = std::collections::HashSet::new();
+        for _ in 0..size - 2 {
+            let i = slots.reserve_bucket().expect("table is not yet full");
+            assert!(reserved.insert(i), "slot {i} reserved twice");
+        }
+        //Indexes 0 and 1 are reserved for the terminals and never handed out.
+        assert!(!reserved.contains(&0) && !reserved.contains(&1));
+        assert_eq!(slots.n_used(), reserved.len() + 2);
+        assert_eq!(
+            slots.reserve_bucket(),
+            None,
+            "all buckets but the terminals are taken"
+        );
+
+        //Freed slots get recycled for new insertions
+        let thread_id = slots.thread_id();
+        let current_region = slots.current_region()[thread_id].load(Relaxed);
+        let mut freed_in_current_region = vec![];
+        for i in (current_region * REGION_SIZE..(current_region + 1) * REGION_SIZE).step_by(7) {
+            slots.free_bucket(i);
+            assert!(reserved.remove(&i));
+            freed_in_current_region.push(i);
+        }
+        for expected in freed_in_current_region {
+            let i = slots
+                .reserve_bucket()
+                .expect("freed slots in the current region are reused");
+            assert_eq!(i, expected, "freed slots are reused first");
+            assert!(reserved.insert(i));
+        }
+
+        //Clear keeps only the marked (plus terminals)
+        let marked: Vec<usize> = (13..100).step_by(3).collect();
+        slots.clear(&marked, Some(2 * size));
+        assert_eq!(slots.n_used(), marked.len() + 2);
+
+        //Any new insertions are unmarked.
+        let mut drained = std::collections::HashSet::new();
+        while let Some(i) = slots.reserve_bucket() {
+            assert!(
+                !marked.contains(&i),
+                "marked slot {i} handed out after clear"
+            );
+            assert!(drained.insert(i), "slot {i} reserved twice after clear");
+        }
+        let expected_free: std::collections::HashSet<usize> = (0..2 * size)
+            .filter(|i| !marked.contains(i) && !matches!(i, 0 | 1))
+            .collect();
+        assert_eq!(
+            drained, expected_free,
+            "after clear every unmarked slot is handed out"
+        );
+    }
+
+    #[test]
+    fn use_every_possible_slot() {
+        let size = 3 * REGION_SIZE;
+        let slots = Slots::new(size, 1);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(i) = slots.reserve_bucket() {
+            assert!(i < size, "reserved index {i} out of bounds");
+            assert!(seen.insert(i), "index {i} handed out twice");
+        }
+        assert_eq!(
+            seen.len(),
+            size - 2,
+            "every index but the terminals handed out"
+        );
+        assert!(!seen.contains(&0) && !seen.contains(&1));
+        assert_eq!(slots.n_used(), size);
     }
 }

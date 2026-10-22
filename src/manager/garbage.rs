@@ -142,13 +142,45 @@ mod test {
         }
     }
 
+    ///Held ZDDs shouldn't get cleared or changed by gc
+    #[test]
+    fn held_zdds_survive_interleaved_gc() {
+        use crate::manager::hashtable::slots::REGION_SIZE;
+        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE);
+
+        //Held families: {} {{0}}, {{1}}, {{2}},...
+        let mut acc = holder.zero();
+        let mut held: Vec<SetFamily<usize>> = vec![];
+        for value in 0..20 {
+            held.push(acc.clone());
+            acc = SetFamily::singleton(value, &holder);
+
+            holder.gc(false);
+
+            assert_eq!(
+                acc.members().collect::<Vec<Vec<usize>>>(),
+                vec![vec![value]],
+                "round {value}: newest zdd has wrong members after GC"
+            );
+        }
+
+        for (i, z) in held.iter().enumerate() {
+            let expected: Vec<Vec<usize>> = if i != 0 { vec![vec![i - 1]] } else { vec![] };
+            assert_eq!(z.size().unwrap(), usize::from(i != 0));
+            assert_eq!(
+                z.members().collect::<Vec<Vec<usize>>>(),
+                expected,
+                "held zdd {i} has wrong members after GC"
+            );
+        }
+    }
+
     ///The unique table grows to exactly `max_table_size` and then stops.
     #[test]
     fn gc_respects_max_table_size() {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let max = 2 * REGION_SIZE;
-        let holder =
-            ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1).with_max_table_size(max);
+        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(max);
 
         fill_table(&holder, 2..(REGION_SIZE - 2));
         assert!(holder.uniq_table.usage() > 0.5);
@@ -170,8 +202,8 @@ mod test {
     #[should_panic(expected = "The unique table is full at its maximum size")]
     fn get_node_panics_when_capped_table_is_full() {
         use crate::manager::hashtable::slots::REGION_SIZE;
-        let holder = ZddHolder::<usize>::with_capacity_and_pools(REGION_SIZE, 1)
-            .with_max_table_size(REGION_SIZE);
+        let holder =
+            ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(REGION_SIZE);
 
         fill_table(&holder, 0..(REGION_SIZE - 2));
         holder.get_node(usize::MAX, holder.zero(), holder.one());
@@ -180,20 +212,18 @@ mod test {
     ///Regression test for a dead-lock caused by using the same pool for GC as workers, could
     ///dead-lock if all workers were waiting for gc to finish yet were needed for gc.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gc_during_parallel_always_completes() {
         for _ in 0..20 {
-            let holder = ZddHolder::<usize>::with_capacity_and_pools(600, 4);
-            let pool = holder.pools();
+            let holder = ZddHolder::<usize>::with_capacity(600);
 
-            pool.install(|| {
-                (0..4).into_par_iter().for_each(|t| {
-                    let mut acc = holder.zero();
-                    for v in 0..26 {
-                        let value = v + t;
-                        acc = acc.union(SetFamily::singleton(value, &holder));
-                        acc = acc.change(value);
-                    }
-                });
+            (0..4).into_par_iter().for_each(|t| {
+                let mut acc = holder.zero();
+                for v in 0..26 {
+                    let value = v + t;
+                    acc = acc.union(SetFamily::singleton(value, &holder));
+                    acc = acc.change(value);
+                }
             });
         }
     }

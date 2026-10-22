@@ -1,4 +1,3 @@
-use rayon::ThreadPool;
 use std::{
     cell::UnsafeCell,
     fmt::Debug,
@@ -107,11 +106,6 @@ impl<V: Hash + Eq> ZddHolder<V> {
     pub(super) fn dec_count(&self, i: usize) {
         self.uniq_table.dec_count(i);
     }
-
-    ///Get a reference to the Rayon [`ThreadPool`] used by the manager.
-    pub fn pools(&self) -> &ThreadPool {
-        &self.uniq_table.slots.pools
-    }
 }
 
 impl<V: Hash + Eq> HashTable<V> {
@@ -152,14 +146,15 @@ pub(crate) struct FullTable<V> {
     pub(crate) value: RawZddData<V>,
 }
 impl<V: Clone + Hash + Eq> HashTable<V> {
-    pub fn new(size: usize, n_pools: usize) -> Self {
+    pub fn new(size: usize, n_region_splits: usize) -> Self {
+        let n_region_splits = n_region_splits.min(size.div_ceil(REGION_SIZE)).max(1);
         //ensure size is multiple of region_size
         let size = size
-            .max(n_pools * REGION_SIZE)
-            .div_ceil(n_pools * REGION_SIZE)
-            * n_pools
+            .max(n_region_splits * REGION_SIZE)
+            .div_ceil(n_region_splits * REGION_SIZE)
+            * n_region_splits
             * REGION_SIZE;
-        let slots = Slots::new(size, n_pools);
+        let slots = Slots::new(size, n_region_splits);
 
         HashTable {
             slots,
@@ -167,7 +162,7 @@ impl<V: Clone + Hash + Eq> HashTable<V> {
             counts: UnsafeCell::new(zeroed_atomic(size)),
             data: UnsafeCell::new(vec![None; size]),
             is_paused: AtomicBool::from(false),
-            reading: zeroed_atomic(n_pools),
+            reading: zeroed_atomic(n_region_splits),
             unpaused_cond_var: Condvar::new(),
             paused: Mutex::new(false),
         }
@@ -401,7 +396,6 @@ mod test {
     };
 
     use super::*;
-    use rayon::ThreadPoolBuilder;
 
     const MOBY: &str = "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.
 
@@ -470,6 +464,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_reader_slips_past_gc_pause() {
         let table = Arc::new(HashTable::<char>::new(1 << 12, 2));
         let stop = Arc::new(AtomicBool::new(false));
@@ -491,20 +486,18 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         let vals: Vec<_> = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
             .chars()
             .collect();
-        table.slots.pools.install(|| {
-            (0..4).into_par_iter().for_each(|_| {
-                for _ in 0..2_000 {
-                    for &k in &vals {
-                        table
-                            .find_or_insert(RawZddData {
-                                value: k,
-                                lo: ZddIndex::from(k as usize),
-                                hi: ZddIndex::from(0),
-                            })
-                            .expect("Table should not be full!");
-                    }
+        (0..4).into_par_iter().for_each(|_| {
+            for _ in 0..2_000 {
+                for &k in &vals {
+                    table
+                        .find_or_insert(RawZddData {
+                            value: k,
+                            lo: ZddIndex::from(k as usize),
+                            hi: ZddIndex::from(0),
+                        })
+                        .expect("Table should not be full!");
                 }
-            });
+            }
         });
 
         stop.store(true, Relaxed);
@@ -530,6 +523,7 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn hash_table_with_other_pool() -> Result<(), FullTable<char>> {
         for _ in 0..20 {
             let hash_table = HashTable::<char>::new(100, 8);
@@ -583,24 +577,22 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn hash_table() -> Result<(), FullTable<char>> {
         assert_eq!(size_of::<HashEntry>(), size_of::<usize>());
-        let pools = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
         let hash_table = HashTable::<char>::new(100, 8);
-        let vals = pools.install(|| {
-            "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
-                .par_chars()
-                .map(|k| {
-                    hash_table
-                        .find_or_insert(RawZddData {
-                            value: k,
-                            lo: ZddIndex::from(k as usize),
-                            hi: ZddIndex::from(0),
-                        })
-                        .map(|(v, _)| (k, v))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+        let vals = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
+            .par_chars()
+            .map(|k| {
+                hash_table
+                    .find_or_insert(RawZddData {
+                        value: k,
+                        lo: ZddIndex::from(k as usize),
+                        hi: ZddIndex::from(0),
+                    })
+                    .map(|(v, _)| (k, v))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         println!("{vals:?}");
         let mut map = HashMap::new();
         for (k, v) in vals {
@@ -611,19 +603,18 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         let hash_table = HashTable::<char>::new(100, 8);
         let used_chars = MOBY.chars().collect::<HashSet<_>>();
 
-        let vals = pools.install(|| {
-            MOBY.par_chars()
-                .map(|k| {
-                    hash_table
-                        .find_or_insert(RawZddData {
-                            value: k,
-                            lo: ZddIndex::from(k as usize),
-                            hi: ZddIndex::from(0),
-                        })
-                        .map(|(v, _)| (k, v))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+        let vals = MOBY
+            .par_chars()
+            .map(|k| {
+                hash_table
+                    .find_or_insert(RawZddData {
+                        value: k,
+                        lo: ZddIndex::from(k as usize),
+                        hi: ZddIndex::from(0),
+                    })
+                    .map(|(v, _)| (k, v))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut map = HashMap::new();
         for (k, v) in vals {
             let old_v = *map.entry(k).or_insert(v);
@@ -631,6 +622,31 @@ By reason of these things, then, the whaling voyage was welcome; the great flood
         }
         assert_eq!(map.len(), used_chars.len());
         Ok(())
+    }
+
+    #[test]
+    fn cant_pause_gc_more_than_once() {
+        let table = HashTable::<char>::new(REGION_SIZE, 1);
+        assert!(!table.is_paused.load(Acquire));
+        assert!(table.start_gc(), "first GC should succeed");
+        assert!(table.is_paused.load(Acquire));
+        assert!(!table.start_gc(), "second concurrent GC should be rejected");
+
+        //A read after the pause must wait until GC ends; drop it first, like a well-behaved
+        // reader that checks the flag in a loop.
+        table.end_gc();
+        assert!(!table.is_paused.load(Acquire));
+        let read = table.read_table();
+        let data = table.get(1);
+        assert_eq!(data, None, "the empty table has no node at index 1");
+        drop(read);
+        assert!(
+            table.start_gc(),
+            "GC after the read is dropped should succeed"
+        );
+        table.clear(&[], None);
+        table.end_gc();
+        assert!(!table.is_paused.load(Acquire));
     }
 
     #[test]
