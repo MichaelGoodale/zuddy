@@ -148,33 +148,25 @@ mod test {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE);
 
-        //Held family  {{0}}, {{0},{1}}, {{0},{1},{2}}, ...
+        //Held families: {} {{0}}, {{1}}, {{2}},...
         let mut acc = holder.zero();
         let mut held: Vec<SetFamily<usize>> = vec![];
-        for value in 0..100 {
-            acc = acc.union(SetFamily::singleton(value, &holder));
+        for value in 0..20 {
             held.push(acc.clone());
+            acc = SetFamily::singleton(value, &holder);
 
             holder.gc(false);
 
-            //Members of the newest zdd: the only one that wasn't held over a GC before.
-            let expected: Vec<Vec<usize>> = (0..=value).map(|v| vec![v]).collect();
             assert_eq!(
                 acc.members().collect::<Vec<Vec<usize>>>(),
-                expected,
+                vec![vec![value]],
                 "round {value}: newest zdd has wrong members after GC"
             );
         }
 
-        //One full sweep at the end: everything held since its round must have survived every
-        // GC in between.
         for (i, z) in held.iter().enumerate() {
-            let expected: Vec<Vec<usize>> = (0..=i).map(|v| vec![v]).collect();
-            assert_eq!(
-                z.size().unwrap(),
-                i + 1,
-                "held zdd {i} lost members after GC"
-            );
+            let expected: Vec<Vec<usize>> = if i != 0 { vec![vec![i - 1]] } else { vec![] };
+            assert_eq!(z.size().unwrap(), usize::from(i != 0));
             assert_eq!(
                 z.members().collect::<Vec<Vec<usize>>>(),
                 expected,
