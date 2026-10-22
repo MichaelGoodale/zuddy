@@ -27,6 +27,7 @@ itertools = "0.15.0"
 ron = "0.12.2"
 divan = "0.1.21"
 anyhow = "1.0.104"
+clap = { version = "4.5.51", features = ["derive"] }
 rustc-hash = "2.1.3"
 
 
