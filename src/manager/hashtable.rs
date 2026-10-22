@@ -106,7 +106,6 @@ impl<V: Hash + Eq> ZddHolder<V> {
     pub(super) fn dec_count(&self, i: usize) {
         self.uniq_table.dec_count(i);
     }
-
 }
 
 impl<V: Hash + Eq> HashTable<V> {

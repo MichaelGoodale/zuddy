@@ -450,10 +450,8 @@ impl<'a, V: Hash + Ord + Eq + Clone + Send + Sync> SetFamily<'a, V> {
 
         let r = match this_val.cmp(&value) {
             std::cmp::Ordering::Less => {
-                let (lo, hi) = rayon::join(
-                    || lo.insert(value.clone()),
-                    || hi.insert(value.clone()),
-                );
+                let (lo, hi) =
+                    rayon::join(|| lo.insert(value.clone()), || hi.insert(value.clone()));
 
                 holder.get_node(this_val, lo, hi)
             }

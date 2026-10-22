@@ -147,8 +147,7 @@ mod test {
     fn gc_respects_max_table_size() {
         use crate::manager::hashtable::slots::REGION_SIZE;
         let max = 2 * REGION_SIZE;
-        let holder =
-            ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(max);
+        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(max);
 
         fill_table(&holder, 2..(REGION_SIZE - 2));
         assert!(holder.uniq_table.usage() > 0.5);
@@ -170,8 +169,8 @@ mod test {
     #[should_panic(expected = "The unique table is full at its maximum size")]
     fn get_node_panics_when_capped_table_is_full() {
         use crate::manager::hashtable::slots::REGION_SIZE;
-        let holder = ZddHolder::<usize>::with_capacity(REGION_SIZE)
-            .with_max_table_size(REGION_SIZE);
+        let holder =
+            ZddHolder::<usize>::with_capacity(REGION_SIZE).with_max_table_size(REGION_SIZE);
 
         fill_table(&holder, 0..(REGION_SIZE - 2));
         holder.get_node(usize::MAX, holder.zero(), holder.one());
