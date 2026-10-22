@@ -45,13 +45,22 @@ where
         if self.holder.current_generation() != our_gen
             && self
                 .generation
-                .compare_exchange(our_gen, self.holder.current_generation(), Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(
+                    our_gen,
+                    self.holder.current_generation(),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
         {
             self.cache.clear();
         }
 
-        if self.holder.temp_cache_max.is_some_and(|x| self.cache.size.load(Ordering::Acquire) > x) {
+        if self
+            .holder
+            .temp_cache_max
+            .is_some_and(|x| self.cache.size.load(Ordering::Acquire) > x)
+        {
             self.cache.clear_half();
         }
     }
