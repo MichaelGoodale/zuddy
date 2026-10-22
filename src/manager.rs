@@ -22,9 +22,6 @@ use crate::{manager::hashtable::HashTable, utils::UsizeOrPositiveInfinity};
 
 use super::{ONE_IDX, Operations, SetFamily, ZERO_IDX};
 
-///Default cap, in bytes, on the total memory used by [`TempCache`](crate::manager::TempCache)s.
-const DEFAULT_TEMP_CACHE_MAX: u64 = 1 << 30;
-
 #[derive(Debug)]
 ///An arena for storing the data associated with different [`SetFamily`]s.
 pub struct ZddHolder<V: Eq + Hash> {
@@ -61,7 +58,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
                 n.saturating_mul(16).next_power_of_two(),
                 RandomState::default(),
             ),
-            temp_cache_max: Some(DEFAULT_TEMP_CACHE_MAX),
+            temp_cache_max: None,
             max_table_size: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
@@ -77,8 +74,6 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 
     ///Changes the maximum size of temporary cache. If `None`, there is no size limit.
-    ///
-    ///Temporary caches are capped at 1 GiB by default; pass `Some` to change the cap or `None` to remove it.
     pub fn set_temp_cache_size(&mut self, size_in_bytes: Option<u64>) {
         self.temp_cache_max = size_in_bytes;
     }
