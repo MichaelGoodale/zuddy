@@ -1,6 +1,9 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData,
+    collections::BTreeSet,
+    fmt::Debug,
+    hash::Hash,
+    marker::PhantomData,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -355,31 +358,6 @@ impl<V: Eq + Hash> ZddHolder<V> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    ///The regular caches must stay bounded near the cap despite half-wipes
-    ///refilling the surviving half.
-    #[test]
-    fn cache_byte_cap_frees_memory() {
-        let mut holder = ZddHolder::<usize>::new();
-        let base = holder.cache.size.load(Ordering::Acquire);
-        holder.set_cache_size(Some(base + 4096));
-
-        let y = holder.get_node(0, holder.zero(), holder.one());
-        for i in 0..1000_usize {
-            let z = holder.get_node(i + 1, holder.zero(), holder.one());
-            let _ = holder.one().union(y.clone().union(z));
-            let size = holder.cache.size.load(Ordering::Acquire);
-            assert!(
-                size < base + 4096 + 1000,
-                "size {size} escaped the cap at iteration {i}"
-            );
-        }
-    }
-}
-
 impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
     ///Creates a [`SetFamily`] from a [`BTreeSet<BTreeSet<V>>`].
     ///
@@ -510,5 +488,30 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
         //The initial split will add to results
         #[expect(clippy::missing_panics_doc)]
         results.pop().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    ///The regular caches must stay bounded near the cap despite half-wipes
+    ///refilling the surviving half.
+    #[test]
+    fn cache_byte_cap_frees_memory() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.cache.size.load(Ordering::Acquire);
+        holder.set_cache_size(Some(base + 4096));
+
+        let y = holder.get_node(0, holder.zero(), holder.one());
+        for i in 0..1000_usize {
+            let z = holder.get_node(i + 1, holder.zero(), holder.one());
+            let _ = holder.one().union(y.clone().union(z));
+            let size = holder.cache.size.load(Ordering::Acquire);
+            assert!(
+                size < base + 4096 + 1000,
+                "size {size} escaped the cap at iteration {i}"
+            );
+        }
     }
 }
