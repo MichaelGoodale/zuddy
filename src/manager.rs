@@ -106,17 +106,17 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self
     }
 
-    ///The current maximum size of the operation and size caches, `None` meaning unlimited
+    ///The current maximum combined size of the operation and size caches, `None` meaning unlimited
     pub fn cache_size(&self) -> Option<u64> {
         self.cache_max
     }
 
-    ///Changes the maximum size of the operation and size caches. If `None`, there is no size limit.
+    ///Changes the maximum combined size of the operation and size caches. If `None`, there is no size limit.
     pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
         self.cache_max = size_in_bytes;
     }
 
-    ///Builder style function to set the maximum size of the operation and size caches.
+    ///Builder style function to set the maximum combined size of the operation and size caches.
     #[must_use]
     pub fn with_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.cache_max = Some(size_in_bytes);
@@ -329,13 +329,13 @@ impl<V> SizeKey<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
-    ///Halves each regular cache which has grown past the configured cap.
+    ///Halves both regular caches if their combined size has grown past the configured cap.
     fn clear_caches_if_over(&self) {
         if let Some(max) = self.cache_max {
-            if self.cache.size.load(Ordering::Acquire) > max {
+            let size = self.cache.size.load(Ordering::Acquire)
+                + self.size_caches.size.load(Ordering::Acquire);
+            if size > max {
                 self.cache.clear_half();
-            }
-            if self.size_caches.size.load(Ordering::Acquire) > max {
                 self.size_caches.clear_half();
             }
         }
@@ -495,19 +495,22 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
 mod tests {
     use super::*;
 
-    ///The regular caches must stay bounded near the cap despite half-wipes
+    ///The combined regular caches must stay bounded near the cap despite half-wipes
     ///refilling the surviving half.
     #[test]
     fn cache_byte_cap_frees_memory() {
         let mut holder = ZddHolder::<usize>::new();
-        let base = holder.cache.size.load(Ordering::Acquire);
+        let base = holder.cache.size.load(Ordering::Acquire)
+            + holder.size_caches.size.load(Ordering::Acquire);
         holder.set_cache_size(Some(base + 4096));
 
         let y = holder.get_node(0, holder.zero(), holder.one());
         for i in 0..1000_usize {
             let z = holder.get_node(i + 1, holder.zero(), holder.one());
-            let _ = holder.one().union(y.clone().union(z));
-            let size = holder.cache.size.load(Ordering::Acquire);
+            let u = holder.one().union(y.clone().union(z));
+            let _ = u.size();
+            let size = holder.cache.size.load(Ordering::Acquire)
+                + holder.size_caches.size.load(Ordering::Acquire);
             assert!(
                 size < base + 4096 + 1000,
                 "size {size} escaped the cap at iteration {i}"
