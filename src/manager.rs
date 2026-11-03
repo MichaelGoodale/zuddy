@@ -353,10 +353,11 @@ impl<V: Eq + Hash> ZddHolder<V> {
         self.cache.size.load(Ordering::Acquire) + self.size_caches.size.load(Ordering::Acquire)
     }
 
-    ///Empties the regular caches if the newly set cap is below their current usage.
+    ///Empties the regular caches if the newly set cap is below their current usage,
+    ///shrinking their slot tables if those alone exceed the cap.
     ///
     ///# Panics
-    ///Panics if the caches' slot tables alone exceed the cap.
+    ///Panics if even the smallest possible tables exceed the cap.
     fn enforce_new_cache_cap(&self) {
         let Some(max) = self.cache_max else {
             return;
@@ -366,10 +367,16 @@ impl<V: Eq + Hash> ZddHolder<V> {
         }
         self.cache.clear_counted();
         self.size_caches.clear_counted();
-        let empty = self.regular_cache_size();
+        if self.regular_cache_size() <= max {
+            return;
+        }
+        let slot_budget = self.cache_slot_budget();
+        self.cache.resize_shrinking(slot_budget);
+        self.size_caches.resize_shrinking(slot_budget);
+        let shrunk = self.regular_cache_size();
         assert!(
-            empty <= max,
-            "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {empty} bytes"
+            shrunk <= max,
+            "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {shrunk} bytes"
         );
     }
 
@@ -560,6 +567,23 @@ mod tests {
         let size = holder.cache.size.load(Ordering::Acquire)
             + holder.size_caches.size.load(Ordering::Acquire);
         assert_eq!(size, base);
+    }
+
+    #[test]
+    fn set_cache_size_shrinks_oversized_tables() {
+        let mut holder = ZddHolder::<usize>::with_capacity(1000);
+        let y = holder.get_node(0, holder.zero(), holder.one());
+        for i in 0..1000_usize {
+            let z = holder.get_node(i + 1, holder.zero(), holder.one());
+            let _ = holder.one().union(y.clone().union(z));
+        }
+        drop(y);
+        assert!(holder.regular_cache_size() > 1024 * 1024);
+
+        holder.set_cache_size(Some(64 * 1024));
+        assert!(holder.regular_cache_size() <= 64 * 1024);
+        assert!(holder.cache.capacity() <= 1024);
+        assert!(holder.size_caches.capacity() <= 1024);
     }
 
     #[test]

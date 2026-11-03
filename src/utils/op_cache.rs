@@ -173,6 +173,27 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.size.fetch_sub(freed, Ordering::Relaxed);
     }
 
+    ///Resizes the cache to have at least `capacity` slots, shrinking if necessary.
+    ///
+    ///All entries (and their tracked bytes) are discarded.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn resize_shrinking(&self, capacity: usize) {
+        let n_slots = slot_capacity(capacity);
+        let mut table = self.table.write().unwrap();
+        if table.slots.len() == n_slots {
+            return;
+        }
+        self.size.store(
+            u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
+            Ordering::Relaxed,
+        );
+        *table = Table {
+            slots: (0..n_slots).map(|_| RwLock::default()).collect(),
+        };
+    }
+
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
     ///
     ///# Panics
@@ -310,6 +331,16 @@ mod tests {
             cache.insert(i, i * 2);
             assert_eq!(cache.get(&i), Some(i * 2));
         }
+    }
+
+    #[test]
+    fn resize_shrinking_can_shrink_capacity() {
+        let cache = cache(64);
+        cache.insert(1, 10);
+        cache.resize_shrinking(8);
+        assert_eq!(cache.capacity(), 8);
+        assert_eq!(cache.get(&1), None);
+        assert!(cache.is_empty());
     }
 
     #[test]
