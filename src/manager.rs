@@ -119,21 +119,8 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     ///Panics if `size_in_bytes` is below the memory occupied by the caches' slot tables alone,
     ///since no cache of that size is possible.
     pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
-        if let Some(max) = size_in_bytes
-            && self.cache.size.load(Ordering::Acquire)
-                + self.size_caches.size.load(Ordering::Acquire)
-                > max
-        {
-            self.cache.clear_counted();
-            self.size_caches.clear_counted();
-            let empty = self.cache.size.load(Ordering::Acquire)
-                + self.size_caches.size.load(Ordering::Acquire);
-            assert!(
-                empty <= max,
-                "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {empty} bytes"
-            );
-        }
         self.cache_max = size_in_bytes;
+        self.enforce_new_cache_cap();
     }
 
     ///Builder style function to set the maximum combined size of the operation and size caches.
@@ -361,15 +348,39 @@ impl<V: Eq + Hash> ZddHolder<V> {
         usize::try_from(max / 2 / bytes_per_slot / 2).unwrap_or(0)
     }
 
+    ///Combined tracked size of the operation and size caches.
+    fn regular_cache_size(&self) -> u64 {
+        self.cache.size.load(Ordering::Acquire) + self.size_caches.size.load(Ordering::Acquire)
+    }
+
+    ///Empties the regular caches if the newly set cap is below their current usage.
+    ///
+    ///# Panics
+    ///Panics if the caches' slot tables alone exceed the cap.
+    fn enforce_new_cache_cap(&self) {
+        let Some(max) = self.cache_max else {
+            return;
+        };
+        if self.regular_cache_size() <= max {
+            return;
+        }
+        self.cache.clear_counted();
+        self.size_caches.clear_counted();
+        let empty = self.regular_cache_size();
+        assert!(
+            empty <= max,
+            "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {empty} bytes"
+        );
+    }
+
     ///Halves both regular caches if their combined size has grown past the configured cap.
     fn clear_caches_if_over(&self) {
-        if let Some(max) = self.cache_max {
-            let size = self.cache.size.load(Ordering::Acquire)
-                + self.size_caches.size.load(Ordering::Acquire);
-            if size > max {
-                self.cache.clear_half();
-                self.size_caches.clear_half();
-            }
+        if self
+            .cache_max
+            .is_some_and(|max| self.regular_cache_size() > max)
+        {
+            self.cache.clear_half();
+            self.size_caches.clear_half();
         }
     }
 
