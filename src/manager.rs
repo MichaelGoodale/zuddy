@@ -1,6 +1,7 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::atomic::AtomicU64,
+    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ahash::RandomState;
@@ -41,6 +42,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
+    cache_max: Option<u64>,
     max_table_size: Option<usize>,
     id: Uuid,
 }
@@ -74,6 +76,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
                 RandomState::default(),
             ),
             temp_cache_max: None,
+            cache_max: None,
             max_table_size: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
@@ -97,6 +100,23 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn with_temp_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.temp_cache_max = Some(size_in_bytes);
+        self
+    }
+
+    ///The current maximum size of the operation and size caches, `None` meaning unlimited
+    pub fn cache_size(&self) -> Option<u64> {
+        self.cache_max
+    }
+
+    ///Changes the maximum size of the operation and size caches. If `None`, there is no size limit.
+    pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
+        self.cache_max = size_in_bytes;
+    }
+
+    ///Builder style function to set the maximum size of the operation and size caches.
+    #[must_use]
+    pub fn with_cache_size(mut self, size_in_bytes: u64) -> Self {
+        self.cache_max = Some(size_in_bytes);
         self
     }
 
@@ -198,6 +218,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     }
 
     pub(crate) fn get_from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
+        self.clear_caches_if_over();
         self.cache
             .get(op)
             .map(|s| SetFamily::from_set_family(s, self))
@@ -208,6 +229,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
         op: Operations<V>,
         value: SetFamily<'a, V>,
     ) -> SetFamily<'a, V> {
+        self.clear_caches_if_over();
         self.cache.insert(op, value.as_raw());
         value
     }
@@ -304,7 +326,20 @@ impl<V> SizeKey<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
+    ///Halves each regular cache which has grown past the configured cap.
+    fn clear_caches_if_over(&self) {
+        if let Some(max) = self.cache_max {
+            if self.cache.size.load(Ordering::Acquire) > max {
+                self.cache.clear_half();
+            }
+            if self.size_caches.size.load(Ordering::Acquire) > max {
+                self.size_caches.clear_half();
+            }
+        }
+    }
+
     pub(crate) fn size_cache_get(&self, op: &SizeKey<V>) -> Option<SizeValue> {
+        self.clear_caches_if_over();
         self.size_caches.get(op)
     }
 
@@ -314,8 +349,34 @@ impl<V: Eq + Hash> ZddHolder<V> {
             key.check_same_type(&value),
             "Key and value must both be of agreeing types!"
         );
+        self.clear_caches_if_over();
         self.size_caches.insert(key, value.clone());
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    ///The regular caches must stay bounded near the cap despite half-wipes
+    ///refilling the surviving half.
+    #[test]
+    fn cache_byte_cap_frees_memory() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.cache.size.load(Ordering::Acquire);
+        holder.set_cache_size(Some(base + 4096));
+
+        let y = holder.get_node(0, holder.zero(), holder.one());
+        for i in 0..1000_usize {
+            let z = holder.get_node(i + 1, holder.zero(), holder.one());
+            let _ = holder.one().union(y.clone().union(z));
+            let size = holder.cache.size.load(Ordering::Acquire);
+            assert!(
+                size < base + 4096 + 1000,
+                "size {size} escaped the cap at iteration {i}"
+            );
+        }
     }
 }
 
