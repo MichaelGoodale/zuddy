@@ -106,27 +106,26 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
         self
     }
 
-    ///The current maximum combined size of the operation and size caches, `None` meaning unlimited
+    ///The current limit in bytes of the cache for operations. `None` means unlimited.
     pub fn cache_size(&self) -> Option<u64> {
         self.cache_max
     }
 
-    ///Changes the maximum combined size of the operation and size caches. If `None`, there is no size limit.
+    ///Sets the maximum size of the operation cache. Set to `None` for it to be uncapped.
     ///
-    ///If the new size is below the caches' current usage, the caches are emptied first.
+    ///Caches may be emptied if it is necessary to resize the cache.
     ///
     ///# Panics
-    ///Panics if `size_in_bytes` is below the memory occupied by the caches' slot tables alone,
-    ///since no cache of that size is possible.
+    ///Will panic if the max size is too small to handle the cache overhead (e.g. 0 bytes)
     pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
         self.cache_max = size_in_bytes;
         self.enforce_new_cache_cap();
     }
 
-    ///Builder style function to set the maximum combined size of the operation and size caches.
+    ///Builder style function to set the maximum size of the operation cache.
     ///
     ///# Panics
-    ///Panics if `size_in_bytes` is below the memory occupied by the caches' slot tables alone.
+    ///Will panic if the max size is too small to handle the cache overhead (e.g. 0 bytes)
     #[must_use]
     pub fn with_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.set_cache_size(Some(size_in_bytes));
@@ -353,11 +352,11 @@ impl<V: Eq + Hash> ZddHolder<V> {
         self.cache.size.load(Ordering::Acquire) + self.size_caches.size.load(Ordering::Acquire)
     }
 
-    ///Empties the regular caches if the newly set cap is below their current usage,
-    ///shrinking their slot tables if those alone exceed the cap.
+    ///Empties the operation and size cache if it is too big for the current cache size,
+    ///while resizing the cache to fit the new cap if necessary.
     ///
     ///# Panics
-    ///Panics if even the smallest possible tables exceed the cap.
+    ///Panics if there is no table that can be represented in the cache size.
     fn enforce_new_cache_cap(&self) {
         let Some(max) = self.cache_max else {
             return;
@@ -380,7 +379,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
         );
     }
 
-    ///Halves both regular caches if their combined size has grown past the configured cap.
+    ///Halves the operation and size cache if their summed size is greater than the max size.
     fn clear_caches_if_over(&self) {
         if self
             .cache_max

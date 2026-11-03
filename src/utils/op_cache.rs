@@ -134,9 +134,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    ///Empties cache by removing all entries, reclaiming their tracked bytes.
-    ///
-    ///Unlike [`clear`](OpCache::clear), this is not a lazy invalidation.
+    ///Empties the cache completely.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
@@ -167,7 +165,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
 
     ///Resizes the cache to have at least `capacity` slots, growing or shrinking as necessary.
     ///
-    ///All entries (and their tracked bytes) are discarded.
+    ///All entries are discarded.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
@@ -187,8 +185,6 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     }
 
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
-    ///
-    ///Never shrinks the cache.
     ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
