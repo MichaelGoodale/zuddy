@@ -502,8 +502,6 @@ mod tests {
         let mut holder = ZddHolder::<usize>::new();
         let base = holder.cache.size.load(Ordering::Acquire)
             + holder.size_caches.size.load(Ordering::Acquire);
-        //Only entry bytes are tracked, so a fresh holder has empty caches.
-        assert_eq!(base, 0);
         holder.set_cache_size(Some(base + 4096));
 
         let y = holder.get_node(0, holder.zero(), holder.one());

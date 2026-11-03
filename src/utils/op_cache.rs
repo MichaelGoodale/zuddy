@@ -167,7 +167,10 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         let mut table = self.table.write().unwrap();
         if table.slots.len() < n_slots {
             //All entries (and their tracked bytes) are discarded by the resize.
-            self.size.store(0, Ordering::Relaxed);
+            self.size.store(
+                u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
+                Ordering::Relaxed,
+            );
             *table = Table {
                 slots: (0..n_slots).map(|_| RwLock::default()).collect(),
             };
@@ -203,7 +206,8 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             hasher,
             generation: AtomicU64::new(1),
             wipe_odd: AtomicBool::new(false),
-            size: AtomicU64::new(0),
+            //Account for `generation` and `size` in each slots
+            size: AtomicU64::new(u64::try_from(n * core::mem::size_of::<u64>() * 2).unwrap()),
         }
     }
 }
