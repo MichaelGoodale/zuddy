@@ -113,7 +113,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
 
     ///Sets the maximum size of the operation cache. Set to `None` for it to be uncapped.
     ///
-    ///Caches may be emptied if it is necessary to resize the cache.
+    ///Caches may be emptied if necessary when changing the cache limit
     ///
     ///# Panics
     ///Will panic if the max size is too small to handle the cache overhead (e.g. 0 bytes)
