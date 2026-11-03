@@ -371,8 +371,8 @@ impl<V: Eq + Hash> ZddHolder<V> {
             return;
         }
         let slot_budget = self.cache_slot_budget();
-        self.cache.resize_shrinking(slot_budget);
-        self.size_caches.resize_shrinking(slot_budget);
+        self.cache.force_resize(slot_budget);
+        self.size_caches.force_resize(slot_budget);
         let shrunk = self.regular_cache_size();
         assert!(
             shrunk <= max,
