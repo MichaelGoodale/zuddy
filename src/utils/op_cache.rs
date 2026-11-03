@@ -14,6 +14,9 @@ use std::{
 
 use mem_dbg::{MemSize, SizeFlags};
 
+///Number of bytes tracked per slot of an [`OpCache`]: the `generation` and `size` fields.
+pub(crate) const BYTES_PER_SLOT: u64 = 2 * core::mem::size_of::<u64>() as u64;
+
 ///A slot of an [`OpCache`].
 struct Slot<K, V> {
     generation: u64,
@@ -176,7 +179,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             return;
         }
         self.size.store(
-            u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
+            u64::try_from(n_slots).unwrap() * BYTES_PER_SLOT,
             Ordering::Relaxed,
         );
         *table = Table {
@@ -226,7 +229,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             generation: AtomicU64::new(1),
             wipe_odd: AtomicBool::new(false),
             //Account for `generation` and `size` in each slots
-            size: AtomicU64::new(u64::try_from(n * core::mem::size_of::<u64>() * 2).unwrap()),
+            size: AtomicU64::new(u64::try_from(n).unwrap() * BYTES_PER_SLOT),
         }
     }
 }

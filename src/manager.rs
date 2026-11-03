@@ -10,7 +10,7 @@ use std::{
 use ahash::RandomState;
 use mem_dbg::MemSize;
 
-use crate::utils::op_cache::OpCache;
+use crate::utils::op_cache::{BYTES_PER_SLOT, OpCache};
 mod garbage;
 mod hashtable;
 mod parallelism;
@@ -343,8 +343,10 @@ impl<V: Eq + Hash> ZddHolder<V> {
         let Some(max) = self.cache_max else {
             return usize::MAX;
         };
-        let bytes_per_slot = core::mem::size_of::<u64>() as u64 * 2;
-        usize::try_from(max / 2 / bytes_per_slot / 2).unwrap_or(0)
+        let per_cache_bytes = max / 2;
+        let slots_per_cache = per_cache_bytes / BYTES_PER_SLOT;
+        let pow2_headroom = slots_per_cache / 2;
+        usize::try_from(pow2_headroom).unwrap_or(0)
     }
 
     ///Combined tracked size of the operation and size caches.
