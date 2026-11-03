@@ -1,12 +1,16 @@
 //! Zuddy is a crate for handling ZDDs
 use std::{
-    collections::BTreeSet, fmt::Debug, hash::Hash, marker::PhantomData, sync::atomic::AtomicU64,
+    collections::BTreeSet,
+    fmt::Debug,
+    hash::Hash,
+    marker::PhantomData,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ahash::RandomState;
 use mem_dbg::MemSize;
 
-use crate::utils::op_cache::OpCache;
+use crate::utils::op_cache::{BYTES_PER_SLOT, OpCache};
 mod garbage;
 mod hashtable;
 mod parallelism;
@@ -41,6 +45,7 @@ pub struct ZddHolder<V: Eq + Hash> {
     cache: OpCache<Operations<V>, ZddIndex<V>, RandomState>,
     size_caches: OpCache<SizeKey<V>, SizeValue, RandomState>,
     temp_cache_max: Option<u64>,
+    cache_max: Option<u64>,
     max_table_size: Option<usize>,
     id: Uuid,
 }
@@ -74,6 +79,7 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
                 RandomState::default(),
             ),
             temp_cache_max: None,
+            cache_max: None,
             max_table_size: None,
             cache: OpCache::with_hasher_and_capacity(
                 n.saturating_mul(64).next_power_of_two(),
@@ -97,6 +103,32 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     #[must_use]
     pub fn with_temp_cache_size(mut self, size_in_bytes: u64) -> Self {
         self.temp_cache_max = Some(size_in_bytes);
+        self
+    }
+
+    ///The current limit in bytes of the cache for operations. `None` means unlimited.
+    pub fn cache_size(&self) -> Option<u64> {
+        self.cache_max
+    }
+
+    ///Sets the maximum size of the operation cache. Set to `None` for it to be uncapped.
+    ///
+    ///Caches may be emptied if necessary when changing the cache limit
+    ///
+    ///# Panics
+    ///Will panic if the max size is too small to handle the cache overhead (e.g. 0 bytes)
+    pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
+        self.cache_max = size_in_bytes;
+        self.enforce_new_cache_cap();
+    }
+
+    ///Builder style function to set the maximum size of the operation cache.
+    ///
+    ///# Panics
+    ///Will panic if the max size is too small to handle the cache overhead (e.g. 0 bytes)
+    #[must_use]
+    pub fn with_cache_size(mut self, size_in_bytes: u64) -> Self {
+        self.set_cache_size(Some(size_in_bytes));
         self
     }
 
@@ -198,6 +230,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
     }
 
     pub(crate) fn get_from_cache<'a>(&'a self, op: &Operations<V>) -> Option<SetFamily<'a, V>> {
+        self.clear_caches_if_over();
         self.cache
             .get(op)
             .map(|s| SetFamily::from_set_family(s, self))
@@ -208,6 +241,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
         op: Operations<V>,
         value: SetFamily<'a, V>,
     ) -> SetFamily<'a, V> {
+        self.clear_caches_if_over();
         self.cache.insert(op, value.as_raw());
         value
     }
@@ -304,7 +338,62 @@ impl<V> SizeKey<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
+    ///Maximum number of slots each regular cache may grow to under the current cap.
+    fn cache_slot_budget(&self) -> usize {
+        let Some(max) = self.cache_max else {
+            return usize::MAX;
+        };
+        let per_cache_bytes = max / 2;
+        let slots_per_cache = per_cache_bytes / BYTES_PER_SLOT;
+        let pow2_headroom = slots_per_cache / 2;
+        usize::try_from(pow2_headroom).unwrap_or(0)
+    }
+
+    ///Combined tracked size of the operation and size caches.
+    fn regular_cache_size(&self) -> u64 {
+        self.cache.size.load(Ordering::Acquire) + self.size_caches.size.load(Ordering::Acquire)
+    }
+
+    ///Empties the operation and size cache if it is too big for the current cache size,
+    ///while resizing the cache to fit the new cap if necessary.
+    ///
+    ///# Panics
+    ///Panics if there is no table that can be represented in the cache size.
+    fn enforce_new_cache_cap(&self) {
+        let Some(max) = self.cache_max else {
+            return;
+        };
+        if self.regular_cache_size() <= max {
+            return;
+        }
+        self.cache.clear_counted();
+        self.size_caches.clear_counted();
+        if self.regular_cache_size() <= max {
+            return;
+        }
+        let slot_budget = self.cache_slot_budget();
+        self.cache.force_resize(slot_budget);
+        self.size_caches.force_resize(slot_budget);
+        let shrunk = self.regular_cache_size();
+        assert!(
+            shrunk <= max,
+            "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {shrunk} bytes"
+        );
+    }
+
+    ///Halves the operation and size cache if their summed size is greater than the max size.
+    fn clear_caches_if_over(&self) {
+        if self
+            .cache_max
+            .is_some_and(|max| self.regular_cache_size() > max)
+        {
+            self.cache.clear_half();
+            self.size_caches.clear_half();
+        }
+    }
+
     pub(crate) fn size_cache_get(&self, op: &SizeKey<V>) -> Option<SizeValue> {
+        self.clear_caches_if_over();
         self.size_caches.get(op)
     }
 
@@ -314,6 +403,7 @@ impl<V: Eq + Hash> ZddHolder<V> {
             key.check_same_type(&value),
             "Key and value must both be of agreeing types!"
         );
+        self.clear_caches_if_over();
         self.size_caches.insert(key, value.clone());
         value
     }
@@ -449,5 +539,75 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
         //The initial split will add to results
         #[expect(clippy::missing_panics_doc)]
         results.pop().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    ///Fills the regular caches with entries via repeated unions.
+    fn fill_caches(holder: &ZddHolder<usize>) {
+        let y = holder.get_node(0, holder.zero(), holder.one());
+        for i in 0..1000_usize {
+            let z = holder.get_node(i + 1, holder.zero(), holder.one());
+            let _ = holder.one().union(y.clone().union(z));
+        }
+    }
+
+    #[test]
+    fn set_cache_size_empties_caches_when_smaller() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.regular_cache_size();
+        fill_caches(&holder);
+        assert!(holder.regular_cache_size() > base);
+
+        holder.set_cache_size(Some(base));
+        assert_eq!(holder.regular_cache_size(), base);
+    }
+
+    #[test]
+    fn set_cache_size_shrinks_oversized_tables() {
+        let mut holder = ZddHolder::<usize>::with_capacity(1000);
+        fill_caches(&holder);
+        assert!(holder.regular_cache_size() > 1024 * 1024);
+
+        holder.set_cache_size(Some(64 * 1024));
+        assert!(holder.regular_cache_size() <= 64 * 1024);
+        assert!(holder.cache.capacity() <= 1024);
+        assert!(holder.size_caches.capacity() <= 1024);
+    }
+
+    #[test]
+    #[should_panic(expected = "impossible")]
+    fn set_cache_size_below_overhead_panics() {
+        let mut holder = ZddHolder::<usize>::new();
+        holder.set_cache_size(Some(0));
+    }
+
+    #[test]
+    fn gc_resize_respects_cache_cap() {
+        let mut holder = ZddHolder::<usize>::with_capacity(1);
+        holder.set_cache_size(Some(8192));
+        let slot_budget = holder.cache_slot_budget();
+
+        let _families = (0..200_usize)
+            .map(|i| holder.get_node(i, holder.zero(), holder.one()))
+            .collect::<Vec<_>>();
+        assert!(holder.n_nodes() > 100);
+        holder.gc(false);
+        assert!(holder.cache.capacity() <= slot_budget);
+        assert!(holder.size_caches.capacity() <= slot_budget);
+    }
+
+    #[test]
+    fn cache_byte_cap_frees_memory() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.regular_cache_size();
+        holder.set_cache_size(Some(base + 4096));
+
+        fill_caches(&holder);
+        let size = holder.regular_cache_size();
+        assert!(size < base + 4096 + 1000, "size {size} escaped the cap");
     }
 }

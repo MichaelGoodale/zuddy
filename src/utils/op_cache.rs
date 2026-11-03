@@ -14,6 +14,9 @@ use std::{
 
 use mem_dbg::{MemSize, SizeFlags};
 
+///Number of bytes tracked per slot of an [`OpCache`]: the `generation` and `size` fields.
+pub(crate) const BYTES_PER_SLOT: u64 = 2 * core::mem::size_of::<u64>() as u64;
+
 ///A slot of an [`OpCache`].
 struct Slot<K, V> {
     generation: u64,
@@ -134,6 +137,15 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    ///Empties the cache completely.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn clear_counted(&self) {
+        self.clear_half();
+        self.clear_half();
+    }
+
     /// Drops half of the hashtable
     ///
     ///# Panics
@@ -154,6 +166,27 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.size.fetch_sub(freed, Ordering::Relaxed);
     }
 
+    ///Resizes the cache to have at least `capacity` slots, growing or shrinking as necessary.
+    ///
+    ///All entries are discarded.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn force_resize(&self, capacity: usize) {
+        let n_slots = slot_capacity(capacity);
+        let mut table = self.table.write().unwrap();
+        if table.slots.len() == n_slots {
+            return;
+        }
+        self.size.store(
+            u64::try_from(n_slots).unwrap() * BYTES_PER_SLOT,
+            Ordering::Relaxed,
+        );
+        *table = Table {
+            slots: (0..n_slots).map(|_| RwLock::default()).collect(),
+        };
+    }
+
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
     ///
     ///# Panics
@@ -163,18 +196,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         if self.table.read().unwrap().slots.len() >= n_slots {
             return;
         }
-
-        let mut table = self.table.write().unwrap();
-        if table.slots.len() < n_slots {
-            //All entries (and their tracked bytes) are discarded by the resize.
-            self.size.store(
-                u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
-                Ordering::Relaxed,
-            );
-            *table = Table {
-                slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-            };
-        }
+        self.force_resize(capacity);
     }
 
     #[cfg(test)]
@@ -189,7 +211,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
 
     #[cfg(test)]
     #[must_use]
-    fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.table.read().unwrap().slots.len()
     }
 
@@ -207,7 +229,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
             generation: AtomicU64::new(1),
             wipe_odd: AtomicBool::new(false),
             //Account for `generation` and `size` in each slots
-            size: AtomicU64::new(u64::try_from(n * core::mem::size_of::<u64>() * 2).unwrap()),
+            size: AtomicU64::new(u64::try_from(n).unwrap() * BYTES_PER_SLOT),
         }
     }
 }
@@ -291,6 +313,16 @@ mod tests {
             cache.insert(i, i * 2);
             assert_eq!(cache.get(&i), Some(i * 2));
         }
+    }
+
+    #[test]
+    fn force_resize_can_shrink_capacity() {
+        let cache = cache(64);
+        cache.insert(1, 10);
+        cache.force_resize(8);
+        assert_eq!(cache.capacity(), 8);
+        assert_eq!(cache.get(&1), None);
+        assert!(cache.is_empty());
     }
 
     #[test]
