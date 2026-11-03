@@ -134,6 +134,25 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    ///Empties cache by removing all entries, reclaiming their tracked bytes.
+    ///
+    ///Unlike [`clear`](OpCache::clear), this is not a lazy invalidation.
+    ///
+    ///# Panics
+    ///May panic if an internal lock is poisoned.
+    pub fn clear_counted(&self) {
+        let table = self.table.read().unwrap();
+        let mut freed = 0;
+        for slot in &table.slots {
+            let mut guard = slot.write().unwrap();
+            if guard.entry.take().is_some() {
+                freed += guard.size;
+                guard.size = 0;
+            }
+        }
+        self.size.fetch_sub(freed, Ordering::Relaxed);
+    }
+
     /// Drops half of the hashtable
     ///
     ///# Panics
@@ -189,7 +208,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
 
     #[cfg(test)]
     #[must_use]
-    fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.table.read().unwrap().slots.len()
     }
 

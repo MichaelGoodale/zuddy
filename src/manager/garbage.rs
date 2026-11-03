@@ -81,8 +81,10 @@ impl<V: Eq + Hash + Clone + Send + Sync> ZddHolder<V> {
             let marked = marked.into_marked();
             self.uniq_table.clear(&marked, resize_to);
             let n_live = marked.len();
-            self.cache.resize(n_live.saturating_mul(4));
-            self.size_caches.resize(n_live.saturating_mul(2));
+            let slot_budget = self.cache_slot_budget();
+            self.cache.resize(n_live.saturating_mul(4).min(slot_budget));
+            self.size_caches
+                .resize(n_live.saturating_mul(2).min(slot_budget));
             self.uniq_table.end_gc();
         } else {
             //Someone else is doing GC so let's wait til that's done.

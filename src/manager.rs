@@ -112,14 +112,37 @@ impl<V: Eq + Hash + Clone> ZddHolder<V> {
     }
 
     ///Changes the maximum combined size of the operation and size caches. If `None`, there is no size limit.
+    ///
+    ///If the new size is below the caches' current usage, the caches are emptied first.
+    ///
+    ///# Panics
+    ///Panics if `size_in_bytes` is below the memory occupied by the caches' slot tables alone,
+    ///since no cache of that size is possible.
     pub fn set_cache_size(&mut self, size_in_bytes: Option<u64>) {
+        if let Some(max) = size_in_bytes
+            && self.cache.size.load(Ordering::Acquire)
+                + self.size_caches.size.load(Ordering::Acquire)
+                > max
+        {
+            self.cache.clear_counted();
+            self.size_caches.clear_counted();
+            let empty = self.cache.size.load(Ordering::Acquire)
+                + self.size_caches.size.load(Ordering::Acquire);
+            assert!(
+                empty <= max,
+                "A cache size of {max} bytes is impossible: the caches' slot tables alone occupy {empty} bytes"
+            );
+        }
         self.cache_max = size_in_bytes;
     }
 
     ///Builder style function to set the maximum combined size of the operation and size caches.
+    ///
+    ///# Panics
+    ///Panics if `size_in_bytes` is below the memory occupied by the caches' slot tables alone.
     #[must_use]
     pub fn with_cache_size(mut self, size_in_bytes: u64) -> Self {
-        self.cache_max = Some(size_in_bytes);
+        self.set_cache_size(Some(size_in_bytes));
         self
     }
 
@@ -329,6 +352,15 @@ impl<V> SizeKey<V> {
 }
 
 impl<V: Eq + Hash> ZddHolder<V> {
+    ///Maximum number of slots each regular cache may grow to under the current cap.
+    fn cache_slot_budget(&self) -> usize {
+        let Some(max) = self.cache_max else {
+            return usize::MAX;
+        };
+        let bytes_per_slot = core::mem::size_of::<u64>() as u64 * 2;
+        usize::try_from(max / 2 / bytes_per_slot / 2).unwrap_or(0)
+    }
+
     ///Halves both regular caches if their combined size has grown past the configured cap.
     fn clear_caches_if_over(&self) {
         if let Some(max) = self.cache_max {
@@ -497,6 +529,52 @@ mod tests {
 
     ///The combined regular caches must stay bounded near the cap despite half-wipes
     ///refilling the surviving half.
+    #[test]
+    fn set_cache_size_empties_caches_when_smaller() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.cache.size.load(Ordering::Acquire)
+            + holder.size_caches.size.load(Ordering::Acquire);
+
+        let y = holder.get_node(0, holder.zero(), holder.one());
+        for i in 0..1000_usize {
+            let z = holder.get_node(i + 1, holder.zero(), holder.one());
+            let _ = holder.one().union(y.clone().union(z));
+        }
+        let size = holder.cache.size.load(Ordering::Acquire)
+            + holder.size_caches.size.load(Ordering::Acquire);
+        assert!(size > base);
+        drop(y);
+
+        holder.set_cache_size(Some(base));
+        let size = holder.cache.size.load(Ordering::Acquire)
+            + holder.size_caches.size.load(Ordering::Acquire);
+        assert_eq!(size, base);
+    }
+
+    #[test]
+    #[should_panic(expected = "impossible")]
+    fn set_cache_size_below_overhead_panics() {
+        let mut holder = ZddHolder::<usize>::new();
+        holder.set_cache_size(Some(0));
+    }
+
+    #[test]
+    fn gc_resize_respects_cache_cap() {
+        let mut holder = ZddHolder::<usize>::with_capacity(1);
+        holder.set_cache_size(Some(8192));
+        let slot_budget = 8192 / 2 / (core::mem::size_of::<u64>() as u64 * 2) / 2;
+        let slot_budget = usize::try_from(slot_budget).unwrap();
+
+        let families = (0..200_usize)
+            .map(|i| holder.get_node(i, holder.zero(), holder.one()))
+            .collect::<Vec<_>>();
+        drop(families.last().unwrap().clone());
+        assert!(holder.n_nodes() > 100);
+        holder.gc(false);
+        assert!(holder.cache.capacity() <= slot_budget);
+        assert!(holder.size_caches.capacity() <= slot_budget);
+    }
+
     #[test]
     fn cache_byte_cap_frees_memory() {
         let mut holder = ZddHolder::<usize>::new();
