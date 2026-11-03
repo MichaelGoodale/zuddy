@@ -545,39 +545,30 @@ impl<'a, V: Ord + Clone + Hash + Eq + Send + Sync> SetFamily<'a, V> {
 mod tests {
     use super::*;
 
-    ///The combined regular caches must stay bounded near the cap despite half-wipes
-    ///refilling the surviving half.
-    #[test]
-    fn set_cache_size_empties_caches_when_smaller() {
-        let mut holder = ZddHolder::<usize>::new();
-        let base = holder.cache.size.load(Ordering::Acquire)
-            + holder.size_caches.size.load(Ordering::Acquire);
-
+    ///Fills the regular caches with entries via repeated unions.
+    fn fill_caches(holder: &ZddHolder<usize>) {
         let y = holder.get_node(0, holder.zero(), holder.one());
         for i in 0..1000_usize {
             let z = holder.get_node(i + 1, holder.zero(), holder.one());
             let _ = holder.one().union(y.clone().union(z));
         }
-        let size = holder.cache.size.load(Ordering::Acquire)
-            + holder.size_caches.size.load(Ordering::Acquire);
-        assert!(size > base);
-        drop(y);
+    }
+
+    #[test]
+    fn set_cache_size_empties_caches_when_smaller() {
+        let mut holder = ZddHolder::<usize>::new();
+        let base = holder.regular_cache_size();
+        fill_caches(&holder);
+        assert!(holder.regular_cache_size() > base);
 
         holder.set_cache_size(Some(base));
-        let size = holder.cache.size.load(Ordering::Acquire)
-            + holder.size_caches.size.load(Ordering::Acquire);
-        assert_eq!(size, base);
+        assert_eq!(holder.regular_cache_size(), base);
     }
 
     #[test]
     fn set_cache_size_shrinks_oversized_tables() {
         let mut holder = ZddHolder::<usize>::with_capacity(1000);
-        let y = holder.get_node(0, holder.zero(), holder.one());
-        for i in 0..1000_usize {
-            let z = holder.get_node(i + 1, holder.zero(), holder.one());
-            let _ = holder.one().union(y.clone().union(z));
-        }
-        drop(y);
+        fill_caches(&holder);
         assert!(holder.regular_cache_size() > 1024 * 1024);
 
         holder.set_cache_size(Some(64 * 1024));
@@ -597,13 +588,11 @@ mod tests {
     fn gc_resize_respects_cache_cap() {
         let mut holder = ZddHolder::<usize>::with_capacity(1);
         holder.set_cache_size(Some(8192));
-        let slot_budget = 8192 / 2 / (core::mem::size_of::<u64>() as u64 * 2) / 2;
-        let slot_budget = usize::try_from(slot_budget).unwrap();
+        let slot_budget = holder.cache_slot_budget();
 
-        let families = (0..200_usize)
+        let _families = (0..200_usize)
             .map(|i| holder.get_node(i, holder.zero(), holder.one()))
             .collect::<Vec<_>>();
-        drop(families.last().unwrap().clone());
         assert!(holder.n_nodes() > 100);
         holder.gc(false);
         assert!(holder.cache.capacity() <= slot_budget);
@@ -613,21 +602,11 @@ mod tests {
     #[test]
     fn cache_byte_cap_frees_memory() {
         let mut holder = ZddHolder::<usize>::new();
-        let base = holder.cache.size.load(Ordering::Acquire)
-            + holder.size_caches.size.load(Ordering::Acquire);
+        let base = holder.regular_cache_size();
         holder.set_cache_size(Some(base + 4096));
 
-        let y = holder.get_node(0, holder.zero(), holder.one());
-        for i in 0..1000_usize {
-            let z = holder.get_node(i + 1, holder.zero(), holder.one());
-            let u = holder.one().union(y.clone().union(z));
-            let _ = u.size();
-            let size = holder.cache.size.load(Ordering::Acquire)
-                + holder.size_caches.size.load(Ordering::Acquire);
-            assert!(
-                size < base + 4096 + 1000,
-                "size {size} escaped the cap at iteration {i}"
-            );
-        }
+        fill_caches(&holder);
+        let size = holder.regular_cache_size();
+        assert!(size < base + 4096 + 1000, "size {size} escaped the cap");
     }
 }

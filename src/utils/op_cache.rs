@@ -141,16 +141,8 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn clear_counted(&self) {
-        let table = self.table.read().unwrap();
-        let mut freed = 0;
-        for slot in &table.slots {
-            let mut guard = slot.write().unwrap();
-            if guard.entry.take().is_some() {
-                freed += guard.size;
-                guard.size = 0;
-            }
-        }
-        self.size.fetch_sub(freed, Ordering::Relaxed);
+        self.clear_half();
+        self.clear_half();
     }
 
     /// Drops half of the hashtable
@@ -196,6 +188,8 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
 
     ///Resizes the cache to have at least `capacity` slots while discarding cache.
     ///
+    ///Never shrinks the cache.
+    ///
     ///# Panics
     ///May panic if an internal lock is poisoned.
     pub fn resize(&self, capacity: usize) {
@@ -203,18 +197,7 @@ impl<K: Hash, V, S: BuildHasher> OpCache<K, V, S> {
         if self.table.read().unwrap().slots.len() >= n_slots {
             return;
         }
-
-        let mut table = self.table.write().unwrap();
-        if table.slots.len() < n_slots {
-            //All entries (and their tracked bytes) are discarded by the resize.
-            self.size.store(
-                u64::try_from(n_slots * core::mem::size_of::<u64>() * 2).unwrap(),
-                Ordering::Relaxed,
-            );
-            *table = Table {
-                slots: (0..n_slots).map(|_| RwLock::default()).collect(),
-            };
-        }
+        self.resize_shrinking(capacity);
     }
 
     #[cfg(test)]
